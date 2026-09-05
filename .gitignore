@@ -1,0 +1,25 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Build output and local runtime data
+build/
+dist/
+logs/
+*.spec.bak
+
+# Secrets, OAuth tokens, and account-specific state
+config/.env
+config/token.json
+config/tiktok_token.json
+config/client_secret.json
+config/historico_otimizacao.json
+config/settings.json
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
