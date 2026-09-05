@@ -58,7 +58,7 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:latest
-    command: ["tunnel", "--no-autoupdate", "run", "--token", "$$TUNNEL_TOKEN"]
+    command: ["tunnel", "--no-autoupdate", "run"]
     env_file:
       - ../config/tunnel.env
     depends_on:
