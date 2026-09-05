@@ -60,6 +60,7 @@ jobs:
           PYTHONPATH: src
           YCA_AUTH_ISSUER_URL: https://auth.example.com
           YCA_MCP_PUBLIC_URL: https://creator.example.com/mcp
+          YCA_ONBOARDING_PUBLIC_URL: https://creator.example.com
           YCA_AUTH_INTROSPECTION_URL: https://auth.example.com/oauth/introspect
           YCA_AUTH_INTROSPECTION_CLIENT_ID: ci-client
           YCA_AUTH_INTROSPECTION_CLIENT_SECRET: ci-secret
@@ -82,6 +83,7 @@ jobs:
           CLOUD_EXPECTED = {
               "creator_status",
               "get_creator_capabilities",
+              "create_onboarding_link",
               "get_channel_profile",
               "get_strategy_evidence",
               "validate_keyword_candidates",
@@ -116,7 +118,7 @@ jobs:
                   assert "tenant_id" not in tool.input_schema.get("properties", {}), (
                       f"Cloud tool {tool.name} must derive tenant from auth, not model input"
                   )
-              print("ChatGPT-native MCP contract: OK", sorted(cloud_names))
+              print("ChatGPT-native MCP + onboarding contract: OK", sorted(cloud_names))
 
           asyncio.run(main())
           PY
