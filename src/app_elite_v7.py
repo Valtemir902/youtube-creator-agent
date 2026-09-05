@@ -3,10 +3,11 @@ from __future__ import annotations
 from PySide6.QtWidgets import QApplication, QLabel
 
 from app_elite_v6 import YouTubeCreatorAgentElite as YouTubeCreatorAgentEliteV6
+from key_health_refresh_mixin import KeyHealthRefreshMixin
 from multikey_config_mixin import MultiKeyConfigMixin
 
 
-class YouTubeCreatorAgentElite(MultiKeyConfigMixin, YouTubeCreatorAgentEliteV6):
+class YouTubeCreatorAgentElite(KeyHealthRefreshMixin, MultiKeyConfigMixin, YouTubeCreatorAgentEliteV6):
     """v7 desktop shell with multi-key rotation and persistent creator memory."""
 
     def _rename_brand(self):
