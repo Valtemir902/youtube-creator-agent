@@ -1,120 +1,163 @@
-# YouTube Creator Agent Elite
+# YouTube Creator Agent
 
-Professional YouTube intelligence, SEO research, channel strategy and publishing platform.
+Professional YouTube intelligence, channel strategy and safe publishing platform for desktop and ChatGPT.
 
-The project now uses a shared service architecture so the same intelligence can be consumed by:
+## Product modes
 
-- the PySide6 desktop app;
-- a future authenticated cloud backend;
-- ChatGPT/Codex through Model Context Protocol (MCP).
+### ChatGPT Native
 
-## Current capabilities
+ChatGPT is the intelligence layer. The cloud backend supplies authenticated YouTube data, deterministic evidence and safe actions. A separate Gemini/OpenAI/Groq/xAI/Ollama key is **not required**.
 
-- Multi-AI runtime: Gemini, OpenAI, Groq, xAI/Grok, Ollama and OpenAI-compatible endpoints
-- Dynamic model discovery per provider/account
-- YouTube OAuth integration
-- YouTube Analytics channel learning
-- Real search-term signals from the connected channel
-- Keyword opportunity scoring based on measurable YouTube evidence
-- Channel-specific fit scoring
-- Shorts vs long-form analysis
-- 7-day editorial strategy
-- Opportunity momentum/history
-- Post-action observation without claiming false causality
-- Evidence-first channel audit
-- YouTube video metadata review/update
-- Optional TikTok publishing support
-- MCP tools for ChatGPT integration
+Cloud MCP read tools:
 
-## Desktop
+- `creator_status`
+- `get_creator_capabilities`
+- `create_onboarding_link`
+- `get_channel_profile`
+- `get_strategy_evidence`
+- `validate_keyword_candidates`
 
-Create and activate a Python virtual environment, install `requirements.txt`, configure Google OAuth and your AI provider, then run:
+Write workflow:
 
-```bash
-python main.py
-```
+1. `preview_video_metadata_update` reads the current video metadata and creates an exact signed preview.
+2. The user reviews the proposed title, description and tags.
+3. `apply_video_metadata_update` requires `yca:write`, explicit confirmation, a valid approval token and an unchanged baseline.
+4. The server rejects tampered, stale or expired approval packages.
 
-`main.py` is the supported desktop entrypoint. Legacy UI modules remain only while migration is completed.
+The cloud contract intentionally does **not** expose the legacy strategy tools that invoke an external backend LLM.
 
-## MCP server
+### Desktop / Standalone
 
-The MCP layer exposes the same application service used by the desktop instead of duplicating business logic.
-
-Install the desktop dependencies plus the server dependencies:
+The PySide6 desktop application can optionally use Gemini, OpenAI, Groq, xAI/Grok, Ollama or compatible endpoints.
 
 ```bash
 python -m pip install -r requirements.txt
+python main.py
+```
+
+## Current intelligence capabilities
+
+- YouTube OAuth and YouTube Analytics learning
+- real search terms that generated traffic for the connected channel when available from Analytics
+- observable-result keyword research
+- deterministic opportunity score and channel fit
+- 7/30/90-day freshness signals
+- competition and breakout signals
+- Shorts vs long-form behavior
+- strategy history and momentum
+- post-action observation without false causal claims
+- safe metadata preview/apply flow
+- optional standalone multi-AI runtime
+
+The public YouTube API does not expose exact arbitrary daily/monthly keyword search volume. `demand_index` is therefore an estimated evidence-based index, not a fabricated exact search count.
+
+## Cloud services
+
+Install only the lightweight server dependencies:
+
+```bash
 python -m pip install -r requirements-server.txt
 ```
 
-Set an approval signing secret before enabling write tools:
+Authenticated MCP server:
 
-```text
-YCA_APPROVAL_SECRET=<random secret with at least 24 characters>
+```bash
+python cloud_mcp_server.py
 ```
 
-Optional server settings:
+Onboarding web/API server:
 
-```text
-YCA_MCP_HOST=127.0.0.1
-YCA_MCP_PORT=8000
-YCA_ROOT=<project root>
+```bash
+python onboarding_server.py
 ```
 
-Start the MCP server:
+Local single-tenant MCP development server:
 
 ```bash
 python mcp_server.py
 ```
 
-Default endpoint:
+## Secure onboarding
 
-```text
-http://127.0.0.1:8000/mcp
+The cloud MCP can create a short-lived one-time onboarding link. The raw launch token is exchanged for a server-side session and removed from the URL. Browser sessions use `HttpOnly`, `Secure` cookies in production.
+
+The onboarding panel makes the two readiness modes explicit:
+
+- ChatGPT Native: YouTube connection is sufficient; external AI is optional.
+- Standalone: YouTube plus an external/local AI provider and model are required.
+
+## Production hardening
+
+v13 adds:
+
+- publication metadata/readiness validation;
+- `GET /health` liveness endpoint;
+- `GET /ready` production configuration gate;
+- public `GET /api/app/metadata` without secrets;
+- per-tenant SQLite-backed rate limiting;
+- stricter limits for keyword research and write actions;
+- structured JSON request logging with request IDs;
+- sanitized audit events that redact secret-like fields;
+- security response headers on onboarding HTTP traffic;
+- lightweight server-only container image;
+- app metadata, legal-policy templates and a release checklist.
+
+`/ready` must return HTTP 200 before production submission. It checks public HTTPS URLs, authentication configuration, Google OAuth configuration and critical server secrets without returning secret values.
+
+## Container image
+
+Build the server image:
+
+```bash
+docker build -f Dockerfile.server -t youtube-creator-agent-server .
 ```
 
-### MCP tools
+A two-service single-host example is available at:
 
-Read-only tools:
+```text
+deploy/docker-compose.example.yml
+```
 
-- `creator_status`
-- `get_channel_profile`
-- `research_youtube_topic`
-- `build_channel_strategy`
-
-Write flow:
-
-1. `preview_video_metadata_update` reads the current metadata and returns the exact proposed change.
-2. The server signs the target, baseline and proposed payload with an expiring HMAC approval token.
-3. The user must explicitly approve the preview.
-4. `apply_video_metadata_update` verifies the signature, expiry, exact payload and that the video did not change since preview.
-5. Only then is the YouTube update executed.
-
-This prevents a model or stale client from silently modifying a different payload than the one the user reviewed.
+The current SQLite storage is appropriate for a single-host deployment. Before horizontal multi-host scaling, migrate tenant/session/rate-limit/audit persistence to a network database.
 
 ## Architecture
 
 ```text
-Desktop UI ──────────────┐
-                         │
-ChatGPT / MCP ── MCP ────┼── CreatorService ── Intelligence Engines ── YouTube APIs
-                         │
-Future Web/API ──────────┘                  └── Multi-AI Runtime
+                          ┌─ Other authorized ChatGPT apps, when available
+                          │
+ChatGPT ── OAuth ── MCP ──┼─ YouTube Creator Agent Cloud
+                          │      ├─ YouTube Data API
+                          │      ├─ YouTube Analytics
+                          │      ├─ deterministic evidence/scoring
+                          │      └─ signed + confirmed YouTube writes
+                          │
+                          └─ ChatGPT performs reasoning/titles/strategy
+
+Desktop ───────────────────── Multi-AI Runtime + same intelligence foundations
 ```
 
-The current MCP resolver is intentionally local/single-tenant. Production multi-user distribution will replace it with authenticated account resolution and encrypted per-user OAuth storage without changing the intelligence layer.
-
-## Security
+## Security invariants
 
 Never commit:
 
-- `config/.env`
+- `config/.env` or populated `config/server.env`
 - Google OAuth client secrets
-- YouTube/TikTok tokens
-- API keys
+- YouTube/TikTok access or refresh tokens
+- external AI API keys
+- `YCA_DATA_ENCRYPTION_KEY`
+- `YCA_APPROVAL_SECRET`
 - local SQLite databases
 - build output or virtual environments
 
-Write operations are intentionally separated from read operations and require explicit approval.
+Cloud tenant identity comes from authenticated token claims, not from model-supplied `tenant_id`. Read and write scopes are enforced separately.
 
-See `config/README.md` for local credential setup.
+## Publication
+
+Use these files as the release gate:
+
+- `docs/PUBLISHING_CHECKLIST.md`
+- `config/chatgpt_app.example.json`
+- `docs/PRIVACY_POLICY_TEMPLATE.md`
+- `docs/TERMS_TEMPLATE.md`
+
+The templates are intentionally not final legal documents. Production Privacy/Terms/support URLs must point to reviewed, accurate public pages before submission.
