@@ -24,7 +24,31 @@ jobs:
       - name: Compile Python sources
         run: |
           python -m compileall -q src
-          python -m py_compile main.py
+          python -m py_compile main.py mcp_server.py
 
       - name: Run unit tests
         run: pytest -q
+
+  mcp-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MCP SDK
+        run: python -m pip install --upgrade pip "mcp>=2.0,<3"
+
+      - name: Import and register MCP tools
+        env:
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import creator_service.mcp_server as server
+          assert server.mcp is not None
+          print("MCP server import and tool registration: OK")
+          PY
