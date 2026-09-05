@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -192,7 +193,7 @@ class ChatGPTNativeEvidenceEngine:
         return {
             "mode": "chatgpt_native",
             "external_ai_called": False,
-            "measured_at": rows[0]["evidence"][0]["published_at"] if rows and rows[0]["evidence"] else None,
+            "measured_at": datetime.now(timezone.utc).isoformat(),
             "period_days": days,
             "keywords_evaluated": len(rows),
             "results": rows,
