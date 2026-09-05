@@ -19,6 +19,17 @@ class FakeResolver:
         self.db = FakeDB()
 
 
+class FakeSessionStore:
+    def resolve(self, token: str):
+        return None
+
+    def exchange_launch(self, token: str):
+        raise PermissionError("invalid")
+
+    def revoke(self, token: str):
+        return None
+
+
 class FakeVerifier:
     async def verify_token(self, token: str):
         if token == "read-token":
@@ -37,16 +48,23 @@ class FakeVerifier:
 
 
 def client() -> TestClient:
-    return TestClient(create_app(resolver=FakeResolver(), verifier=FakeVerifier()))
+    return TestClient(
+        create_app(
+            resolver=FakeResolver(),
+            verifier=FakeVerifier(),
+            session_store=FakeSessionStore(),
+        )
+    )
 
 
 def test_health_is_public():
     response = client().get("/health")
     assert response.status_code == 200
     assert response.json()["ok"] is True
+    assert response.json()["version"] == 12
 
 
-def test_me_requires_bearer_token():
+def test_me_requires_authentication():
     response = client().get("/api/me")
     assert response.status_code == 401
 
@@ -61,6 +79,7 @@ def test_me_uses_tenant_from_authenticated_token():
         "tenant_id": "u_testtenant",
         "subject": "user-1",
         "scopes": ["yca:read"],
+        "auth_method": "bearer",
     }
 
 
