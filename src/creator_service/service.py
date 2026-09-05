@@ -3,12 +3,6 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from ai.runtime import AIRuntime
-from intelligence.channel_learning import ChannelLearningEngine
-from intelligence.continuous_strategy import ContinuousStrategyEngine
-from intelligence.strategy_engine import StrategyEngine
-from publicador_youtube import PublicadorYouTube
-
 from .context import CreatorContext
 from .security import signer_from_env
 
@@ -48,6 +42,8 @@ class CreatorService:
     """UI-agnostic application service used by desktop, API and MCP surfaces."""
 
     def __init__(self, context: CreatorContext):
+        from ai.runtime import AIRuntime
+
         self.context = context
         self.ai_runtime = AIRuntime(context.ai_settings_file)
 
@@ -62,6 +58,8 @@ class CreatorService:
         }
 
     def channel_profile(self, period_days: int = 28) -> dict:
+        from intelligence.channel_learning import ChannelLearningEngine
+
         self.context.validate_readiness()
         days = max(7, min(90, int(period_days)))
         profile = ChannelLearningEngine(str(self.context.token_file)).collect(
@@ -71,6 +69,8 @@ class CreatorService:
         return _plain(profile)
 
     def research_topic(self, seed: str, candidate_limit: int = 8) -> dict:
+        from intelligence.strategy_engine import StrategyEngine
+
         self.context.validate_readiness()
         report = StrategyEngine(
             str(self.context.token_file),
@@ -80,6 +80,8 @@ class CreatorService:
         return _plain(report)
 
     def build_channel_strategy(self) -> dict:
+        from intelligence.continuous_strategy import ContinuousStrategyEngine
+
         self.context.validate_readiness()
         report = ContinuousStrategyEngine(
             str(self.context.token_file),
@@ -89,6 +91,8 @@ class CreatorService:
         return _plain(report)
 
     def _youtube(self):
+        from publicador_youtube import PublicadorYouTube
+
         return PublicadorYouTube(str(self.context.token_file)).obter_cliente_youtube()
 
     def _current_video_snippet(self, video_id: str) -> dict:
