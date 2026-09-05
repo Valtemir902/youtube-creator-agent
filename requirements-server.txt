@@ -1,3 +1,4 @@
 # Server/MCP dependencies. Install together with requirements.txt for a full node.
 mcp>=2.0,<3
 uvicorn>=0.35,<1
+cryptography>=45,<51
