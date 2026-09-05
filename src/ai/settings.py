@@ -12,6 +12,7 @@ class AISettings:
     model: str = ""
     base_url: str = ""
     remember_api_key: bool = True
+    auto_rotate_keys: bool = False
 
 
 class AISettingsStore:
@@ -30,6 +31,7 @@ class AISettingsStore:
             model=str(payload.get("model") or ""),
             base_url=str(payload.get("base_url") or ""),
             remember_api_key=bool(payload.get("remember_api_key", True)),
+            auto_rotate_keys=bool(payload.get("auto_rotate_keys", False)),
         )
 
     def save(self, settings: AISettings) -> None:

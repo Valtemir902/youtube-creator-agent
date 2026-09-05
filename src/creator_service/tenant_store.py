@@ -176,17 +176,30 @@ class TenantCredentialStore:
     tenant_id: str
 
     @staticmethod
-    def _name(provider: str) -> str:
+    def _provider(provider: str) -> str:
         provider = provider.strip().lower()
         if not provider:
             raise TenantStoreError("Provedor de IA inválido.")
-        return f"ai:{provider}:api_key"
+        return provider
+
+    @classmethod
+    def _name(cls, provider: str) -> str:
+        return f"ai:{cls._provider(provider)}:api_key"
+
+    @classmethod
+    def _named_name(cls, provider: str, key_id: str) -> str:
+        key_id = (key_id or "").strip()
+        if not key_id:
+            raise TenantStoreError("Identificador de chave inválido.")
+        return f"ai:{cls._provider(provider)}:api_key:{key_id}"
 
     def set_session_key(self, provider: str, api_key: str) -> None:
-        # Cloud workers are stateless: even a session key must be scoped to the
-        # authenticated tenant. A future Redis adapter can replace this without
-        # changing AIRuntime.
+        # Cloud workers are stateless: even a session key must remain encrypted
+        # and scoped to the authenticated tenant.
         self.save_key(provider, api_key)
+
+    def set_named_session_key(self, provider: str, key_id: str, api_key: str) -> None:
+        self.save_named_key(provider, key_id, api_key)
 
     def save_key(self, provider: str, api_key: str) -> None:
         if not api_key:
@@ -198,6 +211,17 @@ class TenantCredentialStore:
 
     def delete_key(self, provider: str) -> None:
         self.db.delete_secret(self.tenant_id, self._name(provider))
+
+    def save_named_key(self, provider: str, key_id: str, api_key: str) -> None:
+        if not api_key:
+            raise TenantStoreError("A chave API não pode ser vazia.")
+        self.db.put_secret(self.tenant_id, self._named_name(provider, key_id), api_key)
+
+    def get_named_key(self, provider: str, key_id: str) -> str | None:
+        return self.db.get_secret(self.tenant_id, self._named_name(provider, key_id))
+
+    def delete_named_key(self, provider: str, key_id: str) -> None:
+        self.db.delete_secret(self.tenant_id, self._named_name(provider, key_id))
 
 
 def tenant_database_from_env(root: str | Path | None = None) -> TenantDatabase:

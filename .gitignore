@@ -20,6 +20,7 @@ config/tiktok_token.json
 config/client_secret.json
 config/historico_otimizacao.json
 config/settings.json
+config/ai_key_pool.json
 
 # OS and editor files
 .DS_Store

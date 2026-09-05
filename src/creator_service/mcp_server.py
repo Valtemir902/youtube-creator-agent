@@ -4,6 +4,8 @@ import os
 from typing import Any
 
 from mcp.server import MCPServer
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from .context import LocalTenantResolver
 from .service import CreatorService
@@ -24,6 +26,29 @@ _resolver = LocalTenantResolver()
 
 def _service(tenant_id: str = "local") -> CreatorService:
     return CreatorService(_resolver.resolve(tenant_id))
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def local_home(request: Request) -> Response:
+    host = request.url.netloc or "127.0.0.1:8000"
+    return HTMLResponse(
+        f"""<!doctype html><html lang='pt-BR'><meta charset='utf-8'>
+        <meta name='viewport' content='width=device-width,initial-scale=1'>
+        <body style='margin:0;background:#07101f;color:#eaf7ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh'>
+        <main style='max-width:760px;padding:36px;border:1px solid #173554;border-radius:18px;background:#0b1728'>
+        <h1 style='color:#14d9f4'>YouTube Creator Agent MCP local está ativo ✅</h1>
+        <p>Esta página é apenas o status humano. O endpoint do protocolo MCP é:</p>
+        <pre style='padding:14px;background:#050b14;border-radius:10px'>http://{host}/mcp</pre>
+        <p>Health check: <code>/health</code></p>
+        <p style='color:#91a9bd'>Abrir <code>/mcp</code> diretamente no navegador não é um teste completo do protocolo; use um cliente MCP.</p>
+        </main></body></html>""",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def local_health(request: Request) -> Response:
+    return JSONResponse({"ok": True, "service": "youtube-creator-agent-mcp-local", "mcp_path": "/mcp"})
 
 
 @mcp.tool()
@@ -66,6 +91,7 @@ def preview_video_metadata_update(
 
     A resposta inclui current, proposed, approval_payload e approval_token. Mostre a
     prévia ao usuário e peça confirmação explícita antes de chamar a ferramenta de aplicação.
+    Vídeos recém-editados pela própria ferramenta são bloqueados pela memória persistente.
     """
     return _service(tenant_id).preview_video_metadata_update(
         video_id=video_id,
@@ -86,7 +112,7 @@ def apply_video_metadata_update(
 
     Só chame depois que o usuário confirmar explicitamente a prévia apresentada nesta
     conversa. `user_confirmed` deve ser true. O servidor rejeita payload alterado, token
-    expirado ou vídeo modificado depois da prévia.
+    expirado, vídeo modificado depois da prévia ou vídeo ainda sob proteção de reedição.
     """
     if user_confirmed is not True:
         raise ValueError("Confirmação explícita do usuário é obrigatória para alterar o canal.")
@@ -99,6 +125,8 @@ def apply_video_metadata_update(
 def run() -> None:
     host = os.environ.get("YCA_MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("YCA_MCP_PORT", "8000"))
+    print(f"MCP local: http://{host}:{port}/mcp")
+    print(f"Status humano: http://{host}:{port}/")
     mcp.run(
         transport="streamable-http",
         host=host,
