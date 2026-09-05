@@ -19,14 +19,26 @@ jobs:
           python-version: "3.11"
 
       - name: Install lightweight test dependencies
-        run: python -m pip install --upgrade pip pytest "cryptography>=45,<51" "mcp>=2.0,<3"
+        run: |
+          python -m pip install --upgrade pip \
+            pytest \
+            "cryptography>=45,<51" \
+            "mcp>=2.0,<3" \
+            "fastapi>=0.116,<1" \
+            "httpx>=0.28,<1" \
+            "requests>=2.32,<3" \
+            "google-api-python-client>=2.140,<3" \
+            "google-auth>=2.34,<3" \
+            "google-auth-oauthlib>=1.2,<2"
 
       - name: Compile Python sources
         run: |
           python -m compileall -q src
-          python -m py_compile main.py mcp_server.py cloud_mcp_server.py
+          python -m py_compile main.py mcp_server.py cloud_mcp_server.py onboarding_server.py
 
       - name: Run unit tests
+        env:
+          PYTHONPATH: src
         run: pytest -q
 
   mcp-contract:
