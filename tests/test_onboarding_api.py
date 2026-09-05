@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+from fastapi.testclient import TestClient
+
+from creator_service.onboarding_api import create_app
+
+
+class FakeDB:
+    def ensure_tenant(self, tenant_id: str) -> str:
+        if tenant_id != "u_testtenant":
+            raise RuntimeError("unexpected tenant")
+        return tenant_id
+
+
+class FakeResolver:
+    def __init__(self):
+        self.db = FakeDB()
+
+
+class FakeVerifier:
+    async def verify_token(self, token: str):
+        if token == "read-token":
+            return SimpleNamespace(
+                subject="user-1",
+                scopes=["yca:read"],
+                claims={"tenant_id": "u_testtenant"},
+            )
+        if token == "write-token":
+            return SimpleNamespace(
+                subject="user-1",
+                scopes=["yca:read", "yca:write"],
+                claims={"tenant_id": "u_testtenant"},
+            )
+        return None
+
+
+def client() -> TestClient:
+    return TestClient(create_app(resolver=FakeResolver(), verifier=FakeVerifier()))
+
+
+def test_health_is_public():
+    response = client().get("/health")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_me_requires_bearer_token():
+    response = client().get("/api/me")
+    assert response.status_code == 401
+
+
+def test_me_uses_tenant_from_authenticated_token():
+    response = client().get(
+        "/api/me",
+        headers={"Authorization": "Bearer read-token"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "tenant_id": "u_testtenant",
+        "subject": "user-1",
+        "scopes": ["yca:read"],
+    }
+
+
+def test_write_endpoint_rejects_read_only_token_before_business_logic():
+    response = client().post(
+        "/api/youtube/connect",
+        headers={"Authorization": "Bearer read-token"},
+    )
+    assert response.status_code == 403
+    assert "yca:write" in response.json()["detail"]
+
+
+def test_invalid_token_is_rejected():
+    response = client().get(
+        "/api/me",
+        headers={"Authorization": "Bearer invalid"},
+    )
+    assert response.status_code == 401
