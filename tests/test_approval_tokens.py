@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from creator_service.security import ApprovalTokenSigner
+from src.creator_service.security import ApprovalTokenSigner
 
 
 SECRET = "0123456789abcdef0123456789abcdef"
