@@ -111,9 +111,10 @@ class EliteSEOAgentWorker(QThread):
                 raise RuntimeError("A transcrição ficou vazia ou curta demais para uma estratégia confiável.")
 
             self.progress.emit("[2/4] IA extraindo hipóteses de pesquisa, ainda não validadas...")
+            hypothesis_schema = {"queries": ["consulta 1", "consulta 2", "consulta 3"]}
             hypothesis_resp = self.runtime.generate([
                 {"role": "system", "content": "Extraia consultas que descrevam fielmente o conteúdo. Não invente tendências. Retorne JSON."},
-                {"role": "user", "content": f"Transcrição:\n{transcript[:7000]}\n\nRetorne exatamente: {{\"queries\":[\"consulta 1\",\"consulta 2\",\"consulta 3\"]}}"},
+                {"role": "user", "content": f"Transcrição:\n{transcript[:7000]}\n\nRetorne exatamente neste formato: {json.dumps(hypothesis_schema, ensure_ascii=False)}"},
             ], temperature=0.1, response_format="json")
             hypotheses = _parse_json(hypothesis_resp.text).get("queries", [])[:3]
             hypotheses = [str(q).strip() for q in hypotheses if str(q).strip()]
@@ -151,9 +152,26 @@ class EliteSEOAgentWorker(QThread):
             self.progress.emit("[4/4] Gerando metadata baseada somente nas evidências validadas...")
             is_short = "short" in self.content_format.lower()
             format_rule = "YouTube Short: título curto e direto; descrição concisa; não force #shorts." if is_short else "Vídeo longo: título claro e convincente; descrição útil e natural."
+            seo_schema = {
+                "youtube": {
+                    "titulos_virais": ["Título recomendado"],
+                    "descricao_seo": "Descrição recomendada",
+                    "tags": ["termo validado"],
+                    "keyword_principal": winner.query,
+                    "opportunity_score": winner.opportunity.score,
+                    "confidence": winner.opportunity.confidence,
+                }
+            }
+            user_prompt = (
+                f"{format_rule}\n\nEVIDÊNCIA VALIDADA:\n"
+                f"{json.dumps(evidence_summary, ensure_ascii=False)}\n\n"
+                f"TRANSCRIÇÃO:\n{transcript[:12000]}\n\n"
+                f"Retorne JSON neste formato: {json.dumps(seo_schema, ensure_ascii=False)}. "
+                "Tags devem ser somente termos semanticamente presentes na transcrição ou na consulta validada; máximo 12."
+            )
             seo_resp = self.runtime.generate([
                 {"role": "system", "content": "Você otimiza metadata do YouTube usando somente fatos fornecidos. Nunca alegue volume de pesquisa inexistente, nunca invente keywords, nunca prometa viralização. Responda JSON válido."},
-                {"role": "user", "content": f"{format_rule}\n\nEVIDÊNCIA VALIDADA:\n{json.dumps(evidence_summary, ensure_ascii=False)}\n\nTRANSCRIÇÃO:\n{transcript[:12000]}\n\nRetorne {{\"youtube\":{{\"titulos_virais\":[\"...\"],\"descricao_seo\":\"...\",\"tags\":[\"...\"],\"keyword_principal\":\"{winner.query}\",\"opportunity_score\":{winner.opportunity.score},\"confidence\":{winner.opportunity.confidence}}}}. Tags devem ser somente termos semanticamente presentes na transcrição ou na consulta validada; máximo 12."},
+                {"role": "user", "content": user_prompt},
             ], temperature=0.15, response_format="json")
             payload = _parse_json(seo_resp.text)
             yt = payload.setdefault("youtube", {})
