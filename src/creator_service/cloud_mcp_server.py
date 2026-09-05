@@ -49,8 +49,10 @@ def create_server() -> MCPServer:
     server = MCPServer(
         name="YouTube Creator Agent Elite Cloud",
         instructions=(
-            "Analise e opere somente o canal pertencente ao usuário autenticado. "
-            "Nunca invente métricas. Ações de escrita exigem prévia assinada e confirmação explícita."
+            "Você é a camada de inteligência. Use estas ferramentas apenas para obter dados reais, validar hipóteses e operar o YouTube do usuário autenticado. "
+            "No modo ChatGPT Native, nenhuma IA externa do backend é necessária: gere candidatos, títulos e estratégia no próprio ChatGPT. "
+            "Nunca trate demand_index como volume exato de buscas. Combine outros apps autorizados quando estiverem disponíveis e forem úteis. "
+            "Ações de escrita exigem prévia assinada e confirmação explícita do usuário."
         ),
         token_verifier=IntrospectionTokenVerifier(),
         auth=AuthSettings(
@@ -63,27 +65,48 @@ def create_server() -> MCPServer:
 
     @server.tool()
     def creator_status() -> dict[str, Any]:
-        """Status da conta autenticada. Não modifica nada."""
+        """Status da conta autenticada. No ChatGPT Native, IA externa é opcional."""
         _require_scope(READ_SCOPE)
         return _service().status()
 
     @server.tool()
+    def get_creator_capabilities() -> dict[str, Any]:
+        """Descreve responsabilidades do ChatGPT, do backend e as limitações das métricas."""
+        _require_scope(READ_SCOPE)
+        return _service().chatgpt_capabilities()
+
+    @server.tool()
     def get_channel_profile(period_days: int = 28) -> dict[str, Any]:
-        """Perfil analítico do canal autenticado para 7 a 90 dias."""
+        """Obtém métricas reais do canal autenticado para 7 a 90 dias, sem chamar IA externa."""
         _require_scope(READ_SCOPE)
         return _service().channel_profile(period_days=period_days)
 
     @server.tool()
-    def research_youtube_topic(seed: str, candidate_limit: int = 8) -> dict[str, Any]:
-        """Pesquisa oportunidades reais para o canal autenticado."""
+    def get_strategy_evidence(period_days: int = 28) -> dict[str, Any]:
+        """Retorna um pacote de evidências do canal para o próprio ChatGPT montar a estratégia.
+
+        Inclui termos reais de busca, vídeos fortes/fracos, formato e tráfego. Não gera estratégia via IA externa.
+        """
         _require_scope(READ_SCOPE)
-        return _service().research_topic(seed, candidate_limit=candidate_limit)
+        return _service().strategy_evidence(period_days=period_days)
 
     @server.tool()
-    def build_channel_strategy() -> dict[str, Any]:
-        """Cria estratégia, momentum e plano editorial do canal autenticado."""
+    def validate_keyword_candidates(
+        keywords: list[str],
+        period_days: int = 28,
+        max_results: int = 25,
+    ) -> dict[str, Any]:
+        """Valida até 20 keywords sugeridas pelo ChatGPT usando YouTube + Analytics reais.
+
+        Retorna demanda como índice estimado, concorrência, atualidade, velocidade, breakout, channel fit e evidências.
+        A API pública do YouTube não fornece contagem exata de buscas diárias para keywords arbitrárias.
+        """
         _require_scope(READ_SCOPE)
-        return _service().build_channel_strategy()
+        return _service().validate_keyword_candidates(
+            keywords,
+            period_days=period_days,
+            max_results=max_results,
+        )
 
     @server.tool()
     def preview_video_metadata_update(
@@ -92,10 +115,13 @@ def create_server() -> MCPServer:
         description: str | None = None,
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Gera prévia assinada de metadata. Não altera o canal."""
+        """Gera prévia assinada de metadata proposta pelo ChatGPT. Não altera o canal."""
         _require_scope(WRITE_SCOPE)
         return _service().preview_video_metadata_update(
-            video_id=video_id, title=title, description=description, tags=tags
+            video_id=video_id,
+            title=title,
+            description=description,
+            tags=tags,
         )
 
     @server.tool()
