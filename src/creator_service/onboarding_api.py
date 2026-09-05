@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .cloud_auth import IntrospectionTokenVerifier
 from .cloud_runtime import CloudTenantResolver
 from .onboarding_service import OnboardingService
+from .onboarding_sessions import OnboardingSessionStore
+
+
+COOKIE_NAME = "yca_onboarding_session"
 
 
 class AIConfigRequest(BaseModel):
@@ -30,6 +35,7 @@ class AuthenticatedTenant(BaseModel):
     tenant_id: str
     subject: str
     scopes: list[str]
+    auth_method: str = "bearer"
 
 
 def create_app(
@@ -40,43 +46,57 @@ def create_app(
     resolver = resolver or CloudTenantResolver()
     verifier = verifier or IntrospectionTokenVerifier()
     onboarding = OnboardingService(resolver)
+    web_sessions = OnboardingSessionStore(resolver.db)
 
     docs_enabled = os.environ.get("YCA_ENABLE_API_DOCS", "0").strip() == "1"
     app = FastAPI(
         title="YouTube Creator Agent Onboarding API",
-        version="10.0.0",
+        version="12.0.0",
         docs_url="/docs" if docs_enabled else None,
         redoc_url=None,
         openapi_url="/openapi.json" if docs_enabled else None,
     )
 
     async def authenticated_tenant(
+        request: Request,
         authorization: Annotated[str | None, Header()] = None,
     ) -> AuthenticatedTenant:
-        if not authorization or not authorization.startswith("Bearer "):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Bearer token obrigatório.",
-                headers={"WWW-Authenticate": "Bearer"},
+        if authorization and authorization.startswith("Bearer "):
+            raw_token = authorization[7:].strip()
+            if not raw_token:
+                raise HTTPException(status_code=401, detail="Bearer token vazio.")
+            access = await verifier.verify_token(raw_token)
+            if access is None:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token inválido ou expirado.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            tenant_id = str((access.claims or {}).get("tenant_id", "")).strip()
+            if not tenant_id:
+                raise HTTPException(status_code=403, detail="Token não está vinculado a um tenant.")
+            resolver.db.ensure_tenant(tenant_id)
+            return AuthenticatedTenant(
+                tenant_id=tenant_id,
+                subject=str(access.subject or ""),
+                scopes=list(access.scopes or []),
+                auth_method="bearer",
             )
-        raw_token = authorization[7:].strip()
-        if not raw_token:
-            raise HTTPException(status_code=401, detail="Bearer token vazio.")
-        access = await verifier.verify_token(raw_token)
-        if access is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token inválido ou expirado.",
-                headers={"WWW-Authenticate": "Bearer"},
+
+        session_token = request.cookies.get(COOKIE_NAME, "")
+        identity = web_sessions.resolve(session_token)
+        if identity is not None:
+            return AuthenticatedTenant(
+                tenant_id=identity.tenant_id,
+                subject="onboarding_web_session",
+                scopes=list(identity.scopes),
+                auth_method="cookie",
             )
-        tenant_id = str((access.claims or {}).get("tenant_id", "")).strip()
-        if not tenant_id:
-            raise HTTPException(status_code=403, detail="Token não está vinculado a um tenant.")
-        resolver.db.ensure_tenant(tenant_id)
-        return AuthenticatedTenant(
-            tenant_id=tenant_id,
-            subject=str(access.subject or ""),
-            scopes=list(access.scopes or []),
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Sessão não autenticada ou expirada.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     async def read_tenant(
@@ -95,7 +115,55 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict:
-        return {"ok": True, "service": "youtube-creator-agent-onboarding"}
+        return {"ok": True, "service": "youtube-creator-agent-onboarding", "version": 12}
+
+    @app.get("/onboarding/launch")
+    async def onboarding_launch(token: str = Query(min_length=32)):
+        try:
+            session_token, _identity = web_sessions.exchange_launch(token)
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        response = RedirectResponse("/onboarding", status_code=303)
+        secure_cookie = os.environ.get("YCA_SECURE_COOKIES", "1").strip() != "0"
+        response.set_cookie(
+            COOKIE_NAME,
+            session_token,
+            max_age=28800,
+            httponly=True,
+            secure=secure_cookie,
+            samesite="lax",
+            path="/",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/onboarding", response_class=FileResponse)
+    async def onboarding_page(request: Request):
+        identity = web_sessions.resolve(request.cookies.get(COOKIE_NAME, ""))
+        if identity is None:
+            return RedirectResponse("/onboarding/session-expired", status_code=303)
+        page = Path(__file__).resolve().parent / "web" / "onboarding.html"
+        return FileResponse(page, media_type="text/html", headers={"Cache-Control": "no-store"})
+
+    @app.get("/onboarding/session-expired", response_class=HTMLResponse)
+    async def onboarding_expired():
+        return HTMLResponse(
+            """<!doctype html><html lang='pt-BR'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+            <body style='margin:0;background:#050711;color:#eef7ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh'>
+            <main style='max-width:560px;padding:32px;text-align:center'><h1>Sessão encerrada</h1><p style='color:#8ea6bd'>Volte ao ChatGPT e peça para abrir ou configurar o YouTube Creator Agent novamente. Um novo link seguro será criado.</p></main></body></html>""",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/onboarding/logout")
+    async def onboarding_logout(request: Request):
+        token = request.cookies.get(COOKIE_NAME, "")
+        web_sessions.revoke(token)
+        response = {"ok": True}
+        from fastapi.responses import JSONResponse
+        json_response = JSONResponse(response)
+        json_response.delete_cookie(COOKIE_NAME, path="/")
+        json_response.headers["Cache-Control"] = "no-store"
+        return json_response
 
     @app.get("/api/me")
     async def me(tenant: AuthenticatedTenant = Depends(read_tenant)) -> dict:
@@ -103,6 +171,7 @@ def create_app(
             "tenant_id": tenant.tenant_id,
             "subject": tenant.subject,
             "scopes": tenant.scopes,
+            "auth_method": tenant.auth_method,
         }
 
     @app.get("/api/onboarding/status")
@@ -128,6 +197,8 @@ def create_app(
         if success_url:
             separator = "&" if "?" in success_url else "?"
             return RedirectResponse(f"{success_url}{separator}youtube=connected", status_code=302)
+        if request.cookies.get(COOKIE_NAME):
+            return RedirectResponse("/onboarding", status_code=303)
         return {
             "ok": True,
             "youtube_connected": result["youtube_connected"],
