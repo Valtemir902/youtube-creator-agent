@@ -36,6 +36,7 @@ class AIRuntime:
     def load_settings(self) -> AISettings:
         settings = self.settings_store.load()
         if settings.provider != "ollama":
+            self._migrate_legacy_key_if_needed(settings.provider)
             settings.auto_rotate_keys = self.key_pool.auto_rotate(settings.provider) or settings.auto_rotate_keys
         return settings
 
@@ -43,6 +44,7 @@ class AIRuntime:
         provider = settings.provider.strip().lower()
         settings.provider = provider
         if provider != "ollama":
+            self._migrate_legacy_key_if_needed(provider)
             self.key_pool.set_auto_rotate(provider, settings.auto_rotate_keys)
             if api_key:
                 self.add_api_key(
@@ -60,6 +62,22 @@ class AIRuntime:
             for name in ("save_named_key", "get_named_key", "delete_named_key")
         )
 
+    def _migrate_legacy_key_if_needed(self, provider: str) -> None:
+        provider = (provider or "").strip().lower()
+        if not provider or provider == "ollama" or self.key_pool.list(provider):
+            return
+        legacy = self.credentials.get_key(provider)
+        if not legacy:
+            return
+        record = self.key_pool.add(provider, legacy, label="Chave existente")
+        try:
+            if self._supports_named_credentials(self.credentials):
+                self.credentials.save_named_key(provider, record.id, legacy)
+        except Exception:
+            self.key_pool.delete(provider, record.id)
+            raise
+        self.key_pool.set_active(provider, record.id)
+
     def add_api_key(
         self,
         provider: str,
@@ -75,10 +93,8 @@ class AIRuntime:
             raise ValueError("Ollama local não usa chave API.")
         if not api_key:
             raise ValueError("A chave API não pode ser vazia.")
+        self._migrate_legacy_key_if_needed(provider)
 
-        # Reuse an existing key if the same secret is already in the pool. We
-        # compare only inside the credential vault boundary and never persist
-        # a hash/fingerprint derived from the full secret.
         if self._supports_named_credentials(self.credentials):
             for record in self.key_pool.list(provider):
                 existing = self.credentials.get_named_key(provider, record.id)
@@ -97,13 +113,10 @@ class AIRuntime:
                 else:
                     self.credentials.save_named_key(provider, record.id, api_key)
             else:
-                # Compatibility path for custom credential stores that have not
-                # implemented named credentials yet.
                 if remember:
                     self.credentials.save_key(provider, api_key)
                 else:
                     self.credentials.set_session_key(provider, api_key)
-            # Keep the legacy provider slot populated for older standalone paths.
             if remember:
                 self.credentials.save_key(provider, api_key)
             else:
@@ -122,6 +135,7 @@ class AIRuntime:
         raise KeyError("Chave não encontrada no pool.")
 
     def list_api_keys(self, provider: str) -> list[dict]:
+        self._migrate_legacy_key_if_needed(provider)
         return self.key_pool.export_public(provider)
 
     def set_active_api_key(self, provider: str, key_id: str) -> None:
@@ -152,6 +166,7 @@ class AIRuntime:
     def _resolve_key(self, provider: str, key_id: str | None = None) -> tuple[str | None, str]:
         if provider == "ollama":
             return None, ""
+        self._migrate_legacy_key_if_needed(provider)
         selected_id = (key_id or self.key_pool.active_key_id(provider)).strip()
         if selected_id:
             key = self._key_for_id(provider, selected_id)
@@ -231,8 +246,6 @@ class AIRuntime:
             return True, True
         if any(token in text for token in auth):
             return False, True
-        # Invalid request/model/content errors are normally independent of which
-        # API key is used. Rotating through every key would only multiply calls.
         return False, False
 
     def _generate_with_key(
@@ -261,13 +274,7 @@ class AIRuntime:
             )
         except Exception as exc:
             warning, _rotate = self._classify_failure(exc)
-            self.key_pool.mark_failure(
-                provider_name,
-                key_id,
-                str(exc),
-                warning=warning,
-                model=selected_model,
-            )
+            self.key_pool.mark_failure(provider_name, key_id, str(exc), warning=warning, model=selected_model)
             raise
         self.key_pool.mark_success(provider_name, key_id, model=selected_model)
         self.key_pool.set_active(provider_name, key_id)
@@ -298,9 +305,9 @@ class AIRuntime:
                 response_format=response_format,
             )
 
+        self._migrate_legacy_key_if_needed(provider_name)
         ids = self.key_pool.ordered_enabled_ids(provider_name)
         if not ids:
-            # Legacy single-key compatibility.
             return self._provider(settings).generate(
                 selected_model,
                 messages,
@@ -330,10 +337,8 @@ class AIRuntime:
                 failures.append(f"{masked}: {str(exc)}")
                 has_next = index + 1 < len(candidates)
                 if not rotation_enabled or not rotate or not has_next:
-                    if rotation_enabled and has_next is False and len(failures) > 1:
-                        raise RuntimeError(
-                            "Todas as chaves habilitadas falharam. " + " | ".join(failures)
-                        ) from exc
+                    if rotation_enabled and not has_next and len(failures) > 1:
+                        raise RuntimeError("Todas as chaves habilitadas falharam. " + " | ".join(failures)) from exc
                     raise
 
         raise RuntimeError("Nenhuma chave habilitada conseguiu concluir a solicitação.")
