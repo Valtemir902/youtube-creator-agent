@@ -79,24 +79,26 @@ def create_app(
             scopes=list(access.scopes or []),
         )
 
-    def require_scope(scope: str):
-        async def dependency(
-            tenant: Annotated[AuthenticatedTenant, Depends(authenticated_tenant)],
-        ) -> AuthenticatedTenant:
-            if scope not in tenant.scopes:
-                raise HTTPException(status_code=403, detail=f"Escopo obrigatório ausente: {scope}")
-            return tenant
-        return dependency
+    async def read_tenant(
+        tenant: AuthenticatedTenant = Depends(authenticated_tenant),
+    ) -> AuthenticatedTenant:
+        if "yca:read" not in tenant.scopes:
+            raise HTTPException(status_code=403, detail="Escopo obrigatório ausente: yca:read")
+        return tenant
 
-    ReadTenant = Annotated[AuthenticatedTenant, Depends(require_scope("yca:read"))]
-    WriteTenant = Annotated[AuthenticatedTenant, Depends(require_scope("yca:write"))]
+    async def write_tenant(
+        tenant: AuthenticatedTenant = Depends(authenticated_tenant),
+    ) -> AuthenticatedTenant:
+        if "yca:write" not in tenant.scopes:
+            raise HTTPException(status_code=403, detail="Escopo obrigatório ausente: yca:write")
+        return tenant
 
     @app.get("/health")
     async def health() -> dict:
         return {"ok": True, "service": "youtube-creator-agent-onboarding"}
 
     @app.get("/api/me")
-    async def me(tenant: ReadTenant) -> dict:
+    async def me(tenant: AuthenticatedTenant = Depends(read_tenant)) -> dict:
         return {
             "tenant_id": tenant.tenant_id,
             "subject": tenant.subject,
@@ -104,11 +106,11 @@ def create_app(
         }
 
     @app.get("/api/onboarding/status")
-    async def onboarding_status(tenant: ReadTenant) -> dict:
+    async def onboarding_status(tenant: AuthenticatedTenant = Depends(read_tenant)) -> dict:
         return onboarding.status(tenant.tenant_id)
 
     @app.post("/api/youtube/connect")
-    async def youtube_connect(tenant: WriteTenant) -> dict:
+    async def youtube_connect(tenant: AuthenticatedTenant = Depends(write_tenant)) -> dict:
         result = onboarding.start_youtube_connection(tenant.tenant_id)
         return {
             "authorization_url": result["authorization_url"],
@@ -133,11 +135,14 @@ def create_app(
         }
 
     @app.delete("/api/youtube/connect")
-    async def youtube_disconnect(tenant: WriteTenant) -> dict:
+    async def youtube_disconnect(tenant: AuthenticatedTenant = Depends(write_tenant)) -> dict:
         return onboarding.disconnect_youtube(tenant.tenant_id)
 
     @app.post("/api/ai/test")
-    async def ai_test(payload: AIProbeRequest, tenant: WriteTenant) -> dict:
+    async def ai_test(
+        payload: AIProbeRequest,
+        tenant: AuthenticatedTenant = Depends(write_tenant),
+    ) -> dict:
         return onboarding.test_ai_connection(
             tenant.tenant_id,
             provider=payload.provider,
@@ -146,7 +151,10 @@ def create_app(
         )
 
     @app.post("/api/ai/models")
-    async def ai_models(payload: AIProbeRequest, tenant: WriteTenant) -> dict:
+    async def ai_models(
+        payload: AIProbeRequest,
+        tenant: AuthenticatedTenant = Depends(write_tenant),
+    ) -> dict:
         models = onboarding.list_ai_models(
             tenant.tenant_id,
             provider=payload.provider,
@@ -156,7 +164,10 @@ def create_app(
         return {"models": models}
 
     @app.put("/api/ai/config")
-    async def ai_config(payload: AIConfigRequest, tenant: WriteTenant) -> dict:
+    async def ai_config(
+        payload: AIConfigRequest,
+        tenant: AuthenticatedTenant = Depends(write_tenant),
+    ) -> dict:
         return onboarding.configure_ai(
             tenant.tenant_id,
             provider=payload.provider,
