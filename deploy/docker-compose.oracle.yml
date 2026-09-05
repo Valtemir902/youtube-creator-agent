@@ -1,0 +1,77 @@
+name: youtube-creator-agent
+
+services:
+  keycloak-db:
+    image: postgres:16-alpine
+    env_file:
+      - ../config/keycloak.env
+    volumes:
+      - keycloak_db:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks: [yca]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.0
+    command: ["start"]
+    env_file:
+      - ../config/keycloak.env
+    depends_on:
+      - keycloak-db
+    restart: unless-stopped
+    networks: [yca]
+
+  mcp:
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+    command: ["python", "cloud_mcp_server.py"]
+    env_file:
+      - ../config/server.env
+    environment:
+      YCA_MCP_HOST: 0.0.0.0
+      YCA_MCP_PORT: 8000
+      YCA_ROOT: /app
+      YCA_TENANT_DB: /app/data/tenants.sqlite3
+      YCA_FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - yca_data:/app/data
+    restart: unless-stopped
+    networks: [yca]
+
+  onboarding:
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+    command: ["python", "onboarding_server.py"]
+    env_file:
+      - ../config/server.env
+    environment:
+      YCA_ONBOARDING_HOST: 0.0.0.0
+      YCA_ONBOARDING_PORT: 8080
+      YCA_ROOT: /app
+      YCA_TENANT_DB: /app/data/tenants.sqlite3
+      YCA_FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - yca_data:/app/data
+    restart: unless-stopped
+    networks: [yca]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "$$TUNNEL_TOKEN"]
+    env_file:
+      - ../config/tunnel.env
+    depends_on:
+      - keycloak
+      - mcp
+      - onboarding
+    restart: unless-stopped
+    networks: [yca]
+
+networks:
+  yca:
+    driver: bridge
+
+volumes:
+  keycloak_db:
+  yca_data:
