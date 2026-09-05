@@ -47,8 +47,8 @@ class ChannelAuditEngine:
             "topic_terms": list(profile.topic_terms[:20]),
         }
 
-    def audit(self, max_videos_to_recommend: int = 6) -> dict:
-        profile = self.learning.collect(period_days=28, max_videos=50)
+    def audit(self, max_videos_to_recommend: int = 6, profile: ChannelProfile | None = None) -> dict:
+        profile = profile or self.learning.collect(period_days=28, max_videos=50)
         weak = list(profile.weak_videos[:max_videos_to_recommend])
         if not weak:
             return {
@@ -97,7 +97,7 @@ class ChannelAuditEngine:
                     "content": (
                         f"DADOS DO CANAL E VALIDAÇÕES:\n{json.dumps(context, ensure_ascii=False)}\n\n"
                         f"Retorne no formato: {json.dumps(schema, ensure_ascii=False)}. "
-                        "No máximo 6 vídeos. Tags: máximo 12 e somente termos presentes no conteúdo fornecido, "
+                        f"No máximo {max_videos_to_recommend} vídeos. Tags: máximo 12 e somente termos presentes no conteúdo fornecido, "
                         "nos títulos atuais, nos termos reais de busca do canal ou nas validações de mercado."
                     ),
                 },
