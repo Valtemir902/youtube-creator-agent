@@ -3,21 +3,19 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from .context import LocalTenantResolver
 from .service import CreatorService
 
 
-mcp = FastMCP(
+mcp = MCPServer(
     name="YouTube Creator Agent Elite",
     instructions=(
         "Ferramentas para analisar, pesquisar e operar um canal do YouTube usando dados reais. "
         "Não prometa viralização nem invente volume de busca. Operações que alteram o canal exigem "
         "prévia assinada e confirmação explícita do usuário."
     ),
-    stateless_http=True,
-    json_response=True,
 )
 
 
@@ -105,6 +103,8 @@ def run() -> None:
         transport="streamable-http",
         host=host,
         port=port,
+        stateless_http=True,
+        json_response=True,
         streamable_http_path="/mcp",
     )
 
