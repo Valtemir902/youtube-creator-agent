@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .credential_store import CredentialStore
 from .registry import AIProviderRegistry
@@ -9,11 +10,21 @@ from .types import AIModel, AIProviderConfig, AIResponse, Messages
 
 
 class AIRuntime:
-    """Single entry point used by the desktop app and future MCP backend."""
+    """Single entry point used by desktop, cloud and MCP surfaces.
 
-    def __init__(self, settings_path: str | Path):
-        self.settings_store = AISettingsStore(settings_path)
-        self.credentials = CredentialStore()
+    Desktop keeps using the OS keyring by default. Cloud callers can inject a
+    tenant-scoped credential store without changing provider logic.
+    """
+
+    def __init__(
+        self,
+        settings_path: str | Path,
+        *,
+        credential_store: Any | None = None,
+        settings_store: Any | None = None,
+    ):
+        self.settings_store = settings_store or AISettingsStore(settings_path)
+        self.credentials = credential_store or CredentialStore()
         self.registry = AIProviderRegistry()
 
     def load_settings(self) -> AISettings:
