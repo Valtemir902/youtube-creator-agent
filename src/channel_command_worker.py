@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import QThread, Signal
 
 from ai.runtime import AIRuntime
-from intelligence.channel_command_center import ChannelCommandCenterEngine
+from intelligence.continuous_strategy import ContinuousStrategyEngine
 
 
 class ChannelCommandCenterWorker(QThread):
@@ -19,10 +19,10 @@ class ChannelCommandCenterWorker(QThread):
     def run(self):
         try:
             self.progress.emit("Lendo o perfil real do canal e Analytics dos últimos 28 dias...")
-            engine = ChannelCommandCenterEngine(self.token_file, self.ai_runtime)
-            self.progress.emit("Cruzando histórico do canal com oportunidades atuais do YouTube...")
+            engine = ContinuousStrategyEngine(self.token_file, self.ai_runtime)
+            self.progress.emit("Cruzando histórico, momentum e oportunidades atuais do YouTube...")
             report = engine.build()
-            self.progress.emit("Plano editorial e auditoria concluídos.")
+            self.progress.emit("Plano editorial, histórico e acompanhamento concluídos.")
             self.success.emit(report)
         except Exception as exc:
             self.error.emit(f"Falha no Command Center: {exc}")
