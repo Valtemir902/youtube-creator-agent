@@ -15,6 +15,7 @@ from .onboarding_service import OnboardingService
 from .onboarding_sessions import OnboardingSessionStore
 from .publication import publication_metadata_from_env, publication_readiness
 from .publication_store import PublicationStore
+from .public_pages import privacy_page, support_page, terms_page
 
 
 COOKIE_NAME = "yca_onboarding_session"
@@ -160,6 +161,18 @@ def create_app(
     @app.get("/health")
     async def health() -> dict:
         return {"ok": True, "service": "youtube-creator-agent-onboarding", "version": 13}
+
+    @app.get("/privacy", response_class=HTMLResponse)
+    async def privacy() -> HTMLResponse:
+        return privacy_page()
+
+    @app.get("/terms", response_class=HTMLResponse)
+    async def terms() -> HTMLResponse:
+        return terms_page()
+
+    @app.get("/support", response_class=HTMLResponse)
+    async def support() -> HTMLResponse:
+        return support_page()
 
     @app.get("/ready")
     async def ready():
