@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urlencode
 
@@ -42,6 +43,36 @@ def _resolver():
     return CloudTenantResolver()
 
 
+@lru_cache(maxsize=1)
+def _ops_store():
+    from .publication_store import PublicationStore
+    resolver = _resolver()
+    return PublicationStore(resolver.db.path)
+
+
+def _limit(kind: str, *, limit: int, window_seconds: int = 60) -> None:
+    tenant_id = _tenant_id()
+    decision = _ops_store().consume_rate_limit(
+        f"mcp:{kind}:{tenant_id}",
+        limit=limit,
+        window_seconds=window_seconds,
+    )
+    if not decision.allowed:
+        raise RuntimeError(
+            f"Limite temporário excedido para {kind}. Tente novamente em "
+            f"{decision.reset_after_seconds} segundos."
+        )
+
+
+def _audit(event_type: str, outcome: str, metadata: dict[str, Any] | None = None) -> None:
+    _ops_store().record_event(
+        event_type=event_type,
+        outcome=outcome,
+        tenant_id=_tenant_id(),
+        metadata=metadata,
+    )
+
+
 def _service():
     from .service import CreatorService
     resolver = _resolver()
@@ -56,12 +87,12 @@ def create_server() -> MCPServer:
         raise RuntimeError("YCA_AUTH_ISSUER_URL e YCA_MCP_PUBLIC_URL são obrigatórios no MCP cloud.")
 
     server = MCPServer(
-        name="YouTube Creator Agent Elite Cloud",
+        name="YouTube Creator Agent",
         instructions=(
-            "Você é a camada de inteligência. Use estas ferramentas apenas para obter dados reais, validar hipóteses e operar o YouTube do usuário autenticado. "
+            "Você é a camada de inteligência. Use estas ferramentas para obter dados reais, validar hipóteses e operar somente o YouTube do usuário autenticado. "
             "No modo ChatGPT Native, nenhuma IA externa do backend é necessária: gere candidatos, títulos e estratégia no próprio ChatGPT. "
             "Nunca trate demand_index como volume exato de buscas. Combine outros apps autorizados quando estiverem disponíveis e forem úteis. "
-            "Ações de escrita exigem prévia assinada e confirmação explícita do usuário."
+            "Ferramentas de leitura não alteram o canal. Ferramentas de escrita exigem escopo de escrita, prévia assinada e confirmação explícita do usuário."
         ),
         token_verifier=IntrospectionTokenVerifier(),
         auth=AuthSettings(
@@ -74,25 +105,27 @@ def create_server() -> MCPServer:
 
     @server.tool()
     def creator_status() -> dict[str, Any]:
-        """Status da conta autenticada. No ChatGPT Native, IA externa é opcional."""
+        """Leitura: verifica conexão e prontidão da conta. Não modifica o YouTube."""
         _require_scope(READ_SCOPE)
+        _limit("read", limit=180)
         return _service().status()
 
     @server.tool()
     def get_creator_capabilities() -> dict[str, Any]:
-        """Descreve responsabilidades do ChatGPT, do backend e as limitações das métricas."""
+        """Leitura: descreve capacidades, responsabilidades e limitações das métricas. Não modifica o YouTube."""
         _require_scope(READ_SCOPE)
+        _limit("read", limit=180)
         return _service().chatgpt_capabilities()
 
     @server.tool()
     def create_onboarding_link() -> dict[str, Any]:
-        """Cria um link web de onboarding de uso único para o usuário autenticado.
+        """Leitura/configuração: cria um link de onboarding de uso único com validade de 10 minutos.
 
-        O link expira rapidamente, não contém tenant_id e é trocado no navegador por
-        uma sessão HttpOnly. Use quando o usuário precisar conectar YouTube ou revisar
-        as configurações da conta.
+        Use apenas quando o usuário precisar conectar o YouTube ou revisar a própria conta.
+        O link não contém tenant_id e é trocado por uma sessão HttpOnly no navegador.
         """
         _require_scope(READ_SCOPE)
+        _limit("onboarding", limit=10)
         base_url = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
         if not base_url:
             raise RuntimeError("YCA_ONBOARDING_PUBLIC_URL não configurada no servidor.")
@@ -102,6 +135,7 @@ def create_server() -> MCPServer:
         launch = OnboardingSessionStore(_resolver().db).issue_launch(
             _tenant_id(), scopes, ttl_seconds=600
         )
+        _audit("mcp_onboarding_link_created", "success")
         return {
             "url": f"{base_url}/onboarding/launch?{urlencode({'token': launch})}",
             "expires_in_seconds": 600,
@@ -111,17 +145,19 @@ def create_server() -> MCPServer:
 
     @server.tool()
     def get_channel_profile(period_days: int = 28) -> dict[str, Any]:
-        """Obtém métricas reais do canal autenticado para 7 a 90 dias, sem chamar IA externa."""
+        """Leitura: obtém métricas reais do canal autenticado para 7 a 90 dias, sem chamar IA externa."""
         _require_scope(READ_SCOPE)
+        _limit("analytics", limit=60)
         return _service().channel_profile(period_days=period_days)
 
     @server.tool()
     def get_strategy_evidence(period_days: int = 28) -> dict[str, Any]:
-        """Retorna um pacote de evidências do canal para o próprio ChatGPT montar a estratégia.
+        """Leitura: retorna evidências reais para o próprio ChatGPT montar a estratégia.
 
-        Inclui termos reais de busca, vídeos fortes/fracos, formato e tráfego. Não gera estratégia via IA externa.
+        Inclui termos reais de busca, vídeos fortes/fracos, formato e tráfego. Não gera estratégia via IA externa e não altera o canal.
         """
         _require_scope(READ_SCOPE)
+        _limit("analytics", limit=60)
         return _service().strategy_evidence(period_days=period_days)
 
     @server.tool()
@@ -130,12 +166,13 @@ def create_server() -> MCPServer:
         period_days: int = 28,
         max_results: int = 25,
     ) -> dict[str, Any]:
-        """Valida até 20 keywords sugeridas pelo ChatGPT usando YouTube + Analytics reais.
+        """Leitura pesada: valida até 20 keywords sugeridas pelo ChatGPT usando YouTube + Analytics reais.
 
         Retorna demanda como índice estimado, concorrência, atualidade, velocidade, breakout, channel fit e evidências.
-        A API pública do YouTube não fornece contagem exata de buscas diárias para keywords arbitrárias.
+        A API pública do YouTube não fornece contagem exata de buscas diárias para keywords arbitrárias. Não modifica o canal.
         """
         _require_scope(READ_SCOPE)
+        _limit("keyword_research", limit=20)
         return _service().validate_keyword_candidates(
             keywords,
             period_days=period_days,
@@ -149,14 +186,24 @@ def create_server() -> MCPServer:
         description: str | None = None,
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Gera prévia assinada de metadata proposta pelo ChatGPT. Não altera o canal."""
+        """Preparação de escrita: gera uma prévia assinada de título/descrição/tags, mas NÃO altera o canal.
+
+        Mostre a prévia ao usuário. A aplicação posterior exige confirmação explícita e o payload assinado exato.
+        """
         _require_scope(WRITE_SCOPE)
-        return _service().preview_video_metadata_update(
+        _limit("write_preview", limit=30)
+        result = _service().preview_video_metadata_update(
             video_id=video_id,
             title=title,
             description=description,
             tags=tags,
         )
+        _audit(
+            "mcp_video_metadata_preview",
+            "success",
+            metadata={"video_id": video_id, "changed": result.get("changed", {})},
+        )
+        return result
 
     @server.tool()
     def apply_video_metadata_update(
@@ -164,14 +211,28 @@ def create_server() -> MCPServer:
         approval_token: str,
         user_confirmed: bool,
     ) -> dict[str, Any]:
-        """Aplica exatamente uma prévia assinada após confirmação explícita."""
+        """Escrita importante: aplica exatamente uma prévia assinada após confirmação explícita do usuário.
+
+        Rejeita confirmação ausente, token expirado, payload alterado ou vídeo modificado desde a prévia.
+        """
         _require_scope(WRITE_SCOPE)
+        _limit("write_apply", limit=15)
         if user_confirmed is not True:
+            _audit("mcp_video_metadata_apply", "denied", metadata={"reason": "confirmation_missing"})
             raise ValueError("Confirmação explícita do usuário é obrigatória.")
-        return _service().apply_video_metadata_update(
+        result = _service().apply_video_metadata_update(
             approval_payload=approval_payload,
             approval_token=approval_token,
         )
+        _audit(
+            "mcp_video_metadata_apply",
+            "success",
+            metadata={
+                "video_id": result.get("video_id"),
+                "changed_fields": result.get("changed_fields", []),
+            },
+        )
+        return result
 
     return server
 
