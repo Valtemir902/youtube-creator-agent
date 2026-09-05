@@ -19,12 +19,12 @@ jobs:
           python-version: "3.11"
 
       - name: Install lightweight test dependencies
-        run: python -m pip install --upgrade pip pytest "cryptography>=45,<51"
+        run: python -m pip install --upgrade pip pytest "cryptography>=45,<51" "mcp>=2.0,<3"
 
       - name: Compile Python sources
         run: |
           python -m compileall -q src
-          python -m py_compile main.py mcp_server.py
+          python -m py_compile main.py mcp_server.py cloud_mcp_server.py
 
       - name: Run unit tests
         run: pytest -q
@@ -43,14 +43,20 @@ jobs:
       - name: Install MCP SDK
         run: python -m pip install --upgrade pip "mcp>=2.0,<3"
 
-      - name: Discover MCP tools in memory
+      - name: Discover local and authenticated cloud MCP tools
         env:
           PYTHONPATH: src
+          YCA_AUTH_ISSUER_URL: https://auth.example.com
+          YCA_MCP_PUBLIC_URL: https://creator.example.com/mcp
+          YCA_AUTH_INTROSPECTION_URL: https://auth.example.com/oauth/introspect
+          YCA_AUTH_INTROSPECTION_CLIENT_ID: ci-client
+          YCA_AUTH_INTROSPECTION_CLIENT_SECRET: ci-secret
         run: |
           python - <<'PY'
           import asyncio
           from mcp import Client
-          import creator_service.mcp_server as server
+          import creator_service.mcp_server as local_server
+          from creator_service.cloud_mcp_server import create_server
 
           EXPECTED = {
               "creator_status",
@@ -61,15 +67,24 @@ jobs:
               "apply_video_metadata_update",
           }
 
-          async def main():
-              async with Client(server.mcp, raise_exceptions=True) as client:
+          async def inspect(server, *, cloud=False):
+              async with Client(server, raise_exceptions=True) as client:
                   result = await client.list_tools()
                   names = {tool.name for tool in result.tools}
-                  missing = EXPECTED - names
-                  assert not missing, f"Missing MCP tools: {sorted(missing)}"
+                  assert EXPECTED <= names
                   for tool in result.tools:
-                      assert tool.input_schema.get("type") == "object"
-                  print("MCP protocol tool discovery: OK", sorted(names))
+                      schema = tool.input_schema
+                      assert schema.get("type") == "object"
+                      if cloud:
+                          assert "tenant_id" not in schema.get("properties", {}), (
+                              f"Cloud tool {tool.name} must derive tenant from auth, not model input"
+                          )
+                  return names
+
+          async def main():
+              await inspect(local_server.mcp)
+              names = await inspect(create_server(), cloud=True)
+              print("Authenticated MCP schema isolation: OK", sorted(names))
 
           asyncio.run(main())
           PY
