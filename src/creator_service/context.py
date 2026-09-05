@@ -22,11 +22,22 @@ class CreatorContext:
             return bool(self.youtube_connected_override)
         return self.token_file.exists()
 
-    def validate_readiness(self) -> None:
+    def validate_youtube(self) -> None:
         if not self.youtube_connected:
             raise RuntimeError("Canal do YouTube não conectado para este cliente.")
+
+    def validate_external_ai(self) -> None:
         if not self.ai_settings_file.exists():
-            raise RuntimeError("Configuração de IA ainda não criada para este cliente.")
+            raise RuntimeError("Configuração de IA externa ainda não criada para este cliente.")
+
+    def validate_readiness(self) -> None:
+        """Backward-compatible standalone readiness check.
+
+        ChatGPT-native MCP tools must call validate_youtube() instead because the
+        ChatGPT model itself is the intelligence layer in that mode.
+        """
+        self.validate_youtube()
+        self.validate_external_ai()
 
     def google_clients(self):
         if self.google_client_factory is None:
