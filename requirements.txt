@@ -1,0 +1,11 @@
+PySide6>=6.7,<7
+moviepy>=2.0,<3
+python-dotenv>=1.0,<2
+requests>=2.32,<3
+google-api-python-client>=2.140,<3
+google-auth>=2.34,<3
+google-auth-oauthlib>=1.2,<2
+google-generativeai>=0.8,<1
+imageio-ffmpeg>=0.5,<1
+openai-whisper>=20240930
+torch>=2.4
