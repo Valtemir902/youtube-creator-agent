@@ -1,4 +1,5 @@
-from .context import CreatorContext, LocalTenantResolver
-from .service import CreatorService
+"""Shared service layer for desktop, backend and MCP surfaces.
 
-__all__ = ["CreatorContext", "CreatorService", "LocalTenantResolver"]
+Submodules are intentionally imported explicitly by callers so importing this
+package does not eagerly initialize Google/AI dependencies.
+"""
