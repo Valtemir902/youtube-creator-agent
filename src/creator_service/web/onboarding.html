@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>YouTube Creator Agent</title>
+  <style>
+    :root{--bg:#050711;--panel:#0b1020cc;--line:#18304b;--text:#eef7ff;--muted:#8ea6bd;--cyan:#26f7ff;--violet:#a970ff;--green:#42ffb0;--red:#ff617d;--shadow:0 0 32px rgba(38,247,255,.10)}
+    *{box-sizing:border-box} body{margin:0;background:radial-gradient(circle at 12% 10%,#082b3b 0,transparent 34%),radial-gradient(circle at 88% 6%,#26134b 0,transparent 33%),var(--bg);color:var(--text);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}
+    .noise{position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(rgba(255,255,255,.02) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.02) 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(to bottom,black,transparent 90%)}
+    main{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:38px 0 64px}.top{display:flex;gap:18px;align-items:center;justify-content:space-between;margin-bottom:30px}.brand{display:flex;align-items:center;gap:14px}.logo{width:48px;height:48px;border:1px solid #1c6572;border-radius:16px;display:grid;place-items:center;background:#07131d;box-shadow:0 0 30px #26f7ff22;font-weight:900;color:var(--cyan)}h1{font-size:22px;margin:0}.sub{color:var(--muted);font-size:13px}.status-pill{border:1px solid var(--line);border-radius:999px;padding:9px 13px;background:#08101b;color:var(--muted)}
+    .hero{border:1px solid #1c4b63;border-radius:24px;padding:28px;background:linear-gradient(145deg,#08121dcc,#0e0c1bcc);box-shadow:var(--shadow);display:grid;grid-template-columns:1.45fr .55fr;gap:24px;align-items:center}.hero h2{font-size:34px;line-height:1.08;margin:0 0 12px}.gradient{background:linear-gradient(90deg,var(--cyan),#b5fff6,var(--violet));-webkit-background-clip:text;background-clip:text;color:transparent}.hero p{color:var(--muted);max-width:700px;margin:0}.orb{width:170px;height:170px;margin:auto;border-radius:50%;background:radial-gradient(circle at 38% 32%,#d6ffff 0,#26f7ff 8%,#27668e 24%,#421c79 54%,#080b16 72%);box-shadow:0 0 70px #26f7ff40,0 0 120px #a970ff2b;position:relative}.orb:after{content:"GPT";position:absolute;inset:0;display:grid;place-items:center;font-size:25px;font-weight:900;letter-spacing:.16em;text-shadow:0 0 18px #fff}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:18px}.card{border:1px solid var(--line);border-radius:20px;background:var(--panel);padding:20px;box-shadow:var(--shadow);backdrop-filter:blur(14px)}.card h3{font-size:15px;margin:0 0 8px}.metric{font-size:25px;font-weight:800;margin:5px 0}.muted{color:var(--muted)}.ok{color:var(--green)}.bad{color:var(--red)}.cyan{color:var(--cyan)}
+    .steps{margin-top:18px;display:grid;grid-template-columns:1fr 1fr;gap:16px}.step{position:relative;overflow:hidden}.step:before{content:"";position:absolute;width:110px;height:110px;border-radius:50%;right:-44px;top:-50px;background:#26f7ff0d;box-shadow:0 0 60px #26f7ff22}.num{font-size:12px;color:var(--cyan);letter-spacing:.13em;font-weight:800}.step h3{font-size:19px;margin:8px 0}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}button{appearance:none;border:1px solid #246379;background:#0a1b27;color:#eaffff;padding:11px 15px;border-radius:12px;font-weight:750;cursor:pointer;transition:.18s transform,.18s border-color,.18s box-shadow}button:hover{transform:translateY(-1px);border-color:var(--cyan);box-shadow:0 0 18px #26f7ff26}button.primary{background:linear-gradient(135deg,#0f7d8e,#5c2fa1);border-color:#39dfea}button.ghost{background:#0a0e17}button.danger{border-color:#63303e;color:#ffc2ce}button:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+    details{margin-top:18px;border:1px solid var(--line);border-radius:18px;background:#080d17aa;padding:16px}summary{cursor:pointer;font-weight:800}.ai-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-top:16px}label{display:grid;gap:6px;color:var(--muted);font-size:12px}input,select{width:100%;border:1px solid #203d53;background:#07111c;color:var(--text);border-radius:11px;padding:11px 12px;outline:none}input:focus,select:focus{border-color:var(--cyan);box-shadow:0 0 0 3px #26f7ff12}.wide{grid-column:1/-1}.footer{display:flex;justify-content:space-between;gap:16px;margin-top:20px;color:#667f94;font-size:12px}.toast{position:fixed;right:20px;bottom:20px;max-width:380px;padding:13px 16px;border:1px solid #23536a;border-radius:14px;background:#08131f;box-shadow:0 18px 60px #0008;opacity:0;transform:translateY(12px);pointer-events:none;transition:.2s}.toast.show{opacity:1;transform:none}.toast.error{border-color:#7d3243;color:#ffd7df}
+    @media(max-width:780px){.hero{grid-template-columns:1fr}.orb{width:120px;height:120px}.grid{grid-template-columns:1fr}.steps{grid-template-columns:1fr}.ai-grid{grid-template-columns:1fr}.wide{grid-column:auto}.hero h2{font-size:29px}.top{align-items:flex-start}.status-pill{display:none}}
+  </style>
+</head>
+<body>
+<div class="noise"></div>
+<main>
+  <div class="top">
+    <div class="brand"><div class="logo">YC</div><div><h1>YouTube Creator Agent</h1><div class="sub">Onboarding seguro · ChatGPT Native</div></div></div>
+    <div id="sessionPill" class="status-pill">Carregando sessão…</div>
+  </div>
+
+  <section class="hero">
+    <div><div class="num">INTELLIGENCE MODE</div><h2>Seu canal conectado ao <span class="gradient">cérebro do ChatGPT</span>.</h2><p>No modo ChatGPT Native, você não precisa cadastrar uma segunda IA. O ChatGPT cria a estratégia; o Creator Agent fornece métricas reais, valida keywords e executa ações aprovadas no YouTube.</p></div>
+    <div class="orb" aria-hidden="true"></div>
+  </section>
+
+  <section class="grid">
+    <article class="card"><h3>YouTube</h3><div id="youtubeMetric" class="metric muted">Verificando…</div><div id="youtubeDetail" class="muted">Conta do canal</div></article>
+    <article class="card"><h3>Modo principal</h3><div class="metric cyan">ChatGPT Native</div><div class="muted">IA externa não é obrigatória</div></article>
+    <article class="card"><h3>Prontidão</h3><div id="readyMetric" class="metric muted">Verificando…</div><div id="readyDetail" class="muted">Preparando diagnóstico</div></article>
+  </section>
+
+  <section class="steps">
+    <article class="card step"><div class="num">ETAPA 01</div><h3>Conecte seu canal</h3><p class="muted">Autorize somente a conta Google/YouTube que você quer analisar e operar. As credenciais ficam isoladas por cliente.</p><div class="actions"><button id="connectBtn" class="primary">Conectar YouTube</button><button id="disconnectBtn" class="danger">Desconectar</button></div></article>
+    <article class="card step"><div class="num">ETAPA 02</div><h3>Use o ChatGPT como inteligência</h3><p class="muted">Depois do YouTube conectado, o app já fica pronto para o ChatGPT pesquisar evidências, validar palavras-chave, criar estratégia e preparar alterações.</p><div class="actions"><button id="refreshBtn">Atualizar status</button><button id="logoutBtn" class="ghost">Encerrar painel</button></div></article>
+  </section>
+
+  <details>
+    <summary>IA externa para modo desktop/standalone <span class="muted">(opcional no ChatGPT)</span></summary>
+    <div class="ai-grid">
+      <label>Provedor<select id="provider"><option value="gemini">Gemini</option><option value="openai">OpenAI</option><option value="groq">Groq</option><option value="xai">xAI</option><option value="ollama">Ollama local</option><option value="openai_compatible">OpenAI-compatible</option></select></label>
+      <label>API key<input id="apiKey" type="password" autocomplete="off" placeholder="Não exibimos chaves já salvas" /></label>
+      <label class="wide">Endpoint personalizado<input id="baseUrl" type="url" placeholder="Somente quando necessário" /></label>
+      <label class="wide">Modelo<select id="model"><option value="">Teste a conexão para carregar modelos</option></select></label>
+    </div>
+    <div class="actions"><button id="modelsBtn">Testar e carregar modelos</button><button id="saveAiBtn" class="primary">Salvar configuração opcional</button></div>
+    <p id="aiStatus" class="muted">Essa configuração só é necessária para recursos standalone fora do ChatGPT.</p>
+  </details>
+
+  <div class="footer"><span>Tokens de abertura são de uso único e saem da URL após a entrada.</span><span>Operações de escrita continuam exigindo prévia + confirmação.</span></div>
+</main>
+<div id="toast" class="toast"></div>
+<script>
+const $=s=>document.querySelector(s); let state=null;
+function toast(msg,error=false){const el=$('#toast');el.textContent=msg;el.className='toast show'+(error?' error':'');clearTimeout(window.__toast);window.__toast=setTimeout(()=>el.className='toast',3600)}
+async function api(path,options={}){const res=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json',...(options.headers||{})},...options});let data={};try{data=await res.json()}catch{}if(!res.ok){throw new Error(data.detail||data.message||`Erro HTTP ${res.status}`)}return data}
+function render(s){state=s;const yt=!!s.youtube_connected;const ready=!!s.intelligence_modes?.chatgpt_native?.ready;$('#youtubeMetric').textContent=yt?'Conectado':'Não conectado';$('#youtubeMetric').className='metric '+(yt?'ok':'bad');$('#youtubeDetail').textContent=yt?'OAuth do YouTube ativo':'Conecte o canal para continuar';$('#readyMetric').textContent=ready?'PRONTO':'PENDENTE';$('#readyMetric').className='metric '+(ready?'ok':'muted');$('#readyDetail').textContent=ready?'ChatGPT Native disponível':'Falta conectar o YouTube';$('#sessionPill').textContent=ready?'● Conta pronta':'● Configuração em andamento';$('#connectBtn').disabled=yt;$('#disconnectBtn').disabled=!yt;const ai=s.ai||{};if(ai.provider)$('#provider').value=ai.provider;if(ai.base_url)$('#baseUrl').value=ai.base_url;if(ai.model){$('#model').innerHTML=`<option value="${escapeHtml(ai.model)}">${escapeHtml(ai.model)}</option>`;$('#aiStatus').textContent=`Standalone configurado: ${ai.provider} / ${ai.model}`}}
+function escapeHtml(v){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+async function refresh(){try{render(await api('/api/onboarding/status'))}catch(e){toast(e.message,true);if(/401|sessão|autent/i.test(e.message))setTimeout(()=>location.href='/onboarding/session-expired',700)}}
+$('#connectBtn').onclick=async()=>{try{const r=await api('/api/youtube/connect',{method:'POST'});location.href=r.authorization_url}catch(e){toast(e.message,true)}};
+$('#disconnectBtn').onclick=async()=>{if(!confirm('Desconectar este canal do YouTube?'))return;try{render(await api('/api/youtube/connect',{method:'DELETE'}));toast('YouTube desconectado.')}catch(e){toast(e.message,true)}};
+$('#refreshBtn').onclick=refresh;
+$('#logoutBtn').onclick=async()=>{try{await api('/onboarding/logout',{method:'POST'});}finally{location.href='/onboarding/session-expired'}};
+$('#modelsBtn').onclick=async()=>{const payload={provider:$('#provider').value,api_key:$('#apiKey').value||null,base_url:$('#baseUrl').value||''};try{$('#aiStatus').textContent='Consultando modelos…';const r=await api('/api/ai/models',{method:'POST',body:JSON.stringify(payload)});const items=r.models||[];$('#model').innerHTML=items.length?items.map(m=>`<option value="${escapeHtml(m.id||m.name)}">${escapeHtml(m.name||m.id)}</option>`).join(''):'<option value="">Nenhum modelo retornado</option>';$('#aiStatus').textContent=`${items.length} modelos disponíveis.`;toast('Conexão com IA validada.')}catch(e){$('#aiStatus').textContent=e.message;toast(e.message,true)}};
+$('#saveAiBtn').onclick=async()=>{const payload={provider:$('#provider').value,model:$('#model').value,api_key:$('#apiKey').value||null,base_url:$('#baseUrl').value||'',validate_connection:true};try{const s=await api('/api/ai/config',{method:'PUT',body:JSON.stringify(payload)});$('#apiKey').value='';render(s);toast('Configuração standalone salva com segurança.')}catch(e){toast(e.message,true)}};
+refresh();
+</script>
+</body>
+</html>
