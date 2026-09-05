@@ -43,12 +43,33 @@ jobs:
       - name: Install MCP SDK
         run: python -m pip install --upgrade pip "mcp>=2.0,<3"
 
-      - name: Import and register MCP tools
+      - name: Discover MCP tools in memory
         env:
           PYTHONPATH: src
         run: |
           python - <<'PY'
+          import asyncio
+          from mcp import Client
           import creator_service.mcp_server as server
-          assert server.mcp is not None
-          print("MCP server import and tool registration: OK")
+
+          EXPECTED = {
+              "creator_status",
+              "get_channel_profile",
+              "research_youtube_topic",
+              "build_channel_strategy",
+              "preview_video_metadata_update",
+              "apply_video_metadata_update",
+          }
+
+          async def main():
+              async with Client(server.mcp, raise_exceptions=True) as client:
+                  result = await client.list_tools()
+                  names = {tool.name for tool in result.tools}
+                  missing = EXPECTED - names
+                  assert not missing, f"Missing MCP tools: {sorted(missing)}"
+                  for tool in result.tools:
+                      assert tool.input_schema.get("type") == "object"
+                  print("MCP protocol tool discovery: OK", sorted(names))
+
+          asyncio.run(main())
           PY
