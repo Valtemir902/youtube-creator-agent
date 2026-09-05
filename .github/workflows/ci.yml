@@ -55,7 +55,7 @@ jobs:
       - name: Install MCP SDK
         run: python -m pip install --upgrade pip "mcp>=2.0,<3"
 
-      - name: Discover local and authenticated cloud MCP tools
+      - name: Discover local and ChatGPT-native cloud MCP tools
         env:
           PYTHONPATH: src
           YCA_AUTH_ISSUER_URL: https://auth.example.com
@@ -70,7 +70,7 @@ jobs:
           import creator_service.mcp_server as local_server
           from creator_service.cloud_mcp_server import create_server
 
-          EXPECTED = {
+          LOCAL_EXPECTED = {
               "creator_status",
               "get_channel_profile",
               "research_youtube_topic",
@@ -79,24 +79,44 @@ jobs:
               "apply_video_metadata_update",
           }
 
-          async def inspect(server, *, cloud=False):
+          CLOUD_EXPECTED = {
+              "creator_status",
+              "get_creator_capabilities",
+              "get_channel_profile",
+              "get_strategy_evidence",
+              "validate_keyword_candidates",
+              "preview_video_metadata_update",
+              "apply_video_metadata_update",
+          }
+
+          CLOUD_FORBIDDEN = {
+              "research_youtube_topic",
+              "build_channel_strategy",
+          }
+
+          async def names_for(server):
               async with Client(server, raise_exceptions=True) as client:
                   result = await client.list_tools()
-                  names = {tool.name for tool in result.tools}
-                  assert EXPECTED <= names
                   for tool in result.tools:
                       schema = tool.input_schema
                       assert schema.get("type") == "object"
-                      if cloud:
-                          assert "tenant_id" not in schema.get("properties", {}), (
-                              f"Cloud tool {tool.name} must derive tenant from auth, not model input"
-                          )
-                  return names
+                  return result.tools, {tool.name for tool in result.tools}
 
           async def main():
-              await inspect(local_server.mcp)
-              names = await inspect(create_server(), cloud=True)
-              print("Authenticated MCP schema isolation: OK", sorted(names))
+              _, local_names = await names_for(local_server.mcp)
+              assert LOCAL_EXPECTED <= local_names
+
+              cloud_tools, cloud_names = await names_for(create_server())
+              assert CLOUD_EXPECTED <= cloud_names
+              assert not (CLOUD_FORBIDDEN & cloud_names), (
+                  "Cloud MCP must not expose tools that invoke backend LLM strategy: "
+                  f"{sorted(CLOUD_FORBIDDEN & cloud_names)}"
+              )
+              for tool in cloud_tools:
+                  assert "tenant_id" not in tool.input_schema.get("properties", {}), (
+                      f"Cloud tool {tool.name} must derive tenant from auth, not model input"
+                  )
+              print("ChatGPT-native MCP contract: OK", sorted(cloud_names))
 
           asyncio.run(main())
           PY
