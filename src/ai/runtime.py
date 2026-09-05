@@ -140,6 +140,9 @@ class AIRuntime:
 
     def set_active_api_key(self, provider: str, key_id: str) -> None:
         self.key_pool.set_active(provider, key_id)
+        key = self._key_for_id(provider, key_id)
+        if key:
+            self.credentials.save_key(provider, key)
 
     def set_api_key_enabled(self, provider: str, key_id: str, enabled: bool) -> None:
         self.key_pool.set_enabled(provider, key_id, enabled)
@@ -152,9 +155,18 @@ class AIRuntime:
             self.settings_store.save(settings)
 
     def delete_api_key(self, provider: str, key_id: str) -> None:
+        provider = provider.strip().lower()
         if self._supports_named_credentials(self.credentials):
             self.credentials.delete_named_key(provider, key_id)
         self.key_pool.delete(provider, key_id)
+        remaining = self.key_pool.list(provider)
+        if not remaining:
+            self.credentials.delete_key(provider)
+            return
+        active_id = self.key_pool.active_key_id(provider)
+        active_key = self._key_for_id(provider, active_id)
+        if active_key:
+            self.credentials.save_key(provider, active_key)
 
     def _key_for_id(self, provider: str, key_id: str) -> str | None:
         if not key_id:
@@ -223,8 +235,20 @@ class AIRuntime:
         settings = AISettings(provider=provider, model=model, base_url=base_url)
         try:
             models = self.list_models(settings, key_id=key_id)
-            self.key_pool.mark_success(provider, key_id, model=model)
-            return {"ok": True, "models": [item.id for item in models], "count": len(models)}
+            model_ids = [item.id for item in models]
+            selected_model = (model or "").strip()
+            if selected_model:
+                if selected_model not in model_ids:
+                    raise RuntimeError(f"O modelo selecionado não está disponível para esta chave: {selected_model}")
+                provider_obj = self._provider(settings, key_id=key_id)
+                provider_obj.generate(
+                    selected_model,
+                    [{"role": "user", "content": "Responda somente OK."}],
+                    temperature=0.0,
+                    max_output_tokens=8,
+                )
+            self.key_pool.mark_success(provider, key_id, model=selected_model)
+            return {"ok": True, "models": model_ids, "count": len(model_ids), "tested_model": selected_model}
         except Exception as exc:
             warning, _rotate = self._classify_failure(exc)
             self.key_pool.mark_failure(provider, key_id, str(exc), warning=warning, model=model)
@@ -278,6 +302,7 @@ class AIRuntime:
             raise
         self.key_pool.mark_success(provider_name, key_id, model=selected_model)
         self.key_pool.set_active(provider_name, key_id)
+        self.credentials.save_key(provider_name, key)
         return response
 
     def generate(
@@ -306,7 +331,10 @@ class AIRuntime:
             )
 
         self._migrate_legacy_key_if_needed(provider_name)
+        all_records = self.key_pool.list(provider_name)
         ids = self.key_pool.ordered_enabled_ids(provider_name)
+        if all_records and not ids:
+            raise RuntimeError(f"Todas as chaves de {provider_name} estão desativadas.")
         if not ids:
             return self._provider(settings).generate(
                 selected_model,
