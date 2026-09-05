@@ -89,8 +89,8 @@ class ChannelCommandCenterEngine:
         videos = list(profile.top_videos)
         if not videos:
             return 20, "dados insuficientes"
-        active = sum(1 for video in videos if getattr(video, "views", 0) > 0)
-        engagement_values = [float(getattr(v, "engagement_rate", 0.0) or 0.0) for v in videos]
+        active = sum(1 for video in videos if int(getattr(video, "views_28d", 0) or 0) > 0)
+        engagement_values = [float(getattr(v, "engagement_rate_28d", 0.0) or 0.0) for v in videos]
         avg_engagement = sum(engagement_values) / max(1, len(engagement_values))
         search_signal = min(1.0, max(0.0, float(profile.search_share or 0.0)))
         active_signal = active / max(1, len(videos))
@@ -166,10 +166,10 @@ class ChannelCommandCenterEngine:
                 measured = self.research.research(query, 20)
             except Exception:
                 continue
-            fit = self.learning.channel_fit(query, profile)
+            fit_ratio = profile.channel_fit(query)
             if measured.result_count < 10 or measured.opportunity.confidence < 60:
                 continue
-            personalized = _clamp(measured.opportunity.score * 0.72 + fit * 28.0)
+            personalized = _clamp(measured.opportunity.score * 0.72 + fit_ratio * 28.0)
             results.append((measured, personalized))
 
         results.sort(
@@ -184,7 +184,7 @@ class ChannelCommandCenterEngine:
         dominant = self._dominant_format(profile)
         output: list[ValidatedPlanOpportunity] = []
         for measured, score in results[:6]:
-            fit = _clamp(self.learning.channel_fit(measured.query, profile) * 100)
+            fit = _clamp(profile.channel_fit(measured.query) * 100)
             if dominant == "Misto":
                 recommended_format = "Shorts" if measured.fresh_7d_rate >= 0.35 else "Vídeo longo"
             else:
