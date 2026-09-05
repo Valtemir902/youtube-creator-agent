@@ -29,7 +29,7 @@ class OnboardingService:
         )
 
     def status(self, tenant_id: str) -> dict[str, Any]:
-        context = self._context(tenant_id)
+        self._context(tenant_id)
         runtime = self._runtime(tenant_id)
         settings = runtime.load_settings()
         youtube_connected = self.db.get_secret(tenant_id, GOOGLE_SECRET_NAME) is not None
@@ -38,26 +38,43 @@ class OnboardingService:
             if settings.provider.strip().lower() == "ollama"
             else runtime.credentials.get_key(settings.provider) is not None
         )
-        ready = bool(youtube_connected and settings.model and api_key_configured)
+        external_ai_configured = bool(settings.model and api_key_configured)
+        chatgpt_native_ready = bool(youtube_connected)
+        standalone_ready = bool(youtube_connected and external_ai_configured)
         return {
             "tenant_id": tenant_id,
             "youtube_connected": youtube_connected,
+            "intelligence_modes": {
+                "chatgpt_native": {
+                    "ready": chatgpt_native_ready,
+                    "external_ai_required": False,
+                    "next_step": "ready" if chatgpt_native_ready else "connect_youtube",
+                },
+                "standalone": {
+                    "ready": standalone_ready,
+                    "external_ai_required": True,
+                    "next_step": self._standalone_next_step(
+                        youtube_connected=youtube_connected,
+                        model_configured=bool(settings.model),
+                        api_key_configured=api_key_configured,
+                    ),
+                },
+            },
             "ai": {
                 "provider": settings.provider,
                 "model": settings.model,
                 "base_url": settings.base_url,
                 "api_key_configured": api_key_configured,
+                "configured": external_ai_configured,
+                "optional_for_chatgpt": True,
             },
-            "ready": ready,
-            "next_step": self._next_step(
-                youtube_connected=youtube_connected,
-                model_configured=bool(settings.model),
-                api_key_configured=api_key_configured,
-            ),
+            "ready": chatgpt_native_ready,
+            "recommended_mode": "chatgpt_native" if chatgpt_native_ready else "not_ready",
+            "next_step": "ready" if chatgpt_native_ready else "connect_youtube",
         }
 
     @staticmethod
-    def _next_step(*, youtube_connected: bool, model_configured: bool, api_key_configured: bool) -> str:
+    def _standalone_next_step(*, youtube_connected: bool, model_configured: bool, api_key_configured: bool) -> str:
         if not youtube_connected:
             return "connect_youtube"
         if not api_key_configured:
