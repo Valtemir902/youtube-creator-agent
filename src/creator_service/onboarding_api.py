@@ -42,11 +42,12 @@ def create_app(
     *,
     resolver: CloudTenantResolver | None = None,
     verifier: IntrospectionTokenVerifier | None = None,
+    session_store: OnboardingSessionStore | None = None,
 ) -> FastAPI:
     resolver = resolver or CloudTenantResolver()
     verifier = verifier or IntrospectionTokenVerifier()
     onboarding = OnboardingService(resolver)
-    web_sessions = OnboardingSessionStore(resolver.db)
+    web_sessions = session_store or OnboardingSessionStore(resolver.db)
 
     docs_enabled = os.environ.get("YCA_ENABLE_API_DOCS", "0").strip() == "1"
     app = FastAPI(
@@ -156,14 +157,13 @@ def create_app(
 
     @app.post("/onboarding/logout")
     async def onboarding_logout(request: Request):
+        from fastapi.responses import JSONResponse
         token = request.cookies.get(COOKIE_NAME, "")
         web_sessions.revoke(token)
-        response = {"ok": True}
-        from fastapi.responses import JSONResponse
-        json_response = JSONResponse(response)
-        json_response.delete_cookie(COOKIE_NAME, path="/")
-        json_response.headers["Cache-Control"] = "no-store"
-        return json_response
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE_NAME, path="/")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/api/me")
     async def me(tenant: AuthenticatedTenant = Depends(read_tenant)) -> dict:
