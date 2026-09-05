@@ -95,17 +95,8 @@ class CreatorService:
         video_id = video_id.strip()
         if not video_id:
             raise ValueError("video_id é obrigatório.")
-        response = self._youtube().videos().list(
-            part="snippet",
-            id=video_id,
-            mine=True,
-        ).execute()
+        response = self._youtube().videos().list(part="snippet", id=video_id).execute()
         items = response.get("items", [])
-        if not items:
-            # `mine` is not accepted in every videos.list combination. Fall back to
-            # ID lookup, then ownership is still constrained at update time by OAuth.
-            response = self._youtube().videos().list(part="snippet", id=video_id).execute()
-            items = response.get("items", [])
         if not items:
             raise ValueError("Vídeo não encontrado para a conta conectada.")
         snippet = items[0].get("snippet", {})
@@ -147,6 +138,14 @@ class CreatorService:
             "defaultLanguage": current.get("defaultLanguage"),
         }
 
+    @staticmethod
+    def _approval_envelope(current: dict, proposed: dict) -> dict:
+        signer = signer_from_env()
+        return {
+            "baseline_digest": signer.payload_digest(current),
+            "proposed": proposed,
+        }
+
     def preview_video_metadata_update(
         self,
         *,
@@ -164,10 +163,11 @@ class CreatorService:
             tags=tags,
             current=current,
         )
+        envelope = self._approval_envelope(current, proposed)
         approval_token = signer_from_env().issue(
             "update_video_metadata",
             proposed["video_id"],
-            proposed,
+            envelope,
         )
         changed = {
             key: current.get(key) != proposed.get(key)
@@ -178,18 +178,26 @@ class CreatorService:
             "current": current,
             "proposed": proposed,
             "changed": changed,
+            "approval_payload": envelope,
             "approval_token": approval_token,
             "expires_in_seconds": 900,
             "requires_explicit_user_confirmation": True,
         }
 
-    def apply_video_metadata_update(self, *, proposed: dict, approval_token: str) -> dict:
+    def apply_video_metadata_update(self, *, approval_payload: dict, approval_token: str) -> dict:
         self.context.validate_readiness()
+        proposed = dict(approval_payload.get("proposed", {}) or {})
         video_id = str(proposed.get("video_id", "")).strip()
         if not video_id:
             raise ValueError("video_id ausente no payload aprovado.")
 
         current = self._current_video_snippet(video_id)
+        baseline_digest = str(approval_payload.get("baseline_digest", ""))
+        if not baseline_digest or baseline_digest != signer_from_env().payload_digest(current):
+            raise RuntimeError(
+                "O vídeo mudou desde a prévia. Gere uma nova prévia antes de aplicar."
+            )
+
         normalized = self._normalize_metadata_payload(
             video_id=video_id,
             title=str(proposed.get("title", "")),
@@ -197,15 +205,18 @@ class CreatorService:
             tags=list(proposed.get("tags", []) or []),
             current=current,
         )
-        # Category/defaultLanguage are server-owned fields, not model-controlled.
         normalized["categoryId"] = current["categoryId"]
         normalized["defaultLanguage"] = current.get("defaultLanguage")
+        normalized_envelope = {
+            "baseline_digest": baseline_digest,
+            "proposed": normalized,
+        }
 
         signer_from_env().verify(
             approval_token,
             action="update_video_metadata",
             subject=video_id,
-            payload=normalized,
+            payload=normalized_envelope,
         )
 
         snippet = {
