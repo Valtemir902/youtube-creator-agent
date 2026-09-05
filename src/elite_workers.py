@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 
 import imageio_ffmpeg
-import os
-import shutil
 import torch
 import whisper
 from PySide6.QtCore import QThread, Signal
 
 from ai.runtime import AIRuntime
+from intelligence.strategy_engine import StrategyEngine
 from intelligence.youtube_research import YouTubeResearchEngine
 
 
@@ -56,13 +57,18 @@ class ResearchWorker(QThread):
             op = result.opportunity
             lines = [
                 f"CONSULTA VALIDADA: {result.query}",
+                f"Medido em: {result.measured_at}",
                 f"Opportunity Score: {op.score}/100 | Confiança: {op.confidence}/100",
-                f"Demanda observável: {op.demand_score}/100 | Competição relativa: {op.competition_score}/100",
+                f"Índice de demanda diária: {result.estimated_daily_demand_index}/100 ({result.demand_label})",
+                f"Concorrência: {result.competition_label.upper()} | facilidade relativa: {op.competition_score}/100",
                 f"Resultados medidos: {result.result_count}",
                 f"Mediana de views: {result.median_views:,}",
                 f"Mediana de views/dia: {result.median_views_per_day:,.1f}",
+                f"P75 de views/dia: {result.p75_views_per_day:,.1f}",
                 f"Mediana de inscritos dos concorrentes: {result.median_channel_subscribers:,}",
-                f"Resultados recentes (<=45d): {result.recent_result_rate:.0%}",
+                f"Resultados <=7 dias: {result.fresh_7d_rate:.0%}",
+                f"Resultados <=30 dias: {result.fresh_30d_rate:.0%}",
+                f"Resultados <=90 dias: {result.fresh_90d_rate:.0%}",
                 f"Canais menores rompendo: {result.small_channel_breakout_rate:.0%}",
                 f"Consulta exata no título: {result.exact_title_match_rate:.0%}",
                 "",
@@ -72,10 +78,32 @@ class ResearchWorker(QThread):
             lines.append("\nTop evidências por velocidade:")
             for video in result.evidence[:8]:
                 lines.append(f"- {video.title} | {video.views:,} views | {video.views_per_day:,.0f}/dia | canal {video.subscribers:,} inscritos")
-            lines.append("\nNota: 'demanda' é proxy derivada do conjunto de resultados; não é volume mensal de buscas.")
+            lines.append("\nImportante: o índice diário é derivado de sinais observáveis. A API pública do YouTube não fornece contagem exata de buscas diárias por palavra-chave.")
             self.success.emit("\n".join(lines))
         except Exception as exc:
             self.error.emit(f"Falha na pesquisa: {exc}")
+
+
+class StrategyResearchWorker(QThread):
+    progress = Signal(str)
+    success = Signal(object)
+    error = Signal(str)
+
+    def __init__(self, token_file: str, seed: str, runtime: AIRuntime):
+        super().__init__()
+        self.token_file = token_file
+        self.seed = seed
+        self.runtime = runtime
+
+    def run(self):
+        try:
+            self.progress.emit("Gerando hipóteses de busca para validação...")
+            engine = StrategyEngine(self.token_file, self.runtime)
+            report = engine.build_report(self.seed, candidate_limit=7)
+            self.progress.emit(f"Validação concluída: {len(report.opportunities)} oportunidades aprovadas.")
+            self.success.emit(report)
+        except Exception as exc:
+            self.error.emit(f"Falha na estratégia: {exc}")
 
 
 class EliteSEOAgentWorker(QThread):
@@ -124,37 +152,50 @@ class EliteSEOAgentWorker(QThread):
             self.progress.emit("[3/4] Validando cada hipótese contra métricas reais do YouTube...")
             engine = YouTubeResearchEngine(self.token_file)
             measured = [engine.research(query, 20) for query in hypotheses]
-            measured.sort(key=lambda item: (item.opportunity.score, item.opportunity.confidence), reverse=True)
+            measured.sort(
+                key=lambda item: (
+                    item.opportunity.score,
+                    item.estimated_daily_demand_index,
+                    item.opportunity.competition_score,
+                ),
+                reverse=True,
+            )
             winner = measured[0]
-            if winner.result_count < 5:
+            if winner.result_count < 10 or winner.opportunity.confidence < 60:
                 raise RuntimeError("Não há evidência suficiente no YouTube para gerar SEO confiável para este conteúdo.")
 
             evidence_summary = {
                 "validated_query": winner.query,
+                "measured_at": winner.measured_at,
                 "opportunity": {
                     "score": winner.opportunity.score,
                     "confidence": winner.opportunity.confidence,
-                    "demand": winner.opportunity.demand_score,
+                    "daily_demand_index": winner.estimated_daily_demand_index,
+                    "demand_label": winner.demand_label,
                     "competition": winner.opportunity.competition_score,
+                    "competition_label": winner.competition_label,
                     "reasons": winner.opportunity.reasons,
                 },
                 "metrics": {
                     "result_count": winner.result_count,
                     "median_views": winner.median_views,
                     "median_views_per_day": winner.median_views_per_day,
+                    "p75_views_per_day": winner.p75_views_per_day,
                     "median_channel_subscribers": winner.median_channel_subscribers,
                     "small_channel_breakout_rate": winner.small_channel_breakout_rate,
-                    "recent_result_rate": winner.recent_result_rate,
+                    "fresh_7d_rate": winner.fresh_7d_rate,
+                    "fresh_30d_rate": winner.fresh_30d_rate,
+                    "fresh_90d_rate": winner.fresh_90d_rate,
                 },
                 "top_titles": [v.title for v in winner.evidence[:10]],
             }
 
             self.progress.emit("[4/4] Gerando metadata baseada somente nas evidências validadas...")
             is_short = "short" in self.content_format.lower()
-            format_rule = "YouTube Short: título curto e direto; descrição concisa; não force #shorts." if is_short else "Vídeo longo: título claro e convincente; descrição útil e natural."
+            format_rule = "YouTube Short: título muito claro, forte no primeiro impacto, sem promessa falsa; descrição concisa." if is_short else "Vídeo longo: título persuasivo com curiosidade legítima, benefício claro e forte correspondência com a busca; descrição útil e natural."
             seo_schema = {
                 "youtube": {
-                    "titulos_virais": ["Título recomendado"],
+                    "titulos_virais": ["Título recomendado 1", "Título recomendado 2", "Título recomendado 3"],
                     "descricao_seo": "Descrição recomendada",
                     "tags": ["termo validado"],
                     "keyword_principal": winner.query,
@@ -167,12 +208,13 @@ class EliteSEOAgentWorker(QThread):
                 f"{json.dumps(evidence_summary, ensure_ascii=False)}\n\n"
                 f"TRANSCRIÇÃO:\n{transcript[:12000]}\n\n"
                 f"Retorne JSON neste formato: {json.dumps(seo_schema, ensure_ascii=False)}. "
+                "Crie 3 títulos genuinamente diferentes. Não copie títulos de concorrentes. "
                 "Tags devem ser somente termos semanticamente presentes na transcrição ou na consulta validada; máximo 12."
             )
             seo_resp = self.runtime.generate([
                 {"role": "system", "content": "Você otimiza metadata do YouTube usando somente fatos fornecidos. Nunca alegue volume de pesquisa inexistente, nunca invente keywords, nunca prometa viralização. Responda JSON válido."},
                 {"role": "user", "content": user_prompt},
-            ], temperature=0.15, response_format="json")
+            ], temperature=0.2, response_format="json")
             payload = _parse_json(seo_resp.text)
             yt = payload.setdefault("youtube", {})
             yt["keyword_principal"] = winner.query
