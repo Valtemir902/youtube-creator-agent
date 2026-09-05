@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import urlencode
 
 from pydantic import AnyHttpUrl
 from mcp.server import MCPServer
@@ -15,10 +16,15 @@ READ_SCOPE = "yca:read"
 WRITE_SCOPE = "yca:write"
 
 
-def _tenant_id() -> str:
+def _access_token():
     token = get_access_token()
     if token is None:
         raise PermissionError("Requisição não autenticada.")
+    return token
+
+
+def _tenant_id() -> str:
+    token = _access_token()
     tenant_id = str((token.claims or {}).get("tenant_id", "")).strip()
     if not tenant_id:
         raise PermissionError("Token autenticado sem identidade de tenant.")
@@ -26,16 +32,19 @@ def _tenant_id() -> str:
 
 
 def _require_scope(scope: str) -> None:
-    token = get_access_token()
-    if token is None or scope not in set(token.scopes or []):
+    token = _access_token()
+    if scope not in set(token.scopes or []):
         raise PermissionError(f"Escopo obrigatório ausente: {scope}")
 
 
-def _service():
+def _resolver():
     from .cloud_runtime import CloudTenantResolver
-    from .service import CreatorService
+    return CloudTenantResolver()
 
-    resolver = CloudTenantResolver()
+
+def _service():
+    from .service import CreatorService
+    resolver = _resolver()
     context = resolver.resolve(_tenant_id())
     return CreatorService(context)
 
@@ -74,6 +83,31 @@ def create_server() -> MCPServer:
         """Descreve responsabilidades do ChatGPT, do backend e as limitações das métricas."""
         _require_scope(READ_SCOPE)
         return _service().chatgpt_capabilities()
+
+    @server.tool()
+    def create_onboarding_link() -> dict[str, Any]:
+        """Cria um link web de onboarding de uso único para o usuário autenticado.
+
+        O link expira rapidamente, não contém tenant_id e é trocado no navegador por
+        uma sessão HttpOnly. Use quando o usuário precisar conectar YouTube ou revisar
+        as configurações da conta.
+        """
+        _require_scope(READ_SCOPE)
+        base_url = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
+        if not base_url:
+            raise RuntimeError("YCA_ONBOARDING_PUBLIC_URL não configurada no servidor.")
+        from .onboarding_sessions import OnboardingSessionStore
+        token = _access_token()
+        scopes = list(token.scopes or [])
+        launch = OnboardingSessionStore(_resolver().db).issue_launch(
+            _tenant_id(), scopes, ttl_seconds=600
+        )
+        return {
+            "url": f"{base_url}/onboarding/launch?{urlencode({'token': launch})}",
+            "expires_in_seconds": 600,
+            "single_use": True,
+            "contains_tenant_id": False,
+        }
 
     @server.tool()
     def get_channel_profile(period_days: int = 28) -> dict[str, Any]:
