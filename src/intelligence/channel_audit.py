@@ -17,17 +17,24 @@ def _parse_json(text: str) -> dict:
 
 
 class ChannelAuditEngine:
-    """Evidence-first audit using the selected AI provider.
+    """Evidence-first audit using the selected AI provider."""
 
-    Analytics decides which videos deserve attention. The LLM explains and drafts
-    metadata, but cannot override raw metrics or fabricate search-volume claims.
-    """
-
-    def __init__(self, token_file: str, ai_runtime: AIRuntime):
+    def __init__(
+        self,
+        token_file: str,
+        ai_runtime: AIRuntime,
+        *,
+        youtube_client=None,
+        analytics_client=None,
+    ):
         self.token_file = token_file
         self.ai_runtime = ai_runtime
-        self.learning = ChannelLearningEngine(token_file)
-        self.research = YouTubeResearchEngine(token_file)
+        self.learning = ChannelLearningEngine(
+            token_file,
+            youtube_client=youtube_client,
+            analytics_client=analytics_client,
+        )
+        self.research = YouTubeResearchEngine(token_file, youtube_client=youtube_client)
 
     @staticmethod
     def _profile_context(profile: ChannelProfile) -> dict:
@@ -69,41 +76,31 @@ class ChannelAuditEngine:
         context["market_validation_by_video"] = validations
         schema = {
             "diagnostico_geral": "diagnóstico técnico baseado nos dados",
-            "videos_para_otimizar": [
-                {
-                    "id_video": "id exato fornecido",
-                    "titulo_antigo": "título atual",
-                    "motivo_do_flop": "diagnóstico sem inventar causa",
-                    "sugestao_novo_titulo_viral": "novo título persuasivo sem promessa falsa",
-                    "sugestao_nova_descricao": "descrição natural",
-                    "sugestao_novas_tags": ["termos semanticamente comprovados"],
-                    "confidence": 0,
-                }
-            ],
+            "videos_para_otimizar": [{
+                "id_video": "id exato fornecido",
+                "titulo_antigo": "título atual",
+                "motivo_do_flop": "diagnóstico sem inventar causa",
+                "sugestao_novo_titulo_viral": "novo título persuasivo sem promessa falsa",
+                "sugestao_nova_descricao": "descrição natural",
+                "sugestao_novas_tags": ["termos semanticamente comprovados"],
+                "confidence": 0,
+            }],
         }
         response = self.ai_runtime.generate(
             [
-                {
-                    "role": "system",
-                    "content": (
-                        "Você é um analista de crescimento de YouTube orientado por evidências. "
-                        "Use somente os dados fornecidos. Não alegue causalidade quando os dados só mostram correlação. "
-                        "Não invente CTR, impressões, volume de busca ou retenção. Não prometa viralização. "
-                        "Só recomende alteração de metadata quando houver motivo mensurável. Retorne JSON válido."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"DADOS DO CANAL E VALIDAÇÕES:\n{json.dumps(context, ensure_ascii=False)}\n\n"
-                        f"Retorne no formato: {json.dumps(schema, ensure_ascii=False)}. "
-                        f"No máximo {max_videos_to_recommend} vídeos. Tags: máximo 12 e somente termos presentes no conteúdo fornecido, "
-                        "nos títulos atuais, nos termos reais de busca do canal ou nas validações de mercado."
-                    ),
-                },
-            ],
-            temperature=0.15,
-            response_format="json",
+                {"role": "system", "content": (
+                    "Você é um analista de crescimento de YouTube orientado por evidências. "
+                    "Use somente os dados fornecidos. Não alegue causalidade quando os dados só mostram correlação. "
+                    "Não invente CTR, impressões, volume de busca ou retenção. Não prometa viralização. "
+                    "Só recomende alteração de metadata quando houver motivo mensurável. Retorne JSON válido."
+                )},
+                {"role": "user", "content": (
+                    f"DADOS DO CANAL E VALIDAÇÕES:\n{json.dumps(context, ensure_ascii=False)}\n\n"
+                    f"Retorne no formato: {json.dumps(schema, ensure_ascii=False)}. "
+                    "No máximo 6 vídeos. Tags: máximo 12 e somente termos presentes no conteúdo fornecido, "
+                    "nos títulos atuais, nos termos reais de busca do canal ou nas validações de mercado."
+                )},
+            ], temperature=0.15, response_format="json",
         )
         payload = _parse_json(response.text)
         allowed_ids = {video.video_id: video for video in weak}
@@ -115,13 +112,8 @@ class ChannelAuditEngine:
             original = allowed_ids[video_id]
             item["titulo_antigo"] = original.title
             item["confidence"] = max(0, min(100, int(item.get("confidence", 0) or 0)))
-            item["sugestao_novas_tags"] = [
-                str(tag).strip()
-                for tag in item.get("sugestao_novas_tags", [])
-                if str(tag).strip()
-            ][:12]
+            item["sugestao_novas_tags"] = [str(tag).strip() for tag in item.get("sugestao_novas_tags", []) if str(tag).strip()][:12]
             clean_recommendations.append(item)
-
         return {
             "diagnostico_geral": str(payload.get("diagnostico_geral", "Auditoria concluída.")),
             "videos_para_otimizar": clean_recommendations,
