@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "YouTube Creator Agent",
+  "short_description": "Analisa dados reais do YouTube, valida oportunidades e aplica alterações aprovadas no canal.",
+  "long_description": "Use o ChatGPT como cérebro estratégico e o YouTube Creator Agent como camada autenticada de dados e ações. O app lê YouTube Data API e YouTube Analytics, valida palavras-chave com métricas observáveis, calcula sinais determinísticos e só aplica alterações de metadata após prévia assinada e confirmação explícita.",
+  "category": "productivity",
+  "authentication": "oauth",
+  "mcp_url": "https://SEU-DOMINIO/mcp",
+  "onboarding_url": "https://SEU-DOMINIO/onboarding",
+  "privacy_url": "https://SEU-DOMINIO/privacy",
+  "terms_url": "https://SEU-DOMINIO/terms",
+  "support_url": "https://SEU-DOMINIO/support",
+  "capabilities": {
+    "read": [
+      "channel status",
+      "YouTube Analytics profile",
+      "real search terms that drove views",
+      "keyword opportunity validation",
+      "channel-fit evidence"
+    ],
+    "write": [
+      "preview video title, description and tag changes",
+      "apply an explicitly approved signed metadata change"
+    ]
+  },
+  "data_claims": {
+    "exact_arbitrary_keyword_search_volume": false,
+    "external_ai_required_in_chatgpt_native_mode": false,
+    "writes_require_explicit_confirmation": true,
+    "tenant_identity_comes_from_authenticated_token": true
+  }
+}
