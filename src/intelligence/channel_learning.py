@@ -9,9 +9,6 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.force-ssl",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
@@ -108,8 +105,12 @@ class ChannelProfile:
         matched = sum(weighted[token] for token in query_tokens)
         possible = sum(sorted(weighted.values(), reverse=True)[: max(1, len(query_tokens))])
         lexical = min(1.0, matched / max(possible, 1))
+        normalized_keyword = _normalize(keyword)
         phrase_hits = sum(
-            1 for item in self.top_search_terms if _normalize(keyword) in _normalize(item.term) or _normalize(item.term) in _normalize(keyword)
+            1
+            for item in self.top_search_terms
+            if normalized_keyword in _normalize(item.term)
+            or _normalize(item.term) in normalized_keyword
         )
         phrase = min(1.0, phrase_hits / 3.0)
         return round(max(0.05, min(1.0, 0.25 + lexical * 0.55 + phrase * 0.20)), 4)
@@ -175,6 +176,9 @@ class ChannelLearningEngine:
     def _clients(self):
         if self._youtube is not None and self._analytics is not None:
             return self._youtube, self._analytics
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
         creds = Credentials.from_authorized_user_file(self.token_file, SCOPES)
         if self._youtube is None:
             self._youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
@@ -292,7 +296,9 @@ class ChannelLearningEngine:
             a = analytics_map.get(video_id, {})
             views_28d = int(a.get("views", 0))
             engagement = (
-                int(a.get("likes", 0)) + int(a.get("comments", 0)) * 2 + int(a.get("shares", 0)) * 3
+                int(a.get("likes", 0))
+                + int(a.get("comments", 0)) * 2
+                + int(a.get("shares", 0)) * 3
             ) / max(views_28d, 1)
             performances.append(
                 VideoPerformance(
