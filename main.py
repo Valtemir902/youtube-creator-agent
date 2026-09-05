@@ -8,7 +8,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from app_elite_v5 import run
+from app_elite_v6 import run
 
 
 if __name__ == "__main__":
