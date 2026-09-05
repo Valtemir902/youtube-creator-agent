@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QLabel, QTextEdit, QVBoxLayout, QWidget
 
 from intelligence.continuous_strategy import ContinuousStrategyEngine
 
@@ -34,7 +31,7 @@ class ContinuousStrategyMixin:
         self.cs_momentum_table = self._prepare_table([
             "Keyword", "Atual", "Anterior", "Δ", "Status", "Amostras"
         ])
-        self.cs_momentum_table.horizontalHeader().setSectionResizeMode(0, self.cc_plan_table.horizontalHeader().Stretch)
+        self.cs_momentum_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         root.addWidget(self.cs_momentum_table, 2)
 
         bottom = QHBoxLayout()
