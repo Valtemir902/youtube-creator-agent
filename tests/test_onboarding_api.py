@@ -61,7 +61,7 @@ def test_health_is_public():
     response = client().get("/health")
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert response.json()["version"] == 12
+    assert response.json()["version"] == 13
 
 
 def test_me_requires_authentication():

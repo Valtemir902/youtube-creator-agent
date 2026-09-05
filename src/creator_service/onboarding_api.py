@@ -5,13 +5,16 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .cloud_auth import IntrospectionTokenVerifier
 from .cloud_runtime import CloudTenantResolver
+from .observability import production_http_middleware
 from .onboarding_service import OnboardingService
 from .onboarding_sessions import OnboardingSessionStore
+from .publication import publication_metadata_from_env, publication_readiness
+from .publication_store import PublicationStore
 
 
 COOKIE_NAME = "yca_onboarding_session"
@@ -43,20 +46,56 @@ def create_app(
     resolver: CloudTenantResolver | None = None,
     verifier: IntrospectionTokenVerifier | None = None,
     session_store: OnboardingSessionStore | None = None,
+    publication_store: PublicationStore | None = None,
 ) -> FastAPI:
     resolver = resolver or CloudTenantResolver()
     verifier = verifier or IntrospectionTokenVerifier()
     onboarding = OnboardingService(resolver)
     web_sessions = session_store or OnboardingSessionStore(resolver.db)
+    if publication_store is None and getattr(resolver.db, "path", None) is not None:
+        publication_store = PublicationStore(resolver.db.path)
 
     docs_enabled = os.environ.get("YCA_ENABLE_API_DOCS", "0").strip() == "1"
     app = FastAPI(
         title="YouTube Creator Agent Onboarding API",
-        version="12.0.0",
+        version="13.0.0",
         docs_url="/docs" if docs_enabled else None,
         redoc_url=None,
         openapi_url="/openapi.json" if docs_enabled else None,
     )
+    app.middleware("http")(production_http_middleware)
+
+    def enforce_limit(key: str, *, limit: int, window_seconds: int) -> None:
+        if publication_store is None:
+            return
+        decision = publication_store.consume_rate_limit(
+            key,
+            limit=limit,
+            window_seconds=window_seconds,
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Muitas solicitações. Aguarde e tente novamente.",
+                headers={"Retry-After": str(decision.reset_after_seconds)},
+            )
+
+    def audit(
+        request: Request,
+        event_type: str,
+        outcome: str,
+        tenant_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        if publication_store is None:
+            return
+        publication_store.record_event(
+            event_type=event_type,
+            outcome=outcome,
+            tenant_id=tenant_id,
+            request_id=getattr(request.state, "request_id", None),
+            metadata=metadata,
+        )
 
     async def authenticated_tenant(
         request: Request,
@@ -101,29 +140,46 @@ def create_app(
         )
 
     async def read_tenant(
+        request: Request,
         tenant: AuthenticatedTenant = Depends(authenticated_tenant),
     ) -> AuthenticatedTenant:
         if "yca:read" not in tenant.scopes:
             raise HTTPException(status_code=403, detail="Escopo obrigatório ausente: yca:read")
+        enforce_limit(f"read:{tenant.tenant_id}", limit=240, window_seconds=60)
         return tenant
 
     async def write_tenant(
+        request: Request,
         tenant: AuthenticatedTenant = Depends(authenticated_tenant),
     ) -> AuthenticatedTenant:
         if "yca:write" not in tenant.scopes:
             raise HTTPException(status_code=403, detail="Escopo obrigatório ausente: yca:write")
+        enforce_limit(f"write:{tenant.tenant_id}", limit=40, window_seconds=60)
         return tenant
 
     @app.get("/health")
     async def health() -> dict:
-        return {"ok": True, "service": "youtube-creator-agent-onboarding", "version": 12}
+        return {"ok": True, "service": "youtube-creator-agent-onboarding", "version": 13}
+
+    @app.get("/ready")
+    async def ready():
+        report = publication_readiness()
+        return JSONResponse(report.to_dict(), status_code=200 if report.ready else 503)
+
+    @app.get("/api/app/metadata")
+    async def app_metadata() -> dict:
+        return publication_metadata_from_env().public_dict()
 
     @app.get("/onboarding/launch")
-    async def onboarding_launch(token: str = Query(min_length=32)):
+    async def onboarding_launch(request: Request, token: str = Query(min_length=32)):
+        client_ip = request.client.host if request.client else "unknown"
+        enforce_limit(f"launch:{client_ip}", limit=20, window_seconds=60)
         try:
-            session_token, _identity = web_sessions.exchange_launch(token)
+            session_token, identity = web_sessions.exchange_launch(token)
         except PermissionError as exc:
+            audit(request, "onboarding_launch", "denied")
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+        audit(request, "onboarding_launch", "success", tenant_id=identity.tenant_id)
         response = RedirectResponse("/onboarding", status_code=303)
         secure_cookie = os.environ.get("YCA_SECURE_COOKIES", "1").strip() != "0"
         response.set_cookie(
@@ -157,9 +213,15 @@ def create_app(
 
     @app.post("/onboarding/logout")
     async def onboarding_logout(request: Request):
-        from fastapi.responses import JSONResponse
         token = request.cookies.get(COOKIE_NAME, "")
+        identity = web_sessions.resolve(token)
         web_sessions.revoke(token)
+        audit(
+            request,
+            "onboarding_logout",
+            "success",
+            tenant_id=identity.tenant_id if identity else None,
+        )
         response = JSONResponse({"ok": True})
         response.delete_cookie(COOKIE_NAME, path="/")
         response.headers["Cache-Control"] = "no-store"
@@ -179,8 +241,12 @@ def create_app(
         return onboarding.status(tenant.tenant_id)
 
     @app.post("/api/youtube/connect")
-    async def youtube_connect(tenant: AuthenticatedTenant = Depends(write_tenant)) -> dict:
+    async def youtube_connect(
+        request: Request,
+        tenant: AuthenticatedTenant = Depends(write_tenant),
+    ) -> dict:
         result = onboarding.start_youtube_connection(tenant.tenant_id)
+        audit(request, "youtube_connect_started", "success", tenant_id=tenant.tenant_id)
         return {
             "authorization_url": result["authorization_url"],
             "expires_in_seconds": result["expires_in_seconds"],
@@ -193,6 +259,7 @@ def create_app(
             state=state,
             authorization_response=authorization_response,
         )
+        audit(request, "youtube_connect_completed", "success", tenant_id=result.get("tenant_id"))
         success_url = os.environ.get("YCA_ONBOARDING_SUCCESS_URL", "").strip()
         if success_url:
             separator = "&" if "?" in success_url else "?"
@@ -206,8 +273,13 @@ def create_app(
         }
 
     @app.delete("/api/youtube/connect")
-    async def youtube_disconnect(tenant: AuthenticatedTenant = Depends(write_tenant)) -> dict:
-        return onboarding.disconnect_youtube(tenant.tenant_id)
+    async def youtube_disconnect(
+        request: Request,
+        tenant: AuthenticatedTenant = Depends(write_tenant),
+    ) -> dict:
+        result = onboarding.disconnect_youtube(tenant.tenant_id)
+        audit(request, "youtube_disconnect", "success", tenant_id=tenant.tenant_id)
+        return result
 
     @app.post("/api/ai/test")
     async def ai_test(
@@ -236,10 +308,11 @@ def create_app(
 
     @app.put("/api/ai/config")
     async def ai_config(
+        request: Request,
         payload: AIConfigRequest,
         tenant: AuthenticatedTenant = Depends(write_tenant),
     ) -> dict:
-        return onboarding.configure_ai(
+        result = onboarding.configure_ai(
             tenant.tenant_id,
             provider=payload.provider,
             model=payload.model,
@@ -247,5 +320,13 @@ def create_app(
             base_url=payload.base_url,
             validate_connection=payload.validate_connection,
         )
+        audit(
+            request,
+            "external_ai_configured",
+            "success",
+            tenant_id=tenant.tenant_id,
+            metadata={"provider": payload.provider, "model": payload.model},
+        )
+        return result
 
     return app

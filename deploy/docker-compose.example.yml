@@ -1,0 +1,41 @@
+services:
+  mcp:
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+    command: ["python", "cloud_mcp_server.py"]
+    env_file:
+      - ../config/server.env
+    environment:
+      YCA_MCP_HOST: 0.0.0.0
+      YCA_MCP_PORT: 8000
+      YCA_TENANT_DB: /app/data/tenants.sqlite3
+    volumes:
+      - yca_data:/app/data
+    restart: unless-stopped
+    expose:
+      - "8000"
+
+  onboarding:
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+    command: ["python", "onboarding_server.py"]
+    env_file:
+      - ../config/server.env
+    environment:
+      YCA_ONBOARDING_HOST: 0.0.0.0
+      YCA_ONBOARDING_PORT: 8080
+      YCA_TENANT_DB: /app/data/tenants.sqlite3
+    volumes:
+      - yca_data:/app/data
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+volumes:
+  yca_data:
+
+# This compose file is a single-host example for staging/small deployments.
+# Do not horizontally scale SQLite across multiple hosts. Migrate the tenant,
+# session, rate-limit and audit stores to a network database before multi-host scale.
