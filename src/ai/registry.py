@@ -6,6 +6,7 @@ from .base import AIProvider
 from .gemini import GeminiProvider
 from .ollama import OllamaProvider
 from .openai_compatible import OpenAICompatibleProvider
+from .openai_provider import OpenAIProvider
 from .types import AIProviderConfig
 
 
@@ -20,7 +21,6 @@ class AIProviderRegistry:
     """
 
     DEFAULTS = {
-        "openai": "https://api.openai.com",
         "groq": "https://api.groq.com/openai",
         "xai": "https://api.x.ai",
     }
@@ -29,11 +29,7 @@ class AIProviderRegistry:
         self._factories: dict[str, ProviderFactory] = {
             "gemini": lambda config: GeminiProvider(config),
             "ollama": lambda config: OllamaProvider(config),
-            "openai": lambda config: OpenAICompatibleProvider(
-                config,
-                provider_name="openai",
-                default_base_url=self.DEFAULTS["openai"],
-            ),
+            "openai": lambda config: OpenAIProvider(config),
             "groq": lambda config: OpenAICompatibleProvider(
                 config,
                 provider_name="groq",
