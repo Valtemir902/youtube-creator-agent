@@ -43,12 +43,14 @@ class CreatorService:
 
     def __init__(self, context: CreatorContext):
         from ai.runtime import AIRuntime
+        from intelligence.creator_memory import CreatorMemoryStore
 
         self.context = context
         self.ai_runtime = AIRuntime(
             context.ai_settings_file,
             credential_store=context.credential_store,
         )
+        self.memory = CreatorMemoryStore(context.data_dir / "creator_memory.sqlite3")
 
     def _clients(self):
         return self.context.google_clients()
@@ -65,6 +67,8 @@ class CreatorService:
             "external_ai_configured": external_ai_configured,
             "ai_provider": settings.provider,
             "ai_model": settings.model,
+            "ai_auto_rotate_keys": bool(settings.auto_rotate_keys),
+            "creator_memory_enabled": True,
         }
 
     def chatgpt_capabilities(self) -> dict:
@@ -203,6 +207,10 @@ class CreatorService:
         signer = signer_from_env()
         return {"baseline_digest": signer.payload_digest(current), "proposed": proposed}
 
+    def video_memory_state(self, video_id: str) -> dict:
+        state = self.memory.recent_edit_state(video_id)
+        return _plain(state)
+
     def preview_video_metadata_update(
         self,
         *,
@@ -212,6 +220,7 @@ class CreatorService:
         tags: list[str] | None = None,
     ) -> dict:
         self.context.validate_youtube()
+        self.memory.assert_not_recently_edited(video_id)
         current = self._current_video_snippet(video_id)
         proposed = self._normalize_metadata_payload(
             video_id=video_id,
@@ -239,6 +248,7 @@ class CreatorService:
             "approval_token": approval_token,
             "expires_in_seconds": 900,
             "requires_explicit_user_confirmation": True,
+            "recent_edit_protection": self.video_memory_state(proposed["video_id"]),
         }
 
     def apply_video_metadata_update(self, *, approval_payload: dict, approval_token: str) -> dict:
@@ -247,6 +257,9 @@ class CreatorService:
         video_id = str(proposed.get("video_id", "")).strip()
         if not video_id:
             raise ValueError("video_id ausente no payload aprovado.")
+        # Enforce again at write time in case another surface edited the video
+        # after the preview was created.
+        self.memory.assert_not_recently_edited(video_id)
         current = self._current_video_snippet(video_id)
         baseline_digest = str(approval_payload.get("baseline_digest", ""))
         if not baseline_digest or baseline_digest != signer_from_env().payload_digest(current):
@@ -279,13 +292,24 @@ class CreatorService:
             part="snippet",
             body={"id": video_id, "snippet": snippet},
         ).execute()
+        changed_fields = [
+            key
+            for key in ("title", "description", "tags")
+            if current.get(key) != normalized.get(key)
+        ]
+        self.memory.record_video_action(
+            video_id=video_id,
+            action_type="metadata_update",
+            surface="creator_service",
+            changed_fields=changed_fields,
+            before=current,
+            after=normalized,
+            details={"tenant_id": self.context.tenant_id},
+        )
         return {
             "ok": True,
             "video_id": video_id,
             "title": response.get("snippet", {}).get("title", normalized["title"]),
-            "changed_fields": [
-                key
-                for key in ("title", "description", "tags")
-                if current.get(key) != normalized.get(key)
-            ],
+            "changed_fields": changed_fields,
+            "recent_edit_protection": self.video_memory_state(video_id),
         }
