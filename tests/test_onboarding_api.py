@@ -98,3 +98,14 @@ def test_invalid_token_is_rejected():
         headers={"Authorization": "Bearer invalid"},
     )
     assert response.status_code == 401
+
+
+def test_public_information_pages_are_available_without_authentication():
+    for path, expected_text in (
+        ("/privacy", "Política de Privacidade"),
+        ("/terms", "Termos de Uso"),
+        ("/support", "silvadigitaltech@gmail.com"),
+    ):
+        response = client().get(path)
+        assert response.status_code == 200
+        assert expected_text in response.text
