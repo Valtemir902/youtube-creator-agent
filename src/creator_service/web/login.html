@@ -41,11 +41,16 @@
 
     <div class="pane hidden" id="registerPane">
       <h3>Crie sua conta</h3>
-      <p>Abra o cadastro seguro. A verificação de e-mail e as políticas antiabuso pertencem ao fluxo de identidade, junto do formulário real.</p>
-      <div class="trust"><div><span class="check">✓</span><span>Cadastro separado da autorização do seu canal do YouTube.</span></div><div><span class="check">✓</span><span>Depois do cadastro você conecta somente o canal que quiser gerenciar.</span></div></div>
+      <p>O cadastro protegido acontece em três etapas simples.</p>
+      <div class="trust">
+        <div><span class="check">1</span><span>Informe e-mail, nome e sobrenome.</span></div>
+        <div><span class="check">2</span><span>Confirme o endereço pelo link enviado ao seu e-mail.</span></div>
+        <div><span class="check">3</span><span>Defina sua senha segura e conclua o acesso.</span></div>
+        <div><span class="check">✓</span><span>Depois você conecta apenas o canal do YouTube que quiser gerenciar.</span></div>
+      </div>
     </div>
 
-    <div class="security-note">A proteção contra abuso fica no fluxo de identidade, onde fazem sentido login, cadastro e recuperação de senha. Esta tela não bloqueia mais o acesso por um CAPTCHA intermediário.</div>
+    <div class="security-note">A autenticação, verificação de e-mail e recuperação de senha são executadas pelo provedor de identidade. O Creator Agent nunca recebe sua senha.</div>
     <div class="actions"><button id="continueBtn" class="btn primary" disabled>Continuar para entrar</button><button id="recoverBtn" class="btn secondary" disabled>Esqueci minha senha</button></div>
     <div id="status" class="status" role="status" aria-live="polite">Preparando acesso seguro…</div>
     <div class="smalllinks"><a href="/privacy">Política de Privacidade</a><a href="/terms">Termos de Uso</a><a href="/support">Suporte</a></div>
