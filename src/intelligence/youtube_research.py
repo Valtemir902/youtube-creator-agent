@@ -105,21 +105,25 @@ class YouTubeResearchEngine:
         self._youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
         return self._youtube
 
-    def research(self, query: str, max_results: int = 25) -> KeywordResearchResult:
+    def research(self, query: str, max_results: int = 25, max_age_days: int | None = None) -> KeywordResearchResult:
         query = query.strip()
         if len(query) < 2:
             raise ValueError("Informe uma consulta válida para pesquisa.")
         max_results = max(5, min(50, int(max_results)))
         yt = self._client()
-
-        search = yt.search().list(
-            part="snippet",
-            q=query,
-            type="video",
-            order="relevance",
-            maxResults=max_results,
-            safeSearch="moderate",
-        ).execute()
+        now = self._now_provider()
+        search_args = {
+            "part": "snippet",
+            "q": query,
+            "type": "video",
+            "order": "relevance",
+            "maxResults": max_results,
+            "safeSearch": "moderate",
+        }
+        if max_age_days is not None:
+            days = max(1, min(180, int(max_age_days)))
+            search_args["publishedAfter"] = (now - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+        search = yt.search().list(**search_args).execute()
         items = search.get("items", [])
         ids = [item.get("id", {}).get("videoId") for item in items]
         ids = [vid for vid in ids if vid]
@@ -138,7 +142,6 @@ class YouTubeResearchEngine:
             ch_resp = yt.channels().list(part="statistics", id=",".join(channel_ids), maxResults=len(channel_ids)).execute()
             channels = {c["id"]: c.get("statistics", {}) for c in ch_resp.get("items", [])}
 
-        now = self._now_provider()
         normalized_query = _norm(query)
         evidence = []
         for item in videos:

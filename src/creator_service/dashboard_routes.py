@@ -15,6 +15,13 @@ from fastapi.responses import FileResponse, RedirectResponse
 from googleapiclient.http import MediaFileUpload
 from pydantic import BaseModel, Field
 
+from .dashboard_ai import (
+    channel_identity,
+    grounded_seo_plan,
+    list_live_broadcasts,
+    list_playlists,
+    youtube_transcript,
+)
 from .dashboard_store import DashboardActionStore
 from .safe_service import SafeCreatorService
 from .security import signer_from_env
@@ -65,12 +72,36 @@ class TopicResearchRequest(BaseModel):
     candidate_limit: int = Field(default=8, ge=3, le=12)
 
 
+class AIOptimizeRequest(BaseModel):
+    user_context: str = Field(default="", max_length=4000)
+    max_age_days: int = Field(default=30, ge=1, le=180)
+
+
+class UploadAIPlanRequest(BaseModel):
+    video_name: str = Field(min_length=1, max_length=255)
+    transcript: str = Field(default="", max_length=30000)
+    user_context: str = Field(default="", max_length=4000)
+    max_age_days: int = Field(default=30, ge=1, le=180)
+
+
+class PlaylistCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+    description: str = Field(default="", max_length=5000)
+    privacy_status: str = Field(default="private", pattern="^(public|unlisted|private)$")
+
+
+class PlaylistRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+    description: str = Field(default="", max_length=5000)
+    privacy_status: str = Field(default="private", pattern="^(public|unlisted|private)$")
+
+
 class UploadStartRequest(BaseModel):
     video_name: str = Field(min_length=1, max_length=255)
     video_size: int = Field(gt=0, le=MAX_VIDEO_BYTES)
     thumbnail_name: str | None = Field(default=None, max_length=255)
     thumbnail_size: int = Field(default=0, ge=0, le=MAX_THUMB_BYTES)
-    title: str = Field(min_length=1, max_length=100)
+    title: str = Field(default="", max_length=100)
     description: str = Field(default="", max_length=5000)
     tags: list[str] = Field(default_factory=list, max_length=12)
     format: str = Field(default="long", pattern="^(long|short)$")
@@ -247,6 +278,123 @@ def install_dashboard_routes(
     @app.get("/api/dashboard/channel")
     async def dashboard_channel(period_days: int = 28, tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
         return service_for(tenant.tenant_id).channel_profile(period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/channel/identity")
+    async def dashboard_channel_identity(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        return channel_identity(service._youtube())
+
+    @app.get("/api/dashboard/playlists")
+    async def dashboard_playlists(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        return {"playlists": list_playlists(service._youtube())}
+
+    @app.post("/api/dashboard/playlists")
+    async def dashboard_playlist_create(payload: PlaylistCreateRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        response = service._youtube().playlists().insert(
+            part="snippet,status",
+            body={"snippet": {"title": payload.title.strip(), "description": payload.description.strip()}, "status": {"privacyStatus": payload.privacy_status}},
+        ).execute()
+        audit(request, "dashboard_playlist_created", "success", tenant.tenant_id, {"playlist_id": response.get("id")})
+        return {"ok": True, "playlist": response}
+
+    @app.put("/api/dashboard/playlists/{playlist_id}")
+    async def dashboard_playlist_update(playlist_id: str, payload: PlaylistRenameRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        response = service._youtube().playlists().update(
+            part="snippet,status",
+            body={"id": playlist_id, "snippet": {"title": payload.title.strip(), "description": payload.description.strip()}, "status": {"privacyStatus": payload.privacy_status}},
+        ).execute()
+        audit(request, "dashboard_playlist_updated", "success", tenant.tenant_id, {"playlist_id": playlist_id})
+        return {"ok": True, "playlist": response}
+
+    @app.get("/api/dashboard/live")
+    async def dashboard_live(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        return {"broadcasts": list_live_broadcasts(service._youtube())}
+
+    @app.post("/api/dashboard/video/{video_id}/ai-optimize")
+    async def dashboard_video_ai_optimize(video_id: str, payload: AIOptimizeRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        service.memory.assert_not_recently_edited(video_id)
+        current = service._current_video_snippet(video_id)
+        transcript = youtube_transcript(service._youtube(), video_id)
+        source = transcript.get("text", "") or current.get("description", "") or current.get("title", "")
+        playlists = list_playlists(service._youtube())
+        try:
+            plan = grounded_seo_plan(
+                service, source_text=source, original_title=current.get("title", ""),
+                user_context=payload.user_context, max_age_days=payload.max_age_days, playlists=playlists,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        package = {"video_id": video_id, "baseline_digest": signer_from_env().payload_digest(current), "current": current, "plan": plan}
+        token = signer_from_env().issue("ai_optimize_video", video_id, package)
+        action_id = action_store.put(tenant_id=tenant.tenant_id, kind="ai_optimize_video", payload=package, secret_token=token, ttl_seconds=900)
+        audit(request, "dashboard_ai_optimization_preview", "success", tenant.tenant_id, {"video_id": video_id})
+        return {"action_id": action_id, "video_id": video_id, "current": current, "plan": plan, "transcript": {k: v for k, v in transcript.items() if k != "text"}, "requires_explicit_user_confirmation": True, "expires_in_seconds": 900}
+
+    @app.post("/api/dashboard/ai-optimize/apply/{action_id}")
+    async def dashboard_video_ai_apply(action_id: str, payload: ConfirmRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        if payload.confirmed is not True:
+            raise HTTPException(status_code=400, detail="Confirmação explícita obrigatória.")
+        try:
+            action = action_store.consume(action_id=action_id, tenant_id=tenant.tenant_id, kind="ai_optimize_video")
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        package = dict(action.payload or {})
+        video_id = str(package.get("video_id", "")).strip()
+        signer_from_env().verify(action.secret_token, action="ai_optimize_video", subject=video_id, payload=package)
+        service = service_for(tenant.tenant_id)
+        service.memory.assert_not_recently_edited(video_id)
+        current = service._current_video_snippet(video_id)
+        if signer_from_env().payload_digest(current) != str(package.get("baseline_digest", "")):
+            raise HTTPException(status_code=409, detail="O vídeo mudou desde a análise. Gere uma nova otimização.")
+        plan = dict(package.get("plan", {}) or {})
+        tags = _clean_tags(list(plan.get("tags", []) or []))
+        snippet = {
+            "title": str(plan.get("title", current["title"]))[:100],
+            "description": str(plan.get("description", current["description"]))[:5000],
+            "tags": tags,
+            "categoryId": str(plan.get("category_id") or current.get("categoryId") or "22"),
+        }
+        language = str(plan.get("language") or current.get("defaultLanguage") or "").strip()
+        if language:
+            snippet["defaultLanguage"] = language
+        response = service._youtube().videos().update(part="snippet", body={"id": video_id, "snippet": snippet}).execute()
+        playlist_id = str(plan.get("playlist_id", "")).strip()
+        playlist_added = False
+        if playlist_id:
+            try:
+                service._youtube().playlistItems().insert(
+                    part="snippet", body={"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}},
+                ).execute()
+                playlist_added = True
+            except Exception:
+                playlist_added = False
+        service.memory.record_video_action(video_id=video_id, action_type="ai_metadata_update", surface="dashboard_web", changed_fields=["title", "description", "tags", "categoryId"], before=current, after=snippet, details={"tenant_id": tenant.tenant_id, "playlist_id": playlist_id})
+        audit(request, "dashboard_ai_optimization_applied", "success", tenant.tenant_id, {"video_id": video_id})
+        return {"ok": True, "video_id": video_id, "title": response.get("snippet", {}).get("title", snippet["title"]), "playlist_added": playlist_added}
+
+    @app.post("/api/dashboard/upload/ai-plan")
+    async def dashboard_upload_ai_plan(payload: UploadAIPlanRequest, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        try:
+            plan = grounded_seo_plan(
+                service, source_text=payload.transcript, original_title=payload.video_name, user_context=payload.user_context,
+                max_age_days=payload.max_age_days, playlists=list_playlists(service._youtube()),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"plan": plan, "requires_review": True}
 
     @app.get("/api/dashboard/videos")
     async def dashboard_videos(limit: int = 20, tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
