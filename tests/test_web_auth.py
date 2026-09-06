@@ -23,6 +23,7 @@ def oidc(monkeypatch) -> BrowserOIDCClient:
     monkeypatch.setenv("YCA_WEB_OIDC_CLIENT_SECRET", "server-secret")
     monkeypatch.setenv("YCA_ONBOARDING_PUBLIC_URL", "https://creator.example.com")
     monkeypatch.delenv("YCA_WEB_OIDC_REDIRECT_URI", raising=False)
+    monkeypatch.delenv("YCA_WEB_OIDC_BACKCHANNEL_BASE_URL", raising=False)
     return BrowserOIDCClient()
 
 
@@ -64,6 +65,25 @@ def test_recovery_url_uses_supported_forgot_credentials_flow(tmp_path, monkeypat
     pending = make_store(tmp_path).issue(mode="recover")
     parsed = urlparse(client.authorization_url(pending))
     assert parsed.path.endswith("/protocol/openid-connect/forgot-credentials")
+
+
+def test_backchannel_override_keeps_browser_urls_public(monkeypatch):
+    monkeypatch.setenv("YCA_WEB_OIDC_ISSUER_URL", "https://auth.example.com/realms/yca")
+    monkeypatch.setenv("YCA_WEB_OIDC_BACKCHANNEL_BASE_URL", "http://keycloak:8080/realms/yca")
+    monkeypatch.setenv("YCA_WEB_OIDC_CLIENT_ID", "creator-web")
+    monkeypatch.setenv("YCA_WEB_OIDC_CLIENT_SECRET", "server-secret")
+    monkeypatch.setenv("YCA_ONBOARDING_PUBLIC_URL", "https://creator.example.com")
+    client = BrowserOIDCClient()
+    assert client.authorization_endpoint == "https://auth.example.com/realms/yca/protocol/openid-connect/auth"
+    assert client.logout_endpoint == "https://auth.example.com/realms/yca/protocol/openid-connect/logout"
+    assert client.token_endpoint == "http://keycloak:8080/realms/yca/protocol/openid-connect/token"
+    assert client.userinfo_endpoint == "http://keycloak:8080/realms/yca/protocol/openid-connect/userinfo"
+
+
+def test_backchannel_defaults_to_public_issuer(monkeypatch):
+    client = oidc(monkeypatch)
+    assert client.token_endpoint == "https://auth.example.com/realms/yca/protocol/openid-connect/token"
+    assert client.userinfo_endpoint == "https://auth.example.com/realms/yca/protocol/openid-connect/userinfo"
 
 
 def test_tenant_identity_is_stable_for_same_subject(monkeypatch):
