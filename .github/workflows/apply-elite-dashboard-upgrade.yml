@@ -20,97 +20,27 @@ jobs:
           ref: feat/web-dashboard-v1
           fetch-depth: 0
 
-      - name: Apply professional UI and channel-context upgrade
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
+      - name: Apply deterministic dashboard upgrade
+        run: python scripts/apply_elite_dashboard_upgrade.py
 
-          dashboard = Path('src/creator_service/web/dashboard.html')
-          text = dashboard.read_text(encoding='utf-8')
-
-          polish = r'''
-    /* Elite UX hardening */
-    button,.btn,a.btn,input,textarea,select{min-height:46px}
-    button,.btn,a.btn{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
-    button:focus-visible,.btn:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-    .card{overflow:hidden;transition:border-color .18s ease,transform .18s ease,box-shadow .18s ease}
-    .card:hover{transform:translateY(-2px);box-shadow:0 24px 70px rgba(0,0,0,.38),0 0 26px color-mix(in srgb,var(--accent) 8%,transparent)}
-    .channel-intel{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px}
-    .intel-chip{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:14px;padding:13px;background:linear-gradient(145deg,color-mix(in srgb,var(--card2) 96%,transparent),color-mix(in srgb,var(--accent) 5%,var(--card2)))}
-    .intel-chip::after{content:'';position:absolute;inset:auto -25% -70% 25%;height:90px;background:radial-gradient(circle,color-mix(in srgb,var(--accent) 18%,transparent),transparent 70%);pointer-events:none}
-    .intel-chip small{display:block;color:var(--muted);font-size:11px;margin-bottom:4px}.intel-chip strong{display:block;font-size:18px;line-height:1.25;overflow-wrap:anywhere}
-    .video-item{position:relative;transition:.18s transform,.18s border-color,.18s background}.video-item:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--accent) 42%,var(--line));background:color-mix(in srgb,var(--accent) 4%,var(--card2))}
-    .thumb{display:block;border:1px solid color-mix(in srgb,var(--line) 85%,transparent);box-shadow:0 10px 28px #0007}.thumb-fallback{display:grid;place-items:center;color:var(--muted);font-size:11px;text-align:center;padding:8px}
-    .video-title{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;overflow-wrap:anywhere}
-    .stats span{display:inline-flex;align-items:center;min-height:25px;padding:2px 7px;border:1px solid color-mix(in srgb,var(--line) 70%,transparent);border-radius:999px;background:color-mix(in srgb,var(--bg) 42%,transparent)}
-    .section.active{animation:sectionIn .24s ease both}@keyframes sectionIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-    .kpi{position:relative;overflow:hidden}.kpi::before{content:'';position:absolute;left:0;right:0;top:0;height:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:.72}
-    .mobile-nav button{min-width:0;min-height:52px;touch-action:manipulation}
-    @media(max-width:1050px){.channel-intel{grid-template-columns:repeat(3,minmax(0,1fr))}}
-    @media(max-width:760px){
-      body{overflow-x:hidden}.topbar{padding-top:max(12px,env(safe-area-inset-top))}.content{padding-left:14px;padding-right:14px;padding-bottom:calc(112px + env(safe-area-inset-bottom))}
-      .channel-intel{grid-template-columns:1fr 1fr}.intel-chip{padding:12px}.intel-chip strong{font-size:16px}
-      .video-item{grid-template-columns:118px minmax(0,1fr);padding:12px;gap:12px}.thumb{width:118px}.video-actions{gap:8px}.video-actions .btn{min-height:48px;display:grid;place-items:center}
-      .mobile-nav{left:10px;right:10px;bottom:max(8px,env(safe-area-inset-bottom));padding:6px}.mobile-nav button{font-size:10px;padding:7px 1px}
-      .top-actions .btn{min-width:72px}.card{border-radius:20px;padding:16px}.metric{font-size:30px}.kpi strong{font-size:26px}
-    }
-    @media(max-width:420px){.video-item{grid-template-columns:104px minmax(0,1fr)}.thumb{width:104px}.channel-intel{grid-template-columns:1fr 1fr}.mobile-nav button{font-size:9px}.titlebox h2{font-size:19px}}
-    @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
-          '''
-          if '/* Elite UX hardening */' not in text:
-              text = text.replace('  </style>', polish + '\n  </style>', 1)
-
-          old_cap = '<article class="card"><h3>Capacidades conectadas</h3><div id="capabilities" class="muted">Consultando...</div></article>'
-          intel = '''<article class="card"><h3>Capacidades conectadas</h3><div id="capabilities" class="muted">Consultando...</div></article>
-          <article class="card full"><div class="toolbar" style="justify-content:space-between"><div><h3 style="margin:0">Inteligência do mercado do canal</h3><div class="muted">Contexto usado para SEO, pautas e recomendações. Cada canal mantém seu próprio perfil.</div></div><span class="pill"><span class="dot ok"></span> contexto isolado por canal</span></div><div class="channel-intel" style="margin-top:12px"><div class="intel-chip"><small>Idioma estratégico</small><strong id="marketLanguage">Detectando…</strong></div><div class="intel-chip"><small>País / mercado</small><strong id="marketCountry">Detectando…</strong></div><div class="intel-chip"><small>Views via busca</small><strong id="searchShare">—</strong></div><div class="intel-chip"><small>Shorts no período</small><strong id="shortShare">—</strong></div><div class="intel-chip"><small>Longos no período</small><strong id="longShare">—</strong></div><div class="intel-chip"><small>Sinal dominante</small><strong id="topSignal">—</strong></div></div></article>'''
-          if 'id="marketLanguage"' not in text:
-              assert old_cap in text, 'capabilities card anchor missing'
-              text = text.replace(old_cap, intel, 1)
-
-          new_load_channel = r'''async function loadChannel(){try{const d=await api('/api/dashboard/channel?period_days=28');$('profileRaw').textContent=JSON.stringify(d,null,2);$('kpiSubs').textContent=fmt(findDeep(d,['subscribers','subscriber_count','subscriberCount']));$('kpiViews').textContent=fmt(findDeep(d,['total_analytics_views','views','view_count','viewCount','total_views']));$('kpiVideos').textContent=fmt(findDeep(d,['video_count','videos','videoCount','videos_analyzed']));const watch=findDeep(d,['watch_time_hours','watchTimeHours','watch_time','estimated_minutes_watched']);$('kpiWatch').textContent=watch===undefined?'—':val(watch);const title=findDeep(d,['channel_title','title','channelTitle']);const niche=findDeep(d,['niche','nicho','dominant_topics','topic_terms']);const language=findDeep(d,['default_language','defaultLanguage','language_hint'])||'Não definido';const country=findDeep(d,['country','market_country'])||'Global';const search=Number(findDeep(d,['search_share'])||0);const shorts=Number(findDeep(d,['shorts_share_of_recent_views'])||0);const longs=Number(findDeep(d,['long_share_of_recent_views'])||0);const signals=findDeep(d,['top_search_terms','topic_terms']);$('marketLanguage').textContent=language;$('marketCountry').textContent=country;$('searchShare').textContent=(search*100).toFixed(1)+'%';$('shortShare').textContent=(shorts*100).toFixed(1)+'%';$('longShare').textContent=(longs*100).toFixed(1)+'%';$('topSignal').textContent=Array.isArray(signals)&&signals.length?String(signals[0]?.term||signals[0]):'Coletando';$('profileSummary').textContent=`${title||'Canal conectado'} · contexto ${language}${country&&country!=='Global'?' / '+country:''}${niche?' · '+val(Array.isArray(niche)?niche.slice(0,5):niche):''}. Estratégias e SEO devem respeitar este perfil, não o idioma da conta Google.`}catch(e){$('profileSummary').textContent=e.message;for(const id of ['marketLanguage','marketCountry','searchShare','shortShare','longShare','topSignal'])if($(id))$(id).textContent='Indisponível'}}'''
-          text, n = re.subn(r"async function loadChannel\(\)\{.*?\}\nasync function loadCapabilities", new_load_channel + '\nasync function loadCapabilities', text, count=1, flags=re.S)
-          assert n == 1, 'loadChannel replacement failed'
-
-          new_load_videos = r'''async function loadVideos(){const box=$('videoList');box.innerHTML='<div class="muted"><span class="loader"></span> Carregando vídeos e miniaturas...</div>';try{const d=await api('/api/dashboard/videos?limit=30');lastVideos=d.videos||[];if(!lastVideos.length){box.innerHTML='<div class="notice">Nenhum vídeo encontrado.</div>';return}box.innerHTML=lastVideos.map(v=>{const thumb=v.thumbnail||`https://i.ytimg.com/vi/${encodeURIComponent(v.id)}/mqdefault.jpg`;return `<div class="video-item"><img class="thumb" loading="lazy" decoding="async" src="${esc(thumb)}" alt="Miniatura de ${esc(v.title)}" onerror="this.onerror=null;this.src='https://i.ytimg.com/vi/${encodeURIComponent(v.id)}/hqdefault.jpg'"><div><div class="video-title" title="${esc(v.title)}">${esc(v.title)}</div><div class="stats"><span>${fmt(v.views)} views</span><span>${fmt(v.likes)} likes</span><span>${fmt(v.comments)} comentários</span><span>${esc(v.privacy_status||'')}</span>${v.memory?.protected?'<span class="bad">Cooldown</span>':'<span class="good">Editável</span>'}</div></div><div class="video-actions"><button class="btn" data-edit-video="${esc(v.id)}" aria-label="Editar ${esc(v.title)}">Editar</button><button class="btn" data-inspect-video="${esc(v.id)}" aria-label="Ver detalhes de ${esc(v.title)}">Detalhes</button><a class="btn" target="_blank" rel="noopener" href="https://youtu.be/${encodeURIComponent(v.id)}" aria-label="Abrir vídeo no YouTube">Abrir</a></div></div>`}).join('');document.querySelectorAll('[data-edit-video]').forEach(b=>b.onclick=()=>selectVideo(b.dataset.editVideo,true));document.querySelectorAll('[data-inspect-video]').forEach(b=>b.onclick=()=>selectVideo(b.dataset.inspectVideo,false))}catch(e){box.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}}'''
-          text, n = re.subn(r"async function loadVideos\(\)\{.*?\}\n\$\('reloadVideos'\)\.onclick=loadVideos;", new_load_videos + "\n$('reloadVideos').onclick=loadVideos;", text, count=1, flags=re.S)
-          assert n == 1, 'loadVideos replacement failed'
-
-          text = text.replace('<nav class="mobile-nav">', '<nav class="mobile-nav" aria-label="Navegação principal do painel">', 1)
-          text = text.replace('<button class="active" data-mobile-tab="overview">◈<br>Início</button>', '<button class="active" data-mobile-tab="overview" aria-label="Início">◈<br>Início</button>', 1)
-          text = text.replace('<button data-mobile-tab="videos">▶<br>Vídeos</button>', '<button data-mobile-tab="videos" aria-label="Vídeos">▶<br>Vídeos</button>', 1)
-          text = text.replace('<button data-mobile-tab="strategy">⌁<br>Estratégia</button>', '<button data-mobile-tab="strategy" aria-label="Estratégia">⌁<br>Estratégia</button>', 1)
-          text = text.replace('<button data-mobile-tab="audit">◎<br>Auditar</button>', '<button data-mobile-tab="audit" aria-label="Auditoria">◎<br>Auditar</button>', 1)
-          text = text.replace('<button data-mobile-tab="publish">↑<br>Publicar</button>', '<button data-mobile-tab="publish" aria-label="Publicar">↑<br>Publicar</button>', 1)
-          text = text.replace('<button data-mobile-tab="settings">⚙<br>Ajustes</button>', '<button data-mobile-tab="settings" aria-label="Configurações">⚙<br>Ajustes</button>', 1)
-          dashboard.write_text(text, encoding='utf-8')
-
-          learning = Path('src/intelligence/channel_learning.py')
-          code = learning.read_text(encoding='utf-8')
-          if 'default_language: str' not in code:
-              code = code.replace('    channel_title: str\n    subscribers: int\n', '    channel_title: str\n    country: str\n    default_language: str\n    subscribers: int\n', 1)
-              code = code.replace('part="snippet,statistics,contentDetails", mine=True', 'part="snippet,statistics,contentDetails,brandingSettings", mine=True', 1)
-              code = code.replace('        stats = channel.get("statistics", {})\n        uploads =', '        stats = channel.get("statistics", {})\n        branding = channel.get("brandingSettings", {}).get("channel", {})\n        country = str(snippet.get("country") or branding.get("country") or "").upper()\n        default_language = str(snippet.get("defaultLanguage") or branding.get("defaultLanguage") or "").strip()\n        uploads =', 1)
-              code = code.replace('            channel_title=str(snippet.get("title", "Canal")),\n            subscribers=', '            channel_title=str(snippet.get("title", "Canal")),\n            country=country or "GLOBAL",\n            default_language=default_language or "und",\n            subscribers=', 1)
-          learning.write_text(code, encoding='utf-8')
-
-          test = Path('tests/test_dashboard_elite_ui.py')
-          test.write_text('''from pathlib import Path\n\n\ndef test_dashboard_elite_mobile_contract():\n    html = Path("src/creator_service/web/dashboard.html").read_text(encoding="utf-8")\n    assert "Elite UX hardening" in html\n    assert "id=\\"marketLanguage\\"" in html\n    assert "min-height:52px" in html\n    assert "aria-label=\\"Navegação principal do painel\\"" in html\n    assert "loading=\\"lazy\\"" in html\n    assert "i.ytimg.com/vi/" in html\n\n\ndef test_csp_allows_youtube_thumbnail_hosts():\n    code = Path("src/creator_service/observability.py").read_text(encoding="utf-8")\n    assert "https://i.ytimg.com" in code\n    assert "https://yt3.ggpht.com" in code\n\n\ndef test_channel_profile_keeps_market_context():\n    code = Path("src/intelligence/channel_learning.py").read_text(encoding="utf-8")\n    assert "country: str" in code\n    assert "default_language: str" in code\n    assert "brandingSettings" in code\n''', encoding='utf-8')
-          PY
-
-      - name: Validate syntax and static contracts
-        shell: bash
+      - name: Validate Python and dashboard contracts
         run: |
           python -m compileall -q src
           python -m pytest -q tests/test_dashboard_elite_ui.py
-          node --check <(python - <<'PY'
+
+      - name: Validate inline JavaScript syntax
+        shell: bash
+        run: |
+          python - <<'PY' > /tmp/dashboard-inline.js
           from pathlib import Path
           import re
-          text=Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
-          print(re.search(r'<script>(.*?)</script>', text, re.S).group(1))
+          text = Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
+          match = re.search(r'<script>(.*?)</script>', text, re.S)
+          if not match:
+              raise SystemExit('dashboard inline script not found')
+          print(match.group(1))
           PY
-          )
+          node --check /tmp/dashboard-inline.js
 
       - name: Commit upgrade to dashboard branch
         shell: bash
