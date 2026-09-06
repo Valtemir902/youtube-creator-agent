@@ -1,0 +1,117 @@
+name: Auth Real E2E
+
+on:
+  workflow_run:
+    workflows: ["Deploy Production"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  auth-e2e:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BASE_URL: https://creator.silvadigitaltech.com
+      AUTH_HOST: auth.silvadigitaltech.com
+      E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+      E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run authentication browser audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/auth-e2e
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          const base = process.env.BASE_URL;
+          const authHost = process.env.AUTH_HOST;
+          const testEmail = process.env.E2E_TEST_EMAIL || '';
+          const testPassword = process.env.E2E_TEST_PASSWORD || '';
+          const failures = [];
+          const notes = [];
+          const check = (ok, msg) => { if (!ok) failures.push(msg); else notes.push(msg); };
+
+          (async()=>{
+            const browser = await chromium.launch({headless:true});
+            const ctx = await browser.newContext({viewport:{width:1440,height:1000},locale:'pt-BR'});
+            const page = await ctx.newPage();
+            const shot = name => page.screenshot({path:`artifacts/auth-e2e/${name}.png`,fullPage:true});
+
+            await page.goto(`${base}/login`, {waitUntil:'networkidle',timeout:30000});
+            await page.waitForFunction(()=>!document.querySelector('#continueBtn')?.disabled, null, {timeout:15000});
+            await shot('01-login');
+
+            await page.getByRole('button',{name:'Criar conta'}).click();
+            await shot('02-register-tab');
+            await Promise.all([
+              page.waitForURL(url=>url.hostname===authHost,{timeout:20000}),
+              page.getByRole('button',{name:'Criar minha conta'}).click(),
+            ]);
+            await page.waitForLoadState('networkidle');
+            await shot('03-keycloak-register');
+            const regPw = await page.locator('input[type="password"]').count();
+            check(regPw >= 2, `Cadastro deve solicitar senha e confirmação; encontrados ${regPw} campos de senha.`);
+
+            await page.goto(`${base}/login`, {waitUntil:'networkidle',timeout:30000});
+            await page.waitForFunction(()=>!document.querySelector('#continueBtn')?.disabled, null, {timeout:15000});
+            await Promise.all([
+              page.waitForURL(url=>url.hostname===authHost,{timeout:20000}),
+              page.getByRole('button',{name:'Continuar para entrar'}).click(),
+            ]);
+            await page.waitForLoadState('networkidle');
+            await shot('04-keycloak-login');
+            check((await page.locator('input[type="password"]').count()) >= 1, 'Login possui campo de senha.');
+            check((await page.locator('input[name="username"],input[type="email"]').count()) >= 1, 'Login possui campo de e-mail/usuário.');
+
+            if (testEmail && testPassword) {
+              const user = page.locator('input[name="username"],input[type="email"]').first();
+              const pass = page.locator('input[type="password"]').first();
+              await user.fill(testEmail);
+              await pass.fill(testPassword);
+              const submit = page.locator('input[type="submit"],button[type="submit"]').first();
+              await Promise.all([
+                page.waitForURL(url=>url.hostname==='creator.silvadigitaltech.com',{timeout:30000}),
+                submit.click(),
+              ]);
+              await page.waitForLoadState('networkidle');
+              await shot('05-after-real-login');
+              check(page.url().includes('/dashboard'), `Login real deve terminar em /dashboard; URL final: ${page.url()}`);
+            } else {
+              notes.push('Login real não executado: configure E2E_TEST_EMAIL e E2E_TEST_PASSWORD em GitHub Actions secrets.');
+            }
+
+            fs.writeFileSync('artifacts/auth-e2e/result.json', JSON.stringify({failures,notes,finalUrl:page.url()},null,2));
+            await browser.close();
+            if (failures.length) {
+              console.error(failures.join('\n'));
+              process.exit(1);
+            }
+          })().catch(err=>{console.error(err.stack||err);process.exit(1);});
+          NODE
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-real-e2e-artifacts
+          path: artifacts/auth-e2e/
+          if-no-files-found: warn
