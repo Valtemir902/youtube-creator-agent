@@ -1,47 +1,29 @@
-FROM python:3.11-slim AS whisper-builder
-
-ARG WHISPER_CPP_REF=v1.7.6
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git cmake build-essential && \
-    rm -rf /var/lib/apt/lists/*
-RUN git clone --depth 1 --branch ${WHISPER_CPP_REF} https://github.com/ggerganov/whisper.cpp.git /src/whisper.cpp && \
-    cmake -S /src/whisper.cpp -B /src/whisper.cpp/build \
-      -DBUILD_SHARED_LIBS=OFF \
-      -DWHISPER_BUILD_TESTS=OFF \
-      -DWHISPER_BUILD_EXAMPLES=ON \
-      -DGGML_NATIVE=OFF && \
-    cmake --build /src/whisper.cpp/build --config Release -j2 && \
-    mkdir -p /opt/whisper/bin /opt/whisper/models && \
-    cp /src/whisper.cpp/build/bin/whisper-cli /opt/whisper/bin/whisper-cli && \
-    /src/whisper.cpp/models/download-ggml-model.sh base && \
-    cp /src/whisper.cpp/models/ggml-base.bin /opt/whisper/models/ggml-base.bin
-
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
     PIP_NO_CACHE_DIR=1 \
-    YCA_WHISPER_BIN=/opt/whisper/bin/whisper-cli \
-    YCA_WHISPER_MODEL=/opt/whisper/models/ggml-base.bin \
-    YCA_FFMPEG_BIN=/usr/bin/ffmpeg \
+    XDG_CACHE_HOME=/opt/yca-cache \
+    YCA_WHISPER_MODEL=base \
     YCA_WHISPER_THREADS=4
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libgomp1 && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd --create-home --uid 10001 appuser
+RUN useradd --create-home --uid 10001 appuser && \
+    mkdir -p /opt/yca-cache /app/data && \
+    chown -R appuser:appuser /opt/yca-cache /app
 
-COPY --from=whisper-builder /opt/whisper /opt/whisper
 COPY requirements-server.txt ./
 RUN python -m pip install --upgrade pip && \
-    python -m pip install -r requirements-server.txt
+    python -m pip install -r requirements-server.txt && \
+    python -c "from pywhispercpp.model import Model; Model('base', print_progress=False, print_realtime=False)" && \
+    chmod -R a+rX /opt/yca-cache
 
 COPY src ./src
 COPY cloud_mcp_server.py onboarding_server.py ./
 
-RUN mkdir -p /app/data && chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000
