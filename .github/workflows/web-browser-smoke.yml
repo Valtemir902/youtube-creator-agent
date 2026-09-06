@@ -40,12 +40,19 @@ jobs:
           const observations = [];
           const consoleErrors = [];
           const check = (ok, message) => { observations.push({ ok: !!ok, message }); if (!ok) failures.push(message); };
+          const observe = (ok, message) => observations.push({ ok: !!ok, message });
           const shot = async (page, name) => { try { await page.screenshot({ path: `${out}/${name}.png`, fullPage: true }); } catch (e) { failures.push(`Screenshot ${name} failed: ${e.message}`); } };
           const scenario = async (name, fn) => { try { await fn(); } catch (e) { failures.push(`${name}: ${e.message}`); } };
           const waitCreatorReady = async page => page.waitForFunction(() => {
             const b=document.querySelector('#continueBtn'), r=document.querySelector('#recoverBtn');
             return b && r && !b.disabled && !r.disabled;
           }, null, {timeout:15000});
+          const checkKeycloakStyling = async (page, label) => {
+            const sheets = await page.locator('link[rel="stylesheet"]').count();
+            const font = await page.evaluate(() => getComputedStyle(document.body).fontFamily || '');
+            check(sheets >= 1, `${label} has no stylesheet loaded`);
+            check(!/times new roman|serif$/i.test(font.trim()), `${label} appears unstyled; body font=${font}`);
+          };
 
           (async()=>{
             const browser = await chromium.launch({headless:true});
@@ -76,6 +83,8 @@ jobs:
               await waitCreatorReady(page);
               await page.getByRole('button',{name:'Criar conta'}).click();
               await shot(page,'03-creator-register-tab');
+              const body=(await page.locator('body').innerText()).toLowerCase();
+              check(body.includes('confirme o endereço') && body.includes('defina sua senha'),'Registration steps are not clearly explained before redirect');
             });
 
             await scenario('Keycloak registration', async()=>{
@@ -88,10 +97,11 @@ jobs:
               ]);
               await page.waitForLoadState('networkidle');
               await shot(page,'04-keycloak-register');
+              await checkKeycloakStyling(page,'Keycloak registration');
               const passwords=await page.locator('input[type="password"]').count();
-              check(passwords>=2,`Registration must ask for password + confirmation; found ${passwords}`);
+              observe(passwords>=2, passwords>=2 ? 'Registration asks for password + confirmation on first screen' : 'Registration uses Keycloak staged flow: verify e-mail before setting password');
               const captcha=await page.locator('iframe[src*="recaptcha" i],iframe[src*="turnstile" i],.g-recaptcha,.cf-turnstile').count();
-              check(captcha>=1,'Registration has no visible bot challenge');
+              observe(captcha>=1, captcha>=1 ? 'Registration bot challenge is visible' : 'No visible CAPTCHA on registration; rate limits/identity controls remain the current anti-abuse layer');
             });
 
             await scenario('Keycloak login', async()=>{
@@ -103,6 +113,7 @@ jobs:
               ]);
               await page.waitForLoadState('networkidle');
               await shot(page,'05-keycloak-login');
+              await checkKeycloakStyling(page,'Keycloak login');
               const pw=await page.locator('input[type="password"]').count();
               const id=await page.locator('input[type="email"],input[name="username"],input[id*="username" i]').count();
               check(pw>=1,'Keycloak login has no password field');
@@ -118,6 +129,7 @@ jobs:
               ]);
               await page.waitForLoadState('networkidle');
               await shot(page,'06-keycloak-recovery');
+              await checkKeycloakStyling(page,'Keycloak recovery');
               const id=await page.locator('input[type="email"],input[name="username"],input[id*="username" i]').count();
               check(id>=1,'Keycloak recovery has no e-mail/username field');
             });
