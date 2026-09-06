@@ -9,6 +9,7 @@ from pydantic import AnyHttpUrl
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
+from mcp.types import ToolAnnotations
 
 from .cloud_auth import IntrospectionTokenVerifier
 
@@ -103,24 +104,49 @@ def create_server() -> MCPServer:
         ),
     )
 
-    @server.tool()
+    @server.tool(
+        title="Verificar status do canal",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+        ),
+    )
     def creator_status() -> dict[str, Any]:
         """Leitura: verifica conexão e prontidão da conta. Não modifica o YouTube."""
         _require_scope(READ_SCOPE)
         _limit("read", limit=180)
         return _service().status()
 
-    @server.tool()
+    @server.tool(
+        title="Ver capacidades do YouTube Creator Agent",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+        ),
+    )
     def get_creator_capabilities() -> dict[str, Any]:
         """Leitura: descreve capacidades, responsabilidades e limitações das métricas. Não modifica o YouTube."""
         _require_scope(READ_SCOPE)
         _limit("read", limit=180)
         return _service().chatgpt_capabilities()
 
-    @server.tool()
+    @server.tool(
+        title="Criar link seguro de conexão",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+        ),
+    )
     def create_onboarding_link() -> dict[str, Any]:
-        """Leitura/configuração: cria um link de onboarding de uso único com validade de 10 minutos.
+        """Configuração: cria um link de onboarding de uso único com validade de 10 minutos.
 
+        Esta ação cria estado temporário no serviço, mas não modifica o canal do YouTube.
         Use apenas quando o usuário precisar conectar o YouTube ou revisar a própria conta.
         O link não contém tenant_id e é trocado por uma sessão HttpOnly no navegador.
         """
@@ -143,14 +169,30 @@ def create_server() -> MCPServer:
             "contains_tenant_id": False,
         }
 
-    @server.tool()
+    @server.tool(
+        title="Obter perfil e métricas do canal",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+        ),
+    )
     def get_channel_profile(period_days: int = 28) -> dict[str, Any]:
         """Leitura: obtém métricas reais do canal autenticado para 7 a 90 dias, sem chamar IA externa."""
         _require_scope(READ_SCOPE)
         _limit("analytics", limit=60)
         return _service().channel_profile(period_days=period_days)
 
-    @server.tool()
+    @server.tool(
+        title="Obter evidências para estratégia",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+        ),
+    )
     def get_strategy_evidence(period_days: int = 28) -> dict[str, Any]:
         """Leitura: retorna evidências reais para o próprio ChatGPT montar a estratégia.
 
@@ -160,7 +202,15 @@ def create_server() -> MCPServer:
         _limit("analytics", limit=60)
         return _service().strategy_evidence(period_days=period_days)
 
-    @server.tool()
+    @server.tool(
+        title="Validar oportunidades de palavras-chave",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+        ),
+    )
     def validate_keyword_candidates(
         keywords: list[str],
         period_days: int = 28,
@@ -179,7 +229,15 @@ def create_server() -> MCPServer:
             max_results=max_results,
         )
 
-    @server.tool()
+    @server.tool(
+        title="Preparar prévia de metadados do vídeo",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+        ),
+    )
     def preview_video_metadata_update(
         video_id: str,
         title: str | None = None,
@@ -188,6 +246,7 @@ def create_server() -> MCPServer:
     ) -> dict[str, Any]:
         """Preparação de escrita: gera uma prévia assinada de título/descrição/tags, mas NÃO altera o canal.
 
+        Esta ação cria um pacote temporário de aprovação e um registro de auditoria no serviço.
         Mostre a prévia ao usuário. A aplicação posterior exige confirmação explícita e o payload assinado exato.
         """
         _require_scope(WRITE_SCOPE)
@@ -205,14 +264,23 @@ def create_server() -> MCPServer:
         )
         return result
 
-    @server.tool()
+    @server.tool(
+        title="Aplicar metadados aprovados no vídeo",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            open_world_hint=True,
+            destructive_hint=True,
+            idempotent_hint=False,
+        ),
+    )
     def apply_video_metadata_update(
         approval_payload: dict[str, Any],
         approval_token: str,
         user_confirmed: bool,
     ) -> dict[str, Any]:
-        """Escrita importante: aplica exatamente uma prévia assinada após confirmação explícita do usuário.
+        """Escrita importante: substitui os metadados indicados por uma prévia assinada após confirmação explícita.
 
+        Esta ação modifica dados publicamente visíveis no YouTube e pode sobrescrever título, descrição ou tags existentes.
         Rejeita confirmação ausente, token expirado, payload alterado ou vídeo modificado desde a prévia.
         """
         _require_scope(WRITE_SCOPE)
