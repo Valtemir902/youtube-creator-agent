@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import urllib.error
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -17,6 +20,7 @@ def make_store(tmp_path) -> BrowserAuthStore:
 def oidc(monkeypatch) -> BrowserOIDCClient:
     monkeypatch.setenv("YCA_WEB_OIDC_ISSUER_URL", "https://auth.example.com/realms/yca")
     monkeypatch.setenv("YCA_WEB_OIDC_CLIENT_ID", "creator-web")
+    monkeypatch.setenv("YCA_WEB_OIDC_CLIENT_SECRET", "server-secret")
     monkeypatch.setenv("YCA_ONBOARDING_PUBLIC_URL", "https://creator.example.com")
     monkeypatch.delenv("YCA_WEB_OIDC_REDIRECT_URI", raising=False)
     return BrowserOIDCClient()
@@ -43,6 +47,7 @@ def test_login_url_uses_authorization_code_pkce(tmp_path, monkeypatch):
     assert query["code_challenge_method"] == ["S256"]
     assert query["redirect_uri"] == ["https://creator.example.com/auth/callback"]
     assert "prompt" not in query
+    assert "client_secret" not in query
 
 
 def test_registration_url_uses_standard_prompt_create(tmp_path, monkeypatch):
@@ -67,3 +72,35 @@ def test_tenant_identity_is_stable_for_same_subject(monkeypatch):
     second = client.tenant_id("user-123")
     assert first == second
     assert first.startswith("u_")
+
+
+def test_token_exchange_reports_invalid_client_without_leaking_credentials(monkeypatch):
+    client = oidc(monkeypatch)
+    body = io.BytesIO(b'{"error":"invalid_client","error_description":"Invalid client credentials"}')
+    error = urllib.error.HTTPError(client.token_endpoint, 401, "Unauthorized", {}, body)
+    with patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(PermissionError) as exc:
+            client.exchange_code(code="one-time-code", verifier="v" * 48)
+    text = str(exc.value)
+    assert "cliente OIDC" in text
+    assert "server-secret" not in text
+    assert "one-time-code" not in text
+
+
+def test_token_exchange_reports_invalid_grant_as_restartable_login(monkeypatch):
+    client = oidc(monkeypatch)
+    body = io.BytesIO(b'{"error":"invalid_grant","error_description":"Code not valid"}')
+    error = urllib.error.HTTPError(client.token_endpoint, 400, "Bad Request", {}, body)
+    with patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(PermissionError) as exc:
+            client.exchange_code(code="expired-code", verifier="v" * 48)
+    assert "Inicie o login novamente" in str(exc.value)
+
+
+def test_provider_error_parser_truncates_untrusted_description(monkeypatch):
+    client = oidc(monkeypatch)
+    error, description = client._safe_provider_error(
+        b'{"error":"invalid_grant","error_description":"' + b"x" * 1000 + b'"}'
+    )
+    assert error == "invalid_grant"
+    assert len(description) <= 240
