@@ -9,7 +9,6 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from .cloud_auth import tenant_id_from_subject
@@ -56,7 +55,7 @@ class BrowserAuthStore:
     def issue(self, *, next_path: str = "/dashboard", mode: str = "login", ttl_seconds: int = 600) -> PendingOIDC:
         if not str(next_path).startswith("/") or str(next_path).startswith("//"):
             next_path = "/dashboard"
-        mode = mode if mode in {"login", "register"} else "login"
+        mode = mode if mode in {"login", "register", "recover"} else "login"
         state = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(48)
         now = int(time.time())
@@ -159,8 +158,8 @@ class BrowserOIDCClient:
         return f"{self.issuer}/protocol/openid-connect/auth"
 
     @property
-    def registration_endpoint(self) -> str:
-        return f"{self.issuer}/protocol/openid-connect/registrations"
+    def forgot_credentials_endpoint(self) -> str:
+        return f"{self.issuer}/protocol/openid-connect/forgot-credentials"
 
     @property
     def token_endpoint(self) -> str:
@@ -180,7 +179,7 @@ class BrowserOIDCClient:
         return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
     def authorization_url(self, pending: PendingOIDC) -> str:
-        endpoint = self.registration_endpoint if pending.mode == "register" else self.authorization_endpoint
+        endpoint = self.forgot_credentials_endpoint if pending.mode == "recover" else self.authorization_endpoint
         query = {
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
@@ -190,6 +189,8 @@ class BrowserOIDCClient:
             "code_challenge": self.code_challenge(pending.verifier),
             "code_challenge_method": "S256",
         }
+        if pending.mode == "register":
+            query["prompt"] = "create"
         return f"{endpoint}?{urllib.parse.urlencode(query)}"
 
     def exchange_code(self, *, code: str, verifier: str) -> dict[str, Any]:
@@ -240,8 +241,5 @@ class BrowserOIDCClient:
         return tenant_id_from_subject(self.issuer, subject)
 
     def logout_url(self, post_logout_redirect_uri: str) -> str:
-        query = {
-            "client_id": self.client_id,
-            "post_logout_redirect_uri": post_logout_redirect_uri,
-        }
+        query = {"client_id": self.client_id, "post_logout_redirect_uri": post_logout_redirect_uri}
         return f"{self.logout_endpoint}?{urllib.parse.urlencode(query)}"
