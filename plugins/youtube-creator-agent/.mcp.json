@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "youtube-creator-agent": {
+      "type": "http",
+      "url": "https://mcp.silvadigitaltech.com/mcp"
+    }
+  }
+}
