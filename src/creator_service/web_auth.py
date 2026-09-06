@@ -100,37 +100,25 @@ class BrowserAuthStore:
 
 
 class TurnstileVerifier:
-    endpoint = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+    """Deprecated compatibility shim.
+
+    Browser authentication no longer uses a CAPTCHA gate in front of Keycloak.
+    Abuse protection belongs with the identity-provider login/register/recovery
+    flows, while this service retains rate limits plus OIDC state/nonce/PKCE.
+    The class remains temporarily so older API code can roll forward safely.
+    """
 
     def __init__(self) -> None:
-        self.site_key = os.environ.get("YCA_TURNSTILE_SITE_KEY", "").strip()
-        self.secret = os.environ.get("YCA_TURNSTILE_SECRET_KEY", "").strip()
-        self.bypass = os.environ.get("YCA_TURNSTILE_BYPASS", "0").strip() == "1"
+        self.site_key = ""
+        self.secret = ""
+        self.bypass = True
 
     @property
     def configured(self) -> bool:
-        return bool(self.site_key and self.secret) or self.bypass
+        return True
 
     def verify(self, token: str, remote_ip: str | None = None) -> bool:
-        if self.bypass:
-            return True
-        if not self.site_key or not self.secret or not token:
-            return False
-        payload = {"secret": self.secret, "response": token}
-        if remote_ip:
-            payload["remoteip"] = remote_ip
-        request = urllib.request.Request(
-            self.endpoint,
-            data=urllib.parse.urlencode(payload).encode("utf-8"),
-            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except Exception:
-            return False
-        return bool(result.get("success"))
+        return True
 
 
 class BrowserOIDCClient:
