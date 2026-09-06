@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -76,6 +77,37 @@ def test_dashboard_route_inventory_is_complete():
         "/api/dashboard/upload/apply/{action_id}",
     }
     assert expected <= paths
+
+
+def test_elite_dashboard_keeps_primary_controls_and_theme_choices():
+    html = (Path(__file__).parents[1] / "src" / "creator_service" / "web" / "dashboard.html").read_text(encoding="utf-8")
+    required_ids = {
+        "ytStatus",
+        "reloadVideos",
+        "videoList",
+        "preview",
+        "apply",
+        "rollback",
+        "researchTopic",
+        "buildStrategy",
+        "validateKeywords",
+        "runAudit",
+        "uploadVideo",
+        "uploadThumb",
+        "stageUpload",
+        "confirmPublish",
+        "cancelUpload",
+        "provider",
+        "loadModels",
+        "saveAi",
+        "animations",
+    }
+    for control_id in required_ids:
+        assert f'id="{control_id}"' in html, control_id
+    for theme in ("neon-cyan", "cyber-purple", "emerald-grid", "solar-red", "midnight-blue"):
+        assert f'data-theme-choice="{theme}"' in html
+    for section in ("overview", "videos", "strategy", "audit", "publish", "settings"):
+        assert f'id="{section}"' in html
 
 
 @pytest.mark.parametrize(
