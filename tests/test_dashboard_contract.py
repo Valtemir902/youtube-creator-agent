@@ -79,18 +79,22 @@ def test_dashboard_route_inventory_is_complete():
 
 
 @pytest.mark.parametrize(
-    "method,path",
+    "method,path,body",
     [
-        ("get", "/api/dashboard/status"),
-        ("get", "/api/dashboard/videos"),
-        ("get", "/api/dashboard/audit"),
-        ("post", "/api/dashboard/metadata/preview"),
-        ("post", "/api/dashboard/upload/start"),
+        ("get", "/api/dashboard/status", None),
+        ("get", "/api/dashboard/videos", None),
+        ("get", "/api/dashboard/audit", None),
+        ("post", "/api/dashboard/metadata/preview", {"video_id": "abc123"}),
+        (
+            "post",
+            "/api/dashboard/upload/start",
+            {"video_name": "video.mp4", "video_size": 1024, "title": "Teste"},
+        ),
     ],
 )
-def test_dashboard_api_requires_authentication(method: str, path: str):
+def test_dashboard_api_requires_authentication(method: str, path: str, body: dict | None):
     client = make_client()
-    response = getattr(client, method)(path, json={}) if method == "post" else getattr(client, method)(path)
+    response = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
     assert response.status_code == 401
 
 
