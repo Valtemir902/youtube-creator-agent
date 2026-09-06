@@ -18,6 +18,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node for web syntax checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install lightweight test dependencies
         run: |
           python -m pip install --upgrade pip \
@@ -35,6 +40,30 @@ jobs:
         run: |
           python -m compileall -q src
           python -m py_compile main.py mcp_server.py cloud_mcp_server.py onboarding_server.py
+
+      - name: Validate dashboard and onboarding JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          targets = [
+              Path("src/creator_service/web/dashboard.html"),
+              Path("src/creator_service/web/onboarding.html"),
+          ]
+          out = Path(".ci-js")
+          out.mkdir(exist_ok=True)
+          for source in targets:
+              html = source.read_text(encoding="utf-8")
+              blocks = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", html, flags=re.I | re.S)
+              if not blocks:
+                  raise SystemExit(f"No inline script found in {source}")
+              for index, block in enumerate(blocks):
+                  target = out / f"{source.stem}-{index}.js"
+                  target.write_text(block, encoding="utf-8")
+                  print(target)
+          PY
+          for file in .ci-js/*.js; do node --check "$file"; done
 
       - name: Run unit tests
         env:
