@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '.github/workflows/apply-overview-channels-v5.yml'
+      - 'scripts/apply_overview_channels_v5.py'
 
 permissions:
   contents: write
@@ -12,9 +13,18 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout patch script
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: patcher
+          fetch-depth: 1
+
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
         with:
           ref: feat/web-dashboard-v1
+          path: app
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
@@ -25,261 +35,30 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Patch overview hierarchy and multi-channel switching
+      - name: Install lightweight test dependencies
         run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest "cryptography>=45,<51" "google-api-python-client>=2.140,<3" "google-auth>=2.34,<3" "google-auth-oauthlib>=1.2,<2"
+
+      - name: Apply patch and run targeted checks
+        working-directory: app
+        run: |
+          python ../patcher/scripts/apply_overview_channels_v5.py
+          python -m py_compile src/creator_service/channel_accounts.py src/creator_service/google_oauth.py src/creator_service/onboarding_service.py src/creator_service/dashboard_routes.py
           python - <<'PY'
           from pathlib import Path
           import re
-
-          # --- Multi-channel credential registry, encrypted through TenantDatabase ---
-          Path('src/creator_service/channel_accounts.py').write_text(r'''from __future__ import annotations
-
-import json
-from typing import Any
-
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-
-from .cloud_runtime import GOOGLE_SCOPES, GOOGLE_SECRET_NAME
-
-CHANNEL_REGISTRY_SECRET = "google:channels_registry"
-ACTIVE_CHANNEL_SECRET = "google:active_channel_id"
-CHANNEL_CREDENTIAL_PREFIX = "google:channel:"
-
-
-def _credential_name(channel_id: str) -> str:
-    value = "".join(ch for ch in str(channel_id or "").strip() if ch.isalnum() or ch in "_-.")
-    if not value:
-        raise RuntimeError("ID de canal inválido.")
-    return f"{CHANNEL_CREDENTIAL_PREFIX}{value}:authorized_user_json"
-
-
-def _load_registry(db, tenant_id: str) -> dict[str, dict[str, Any]]:
-    raw = db.get_secret(tenant_id, CHANNEL_REGISTRY_SECRET)
-    if not raw:
-        return {}
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _save_registry(db, tenant_id: str, registry: dict[str, dict[str, Any]]) -> None:
-    db.put_secret(tenant_id, CHANNEL_REGISTRY_SECRET, json.dumps(registry, ensure_ascii=False, separators=(",", ":")))
-
-
-def _channel_snapshot_from_raw(raw: str) -> dict[str, Any]:
-    try:
-        info = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Credencial Google armazenada está corrompida.") from exc
-    creds = Credentials.from_authorized_user_info(info, GOOGLE_SCOPES)
-    youtube = build("youtube", "v3", credentials=creds, cache_discovery=False)
-    response = youtube.channels().list(part="snippet,statistics,brandingSettings", mine=True).execute()
-    items = response.get("items", [])
-    if not items:
-        raise RuntimeError("Nenhum canal do YouTube foi encontrado nesta autorização.")
-    item = items[0]
-    snippet = item.get("snippet", {})
-    thumbs = snippet.get("thumbnails", {})
-    thumb = (thumbs.get("high") or thumbs.get("medium") or thumbs.get("default") or {}).get("url")
-    stats = item.get("statistics", {})
-    branding = item.get("brandingSettings", {}).get("channel", {})
-    return {
-        "id": str(item.get("id", "")),
-        "title": str(snippet.get("title", "")),
-        "description": str(snippet.get("description", "")),
-        "thumbnail": thumb,
-        "country": snippet.get("country") or branding.get("country"),
-        "default_language": snippet.get("defaultLanguage") or branding.get("defaultLanguage"),
-        "subscribers": int(stats.get("subscriberCount", 0) or 0),
-        "views": int(stats.get("viewCount", 0) or 0),
-        "videos": int(stats.get("videoCount", 0) or 0),
-    }
-
-
-def capture_current_channel(db, tenant_id: str) -> dict[str, Any] | None:
-    raw = db.get_secret(tenant_id, GOOGLE_SECRET_NAME)
-    if not raw:
-        return None
-    snapshot = _channel_snapshot_from_raw(raw)
-    channel_id = str(snapshot["id"])
-    db.put_secret(tenant_id, _credential_name(channel_id), raw)
-    registry = _load_registry(db, tenant_id)
-    registry[channel_id] = snapshot
-    _save_registry(db, tenant_id, registry)
-    db.put_secret(tenant_id, ACTIVE_CHANNEL_SECRET, channel_id)
-    return snapshot
-
-
-def list_channel_accounts(db, tenant_id: str) -> dict[str, Any]:
-    registry = _load_registry(db, tenant_id)
-    active = db.get_secret(tenant_id, ACTIVE_CHANNEL_SECRET) or ""
-    if db.get_secret(tenant_id, GOOGLE_SECRET_NAME):
-        try:
-            snapshot = capture_current_channel(db, tenant_id)
-            if snapshot:
-                registry = _load_registry(db, tenant_id)
-                active = str(snapshot["id"])
-        except Exception:
-            # A falha de refresh da identidade não deve derrubar a lista já salva.
-            pass
-    rows = []
-    for channel_id, data in registry.items():
-        if not isinstance(data, dict):
-            continue
-        item = dict(data)
-        item["id"] = channel_id
-        item["active"] = channel_id == active
-        rows.append(item)
-    rows.sort(key=lambda item: (not item.get("active", False), str(item.get("title", "")).casefold()))
-    return {"active_channel_id": active, "channels": rows}
-
-
-def activate_channel(db, tenant_id: str, channel_id: str) -> dict[str, Any]:
-    channel_id = str(channel_id or "").strip()
-    raw = db.get_secret(tenant_id, _credential_name(channel_id))
-    if not raw:
-        raise RuntimeError("Este canal não está conectado a esta conta do Creator Agent.")
-    db.put_secret(tenant_id, GOOGLE_SECRET_NAME, raw)
-    db.put_secret(tenant_id, ACTIVE_CHANNEL_SECRET, channel_id)
-    registry = _load_registry(db, tenant_id)
-    data = dict(registry.get(channel_id) or {})
-    data["id"] = channel_id
-    data["active"] = True
-    return data
-''', encoding='utf-8')
-
-          # Google OAuth: when adding another channel, explicitly show account chooser.
-          path = Path('src/creator_service/google_oauth.py')
-          text = path.read_text(encoding='utf-8')
-          text = text.replace(
-              'def start(self, tenant_id: str, ttl_seconds: int = 600) -> OAuthStart:',
-              'def start(self, tenant_id: str, ttl_seconds: int = 600, select_account: bool = False) -> OAuthStart:',
-              1,
-          )
-          text = text.replace(
-              '            prompt="consent",',
-              '            prompt="select_account consent" if select_account else "consent",',
-              1,
-          )
-          path.write_text(text, encoding='utf-8')
-
-          # Register the newly-authorized channel without losing older channel credentials.
-          path = Path('src/creator_service/onboarding_service.py')
-          text = path.read_text(encoding='utf-8')
-          if 'from .channel_accounts import capture_current_channel' not in text:
-              text = text.replace('from .cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME\n', 'from .cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME\nfrom .channel_accounts import capture_current_channel\n', 1)
-          old = '''        tenant_id = self.google_oauth.complete(\n            state=state,\n            authorization_response=authorization_response,\n        )\n        return self.status(tenant_id)\n'''
-          new = '''        tenant_id = self.google_oauth.complete(\n            state=state,\n            authorization_response=authorization_response,\n        )\n        try:\n            capture_current_channel(self.db, tenant_id)\n        except Exception:\n            # OAuth continua válido mesmo se a leitura imediata da identidade falhar.\n            # A lista de canais tentará sincronizar novamente depois.\n            pass\n        return self.status(tenant_id)\n'''
-          if old not in text:
-              raise SystemExit('onboarding complete anchor not found')
-          text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
-
-          # Dashboard endpoints for list/add/activate channel while keeping the Creator Agent session.
-          path = Path('src/creator_service/dashboard_routes.py')
-          text = path.read_text(encoding='utf-8')
-          if 'from .channel_accounts import activate_channel, capture_current_channel, list_channel_accounts' not in text:
-              text = text.replace('from .dashboard_store import DashboardActionStore\n', 'from .channel_accounts import activate_channel, capture_current_channel, list_channel_accounts\nfrom .google_oauth import GoogleOAuthCoordinator\nfrom .dashboard_store import DashboardActionStore\n', 1)
-          marker = '@app.get("/api/dashboard/channels")'
-          if marker not in text:
-              anchor = '    @app.get("/api/dashboard/channel/identity")\n'
-              block = '''    @app.get("/api/dashboard/channels")\n    async def dashboard_channels(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:\n        return list_channel_accounts(resolver.db, tenant.tenant_id)\n\n    @app.post("/api/dashboard/channels/connect")\n    async def dashboard_channel_connect(request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        try:\n            # Persist the current channel first, so authorizing another Google account never replaces it.\n            if resolver.db.get_secret(tenant.tenant_id, "google:authorized_user_json"):\n                capture_current_channel(resolver.db, tenant.tenant_id)\n            oauth = GoogleOAuthCoordinator(resolver.db).start(tenant.tenant_id, select_account=True)\n        except Exception as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        audit(request, "dashboard_channel_connect_started", "success", tenant.tenant_id)\n        return {"authorization_url": oauth.authorization_url, "expires_in_seconds": oauth.expires_in_seconds}\n\n    @app.post("/api/dashboard/channels/{channel_id}/activate")\n    async def dashboard_channel_activate(channel_id: str, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        try:\n            channel = activate_channel(resolver.db, tenant.tenant_id, channel_id)\n        except Exception as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        audit(request, "dashboard_channel_activated", "success", tenant.tenant_id, {"channel_id": channel_id})\n        return {"ok": True, "channel": channel}\n\n'''
-              if anchor not in text:
-                  raise SystemExit('dashboard channel route anchor not found')
-              text = text.replace(anchor, block + anchor, 1)
-          path.write_text(text, encoding='utf-8')
-
-          # Rebuild overview hierarchy: profile+status+description+stats, playlists, then lower-priority panels.
-          path = Path('src/creator_service/web/dashboard.html')
-          text = path.read_text(encoding='utf-8')
-          overview = '''      <section id="overview" class="section active">\n        <div class="grid">\n          <article class="card full" id="channelProfileCard">\n            <div class="toolbar" style="justify-content:space-between;align-items:flex-start">\n              <div id="channelIdentity" class="channel-hero"><div class="loader"></div><div><h3 style="margin:0">Carregando canal…</h3><div class="muted">Identidade do canal selecionado</div></div></div>\n              <span class="pill good" id="profileConnectionBadge"><span class="dot ok"></span><span id="profileConnectionText">Conectado</span></span>\n            </div>\n            <div class="notice" style="margin-top:14px"><b>Descrição do canal</b><div id="channelDescription" class="muted" style="margin-top:6px;white-space:pre-wrap">Carregando descrição…</div></div>\n            <div class="kpis" style="margin-top:14px;grid-template-columns:repeat(5,minmax(0,1fr))">\n              <div class="kpi"><strong id="kpiSubs">—</strong><span>Inscritos</span></div>\n              <div class="kpi"><strong id="kpiViews">—</strong><span>Views / 28 dias</span></div>\n              <div class="kpi"><strong id="kpiTotalViews">—</strong><span>Views totais</span></div>\n              <div class="kpi"><strong id="kpiVideos">—</strong><span>Vídeos</span></div>\n              <div class="kpi"><strong id="kpiWatch">—</strong><span>Watch time</span></div>\n            </div>\n            <div class="channel-switch-panel" style="margin-top:14px">\n              <div><b>Canais conectados</b><div class="muted">Troque de canal sem sair do Creator Agent. A IA passa a usar o contexto do canal ativo.</div></div>\n              <div class="row" style="margin-top:10px;align-items:end">\n                <label>Canal ativo<select id="channelSelect"><option>Carregando…</option></select></label>\n                <div class="toolbar"><button class="btn" id="activateChannel">Ativar canal</button><button class="btn primary" id="addChannel">+ Adicionar outro canal</button></div>\n              </div>\n              <div id="channelSwitchHint" class="muted" style="margin-top:8px"></div>\n            </div>\n          </article>\n\n          <div id="playlistHomeSlot" style="display:contents"></div>\n\n          <article class="card full"><div class="toolbar" style="justify-content:space-between"><div><h3 style="margin:0">Inteligência do mercado do canal</h3><div class="muted">Contexto usado para SEO, pautas e recomendações do canal selecionado.</div></div><span class="pill"><span class="dot ok"></span> contexto isolado por canal</span></div><div class="channel-intel" style="margin-top:12px"><div class="intel-chip"><small>Idioma estratégico</small><strong id="marketLanguage">Detectando…</strong></div><div class="intel-chip"><small>País / mercado</small><strong id="marketCountry">Detectando…</strong></div><div class="intel-chip"><small>Views via busca</small><strong id="searchShare">—</strong></div><div class="intel-chip"><small>Shorts no período</small><strong id="shortShare">—</strong></div><div class="intel-chip"><small>Longos no período</small><strong id="longShare">—</strong></div><div class="intel-chip"><small>Sinal dominante</small><strong id="topSignal">—</strong></div></div></article>\n\n          <article class="card span8"><h3>Perfil aprendido do canal</h3><div id="profileSummary" class="notice">Carregando dados reais...</div><details style="margin-top:10px"><summary class="muted">Ver diagnóstico técnico</summary><div id="profileRaw" class="code" style="margin-top:8px"></div></details></article>\n          <article class="card"><h3>Proteção</h3><div class="metric good">Ativa</div><div class="muted">Prévia, confirmação, memória e rollback assinado.</div></article>\n          <article class="card"><h3>Inteligência</h3><div class="metric" id="aiMode">...</div><div class="muted" id="aiHint">ChatGPT Native + IA externa opcional</div></article>\n          <article class="card span8"><h3>Capacidades conectadas</h3><div id="capabilities" class="muted">Consultando...</div></article>\n        </div>\n      </section>\n'''
-          pattern = re.compile(r'      <section id="overview" class="section active">.*?      </section>\n\n(?=      <section id="videos")', re.S)
-          if not pattern.search(text):
-              raise SystemExit('overview block not found')
-          text = pattern.sub(overview + '\n', text, count=1)
-
-          # Mobile five KPI layout becomes 2-column, preserving readable touch layout.
-          text = text.replace('@media(max-width:760px){body{overflow-x:hidden}', '@media(max-width:760px){#channelProfileCard .kpis{grid-template-columns:1fr 1fr!important}.channel-switch-panel .row{grid-template-columns:1fr}.channel-switch-panel .toolbar .btn{flex:1}body{overflow-x:hidden}', 1)
-
-          # Playlist manager belongs immediately after the channel profile on Overview.
-          text = text.replace(
-              "function placePlaylistsOnOverview(){const card=$('playlistManager'),grid=document.querySelector('#overview .grid');if(card&&grid&&card.parentNode!==grid){card.classList.add('overview-playlists');grid.appendChild(card)}}",
-              "function placePlaylistsOnOverview(){const card=$('playlistManager'),slot=$('playlistHomeSlot');if(card&&slot&&card.parentNode!==slot){card.classList.add('overview-playlists');slot.appendChild(card)}}",
-              1,
-          )
-
-          # Preserve old functions only as fallbacks, then override with null-safe overview-aware implementations.
-          text = text.replace('async function loadStatus(){', 'async function loadStatusLegacy(){', 1)
-          text = text.replace('async function loadChannelIdentity(){', 'async function loadChannelIdentityLegacy(){', 1)
-          anchor = 'async function loadCapabilities()'
-          funcs = r'''async function loadStatus(){try{const s=await api('/api/dashboard/status');const badge=$('profileConnectionBadge'),label=$('profileConnectionText');if(label)label.textContent=s.youtube_connected?'Conectado':'Desconectado';if(badge)badge.className='pill '+(s.youtube_connected?'good':'bad');if($('aiMode'))$('aiMode').textContent=s.chatgpt_native_ready?'ChatGPT Native':'Aguardando';if($('aiHint'))$('aiHint').textContent=s.external_ai_configured?`IA opcional: ${s.ai_provider} / ${s.ai_model}`:'ChatGPT Native ativo; IA externa opcional';$('onlineDot')?.classList.add('ok');if($('onlineText'))$('onlineText').textContent='Online';if(s.ai_provider&&$('provider'))$('provider').value=s.ai_provider;if(s.ai_model&&$('model'))$('model').innerHTML=`<option value="${esc(s.ai_model)}">${esc(s.ai_model)}</option>`;if($('aiSettingsStatus'))$('aiSettingsStatus').textContent=s.external_ai_configured?`Configurado: ${s.ai_provider} / ${s.ai_model}`:'ChatGPT Native pronto. IA externa ainda não configurada.'}catch(e){if($('onlineText'))$('onlineText').textContent=e.message;$('onlineDot')?.classList.remove('ok')}}
-async function loadChannelIdentity(){try{const d=await api('/api/dashboard/channel/identity');const box=$('channelIdentity');if(box)box.innerHTML=`<img class="channel-avatar" src="${esc(d.thumbnail||'')}" alt="Foto do canal"><div><h3 style="margin:0">${esc(d.title||'Canal conectado')}</h3><div class="muted">${esc(d.country||'Mercado global')} · ${esc(d.default_language||'idioma detectado pela estratégia')} · ${fmt(d.subscribers)} inscritos</div></div>`;if($('channelDescription'))$('channelDescription').textContent=d.description||'Este canal ainda não possui descrição.';if($('kpiTotalViews'))$('kpiTotalViews').textContent=fmt(d.views||0)}catch(e){if($('channelIdentity'))$('channelIdentity').innerHTML=`<div class="notice bad">${esc(e.message)}</div>`;if($('channelDescription'))$('channelDescription').textContent='Não foi possível carregar a descrição agora.'}}
-async function loadChannels(){const select=$('channelSelect');if(!select)return;try{const d=await api('/api/dashboard/channels');const rows=d.channels||[];if(!rows.length){select.innerHTML='<option value="">Nenhum canal salvo</option>';if($('channelSwitchHint'))$('channelSwitchHint').textContent='Conecte um canal para começar.';return}select.innerHTML=rows.map(c=>`<option value="${esc(c.id)}" ${c.active?'selected':''}>${esc(c.title||c.id)}${c.active?' · ativo':''}</option>`).join('');if($('channelSwitchHint'))$('channelSwitchHint').textContent=`${rows.length} canal${rows.length===1?'':'is'} conectado${rows.length===1?'':'s'} nesta conta.`}catch(e){select.innerHTML='<option value="">Canais indisponíveis</option>';if($('channelSwitchHint'))$('channelSwitchHint').textContent=e.message}}
-async function activateSelectedChannel(){const id=$('channelSelect')?.value;if(!id)return toast('Selecione um canal.',true);setBusy($('activateChannel'),true,'Ativando');try{await api('/api/dashboard/channels/'+encodeURIComponent(id)+'/activate',{method:'POST',body:'{}'});toast('Canal ativado. Atualizando contexto da IA…');await Promise.allSettled([loadChannels(),loadStatus(),loadChannelIdentity(),loadChannel(),loadPlaylists(),loadVideos()])}catch(e){toast(e.message,true)}finally{setBusy($('activateChannel'),false)}}
-async function addAnotherChannel(){setBusy($('addChannel'),true,'Abrindo Google');try{const d=await api('/api/dashboard/channels/connect',{method:'POST',body:'{}'});if(!d.authorization_url)throw new Error('URL de autorização não recebida.');location.href=d.authorization_url}catch(e){toast(e.message,true);setBusy($('addChannel'),false)}}
-'''
-          if anchor not in text:
-              raise SystemExit('capabilities anchor not found')
-          text = text.replace(anchor, funcs + anchor, 1)
-
-          text = text.replace(
-              'async function refreshAll(){await Promise.allSettled([loadStatus(),loadChannel(),loadChannelIdentity(),loadCapabilities(),loadPlaylists(),loadLive()])}',
-              'async function refreshAll(){placePlaylistsOnOverview();await Promise.allSettled([loadStatus(),loadChannel(),loadChannelIdentity(),loadChannels(),loadCapabilities(),loadPlaylists(),loadLive()])}',
-              1,
-          )
-          text = text.replace("$('reloadPlaylists').onclick=loadPlaylists;", "$('reloadPlaylists').onclick=loadPlaylists;$('activateChannel').onclick=activateSelectedChannel;$('addChannel').onclick=addAnotherChannel;", 1)
-          path.write_text(text, encoding='utf-8')
-
-          # Contract tests for the hierarchy and multi-channel implementation.
-          test_path = Path('tests/test_dashboard_elite_ui.py')
-          test_text = test_path.read_text(encoding='utf-8')
-          if 'test_overview_prioritizes_channel_profile_and_switcher' not in test_text:
-              test_text += r'''
-
-
-def test_overview_prioritizes_channel_profile_and_switcher():
-    html = Path("src/creator_service/web/dashboard.html").read_text(encoding="utf-8")
-    assert 'id="channelProfileCard"' in html
-    assert 'id="channelDescription"' in html
-    assert 'id="kpiTotalViews"' in html
-    assert 'id="channelSelect"' in html
-    assert 'id="addChannel"' in html
-    assert 'id="playlistHomeSlot"' in html
-    assert html.index('id="channelProfileCard"') < html.index('id="playlistHomeSlot"') < html.index('Inteligência do mercado do canal')
-
-
-def test_multi_channel_backend_contract_exists():
-    code = Path("src/creator_service/channel_accounts.py").read_text(encoding="utf-8")
-    routes = Path("src/creator_service/dashboard_routes.py").read_text(encoding="utf-8")
-    assert 'CHANNEL_REGISTRY_SECRET' in code
-    assert 'def activate_channel' in code
-    assert '/api/dashboard/channels/connect' in routes
-    assert '/api/dashboard/channels/{channel_id}/activate' in routes
-'''
-              test_path.write_text(test_text, encoding='utf-8')
-          PY
-
-          python -m py_compile \
-            src/creator_service/channel_accounts.py \
-            src/creator_service/google_oauth.py \
-            src/creator_service/onboarding_service.py \
-            src/creator_service/dashboard_routes.py
-
-          python - <<'PY'
-          from pathlib import Path
-          import re
-          html=Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
-          blocks=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',html,flags=re.I|re.S)
-          if not blocks: raise SystemExit('dashboard script missing')
-          Path('/tmp/dashboard-v5.js').write_text(blocks[-1],encoding='utf-8')
+          html = Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
+          blocks = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, flags=re.I|re.S)
+          if not blocks:
+              raise SystemExit('dashboard script missing')
+          Path('/tmp/dashboard-v5.js').write_text(blocks[-1], encoding='utf-8')
           PY
           node --check /tmp/dashboard-v5.js
           PYTHONPATH=src python -m pytest -q tests/test_dashboard_elite_ui.py tests/test_tenant_store.py
 
       - name: Commit overview and multi-channel v5
+        working-directory: app
         run: |
           if git diff --quiet; then
             echo 'Already integrated'
@@ -287,12 +66,6 @@ def test_multi_channel_backend_contract_exists():
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            src/creator_service/channel_accounts.py \
-            src/creator_service/google_oauth.py \
-            src/creator_service/onboarding_service.py \
-            src/creator_service/dashboard_routes.py \
-            src/creator_service/web/dashboard.html \
-            tests/test_dashboard_elite_ui.py
+          git add src/creator_service/channel_accounts.py src/creator_service/google_oauth.py src/creator_service/onboarding_service.py src/creator_service/dashboard_routes.py src/creator_service/web/dashboard.html tests/test_dashboard_elite_ui.py
           git commit -m 'feat: reorganize overview and add multi-channel switching'
           git push origin HEAD:feat/web-dashboard-v1
