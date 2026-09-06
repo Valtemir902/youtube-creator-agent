@@ -1,0 +1,52 @@
+name: Fix Elite Profile Compatibility
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-elite-profile-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+          fetch-depth: 0
+
+      - name: Restore dataclass backward compatibility
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/intelligence/channel_learning.py')
+          s=p.read_text(encoding='utf-8')
+          s=s.replace('    country: str\n    default_language: str\n    subscribers: int\n','    subscribers: int\n',1)
+          anchor='    long_share_of_recent_views: float\n'
+          if '    country: str = "GLOBAL"\n' not in s:
+              s=s.replace(anchor,anchor+'    country: str = "GLOBAL"\n    default_language: str = "und"\n',1)
+          p.write_text(s,encoding='utf-8')
+          PY
+
+      - name: Run full validation
+        shell: bash
+        run: |
+          python -m pip install -q pytest "cryptography>=45,<51" "mcp>=2.0,<3" "fastapi>=0.116,<1" "httpx>=0.28,<1" "requests>=2.32,<3" "google-api-python-client>=2.140,<3" "google-auth>=2.34,<3" "google-auth-oauthlib>=1.2,<2"
+          python -m compileall -q src
+          PYTHONPATH=src pytest -q
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/intelligence/channel_learning.py
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "fix: keep ChannelProfile constructors backward compatible"
+          git push origin HEAD:feat/web-dashboard-v1
