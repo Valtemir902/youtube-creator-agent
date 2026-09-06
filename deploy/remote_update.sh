@@ -126,8 +126,10 @@ SQL
   fi
 fi
 
-# The app can briefly return 502 while Docker restarts the containers. Wait for it
-# instead of rolling back a healthy deployment just because the first probe was early.
+# Both the app and the public Keycloak route can briefly return 502/503 while
+# containers restart and the Cloudflare tunnel reconnects. Wait for all public
+# surfaces before considering the deployment complete.
+wait_for_url "https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration" "public keycloak" 30 2
 wait_for_url "https://creator.silvadigitaltech.com/health" "creator health" 30 2
 wait_for_url "https://creator.silvadigitaltech.com/ready" "creator readiness" 30 2
 wait_for_url "https://creator.silvadigitaltech.com/login" "creator login" 30 2
