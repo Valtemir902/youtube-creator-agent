@@ -1,0 +1,93 @@
+name: Deploy Production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: ["feat/web-dashboard-v1"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yca-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+
+    steps:
+      - name: Resolve deploy commit
+        id: ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            sha="${{ github.event.workflow_run.head_sha }}"
+          else
+            sha="$(git ls-remote https://github.com/${{ github.repository }}.git refs/heads/feat/web-dashboard-v1 | awk '{print $1}')"
+          fi
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploy candidate: $sha"
+
+      - name: Check deployment credentials
+        id: creds
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$VPS_HOST" && -n "$VPS_USER" && -n "$VPS_SSH_PRIVATE_KEY" && -n "$VPS_KNOWN_HOSTS" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "VPS deployment secrets are not configured yet. Deployment skipped safely."
+          fi
+
+      - name: Configure SSH
+        if: steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy application to VPS
+        if: steps.creds.outputs.configured == 'true'
+        shell: bash
+        env:
+          DEPLOY_SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; cd ~/apps/youtube-creator-agent; git fetch origin '$DEPLOY_SHA'; git show '$DEPLOY_SHA:deploy/remote_update.sh' > /tmp/yca-remote-update.sh; chmod 700 /tmp/yca-remote-update.sh; /tmp/yca-remote-update.sh '$DEPLOY_SHA'"
+
+      - name: Public post-deploy checks
+        if: steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/health
+          echo
+          curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/ready
+          echo
+          code="$(curl --show-error --silent --output /dev/null --write-out '%{http_code}' https://creator.silvadigitaltech.com/login)"
+          test "$code" = "200"
+          echo "Login page HTTP $code"
