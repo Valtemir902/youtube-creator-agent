@@ -68,7 +68,7 @@ else
   printf '\nYCA_WEB_OIDC_BACKCHANNEL_BASE_URL=%s\n' "$BACKCHANNEL_VALUE" >> config/server.env
 fi
 
-# Build only application services. Keycloak/Postgres/Cloudflared remain untouched.
+# Build only application services. Keycloak/Postgres/Cloudflared remain untouched here.
 docker compose -f "$COMPOSE_FILE" up -d --build mcp onboarding
 
 docker compose -f "$COMPOSE_FILE" ps mcp onboarding keycloak
@@ -77,10 +77,10 @@ docker compose -f "$COMPOSE_FILE" ps mcp onboarding keycloak
 docker compose -f "$COMPOSE_FILE" exec -T onboarding \
   python -c "import urllib.request; r=urllib.request.urlopen('http://keycloak:8080/realms/yca/.well-known/openid-configuration', timeout=8); print('keycloak_backchannel', r.status); assert r.status == 200"
 
-# Keep the customer login on Keycloak's current supported login theme. This only
-# changes the yca realm login theme; admin and email themes remain untouched.
-# Theme configuration is best-effort so a stale bootstrap-admin credential does
-# not roll back an otherwise healthy application deploy.
+# Prefer the supported Keycloak Admin API. Bootstrap credentials can become stale
+# after the initial admin account password is changed, so a narrowly-scoped DB
+# fallback updates only the yca realm's login_theme when the admin login is no longer valid.
+theme_updated=0
 if docker compose -f "$COMPOSE_FILE" exec -T keycloak sh -lc '
   set -eu
   admin_user="${KC_BOOTSTRAP_ADMIN_USERNAME:-}"
@@ -92,9 +92,35 @@ if docker compose -f "$COMPOSE_FILE" exec -T keycloak sh -lc '
   /opt/keycloak/bin/kcadm.sh update realms/yca --config "$cfg" -s loginTheme=keycloak.v2 >/dev/null
   rm -f "$cfg"
 '; then
-  echo "keycloak login theme: keycloak.v2"
+  theme_updated=1
+  echo "keycloak login theme set via Admin API: keycloak.v2"
 else
-  echo "WARNING: could not enforce keycloak.v2 login theme automatically; application deploy will continue" >&2
+  echo "Keycloak bootstrap-admin login is stale; applying scoped realm-theme DB fallback" >&2
+  if docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc '
+    set -eu
+    current="$(psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT COALESCE(login_theme, '\''\'') FROM realm WHERE name='\''yca'\'';")"
+    echo "current yca login theme: ${current:-<default>}"
+    count="$(psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE realm SET login_theme='\''keycloak.v2'\'' WHERE name='\''yca'\'' AND COALESCE(login_theme, '\''\'') <> '\''keycloak.v2'\''; SELECT COUNT(*) FROM realm WHERE name='\''yca'\'' AND login_theme='\''keycloak.v2'\'';")"
+    test "${count##*$'\n'}" = "1"
+  '; then
+    theme_updated=1
+    echo "keycloak login theme set via scoped DB fallback: keycloak.v2"
+    docker compose -f "$COMPOSE_FILE" restart keycloak >/dev/null
+    # Wait for Keycloak itself before the public identity flow is exercised.
+    for i in $(seq 1 30); do
+      if docker compose -f "$COMPOSE_FILE" exec -T onboarding python -c "import urllib.request; r=urllib.request.urlopen('http://keycloak:8080/realms/yca/.well-known/openid-configuration', timeout=4); assert r.status == 200" >/dev/null 2>&1; then
+        echo "keycloak ready after theme update on attempt $i/30"
+        break
+      fi
+      if [[ "$i" == "30" ]]; then
+        echo "Keycloak did not become ready after theme update" >&2
+        exit 5
+      fi
+      sleep 2
+    done
+  else
+    echo "WARNING: could not enforce keycloak.v2 login theme; application deploy will continue" >&2
+  fi
 fi
 
 # The app can briefly return 502 while Docker restarts the containers. Wait for it
@@ -105,5 +131,4 @@ wait_for_url "https://creator.silvadigitaltech.com/login" "creator login" 30 2
 
 ROLLBACK_NEEDED=0
 trap - ERR
-
-echo "Deploy succeeded: $(git rev-parse HEAD)"
+printf 'Deploy succeeded: %s (theme_updated=%s)\n' "$(git rev-parse HEAD)" "$theme_updated"
