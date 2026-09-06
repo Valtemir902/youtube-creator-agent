@@ -1,0 +1,138 @@
+name: Apply UX Workspaces V4
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-ux-workspaces-v4.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+          fetch-depth: 0
+      - name: Patch modal workspaces and playlist AI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # --- backend AI helper for playlist optimization ---
+          path = Path('src/creator_service/dashboard_ai.py')
+          text = path.read_text(encoding='utf-8')
+          if 'def grounded_playlist_plan(' not in text:
+              text += '''\n\ndef grounded_playlist_plan(\n    service,\n    *,\n    playlist: dict[str, Any],\n    video_titles: list[str],\n    user_context: str = "",\n    max_age_days: int = 30,\n) -> dict[str, Any]:\n    settings = service.ai_runtime.load_settings()\n    if not settings.model:\n        raise RuntimeError("Configure uma IA externa em Ajustes para usar a otimização automática dentro do painel.")\n    channel = channel_identity(service._youtube())\n    context = " ".join(str(user_context or "").split())\n    source = " | ".join([str(playlist.get("title", "")), str(playlist.get("description", "")), *[str(x) for x in video_titles[:50]]])\n    if len(source.strip()) < 10:\n        raise RuntimeError("A playlist ainda não possui contexto suficiente para uma otimização segura.")\n    candidate_prompt = f"""Você é um pesquisador de SEO para playlists do YouTube. Gere apenas consultas de busca coerentes com o tema REAL da playlist e dos vídeos. Não invente temas. Retorne JSON puro {{\"keyword_candidates\":[...]}} com 8 a 12 frases naturais no idioma e mercado do canal.\\nCANAL: {json.dumps(channel, ensure_ascii=False)}\\nPLAYLIST: {json.dumps(playlist, ensure_ascii=False)}\\nVÍDEOS: {json.dumps(video_titles[:50], ensure_ascii=False)}\\nCONTEXTO: {context}"""\n    first = service.ai_runtime.generate([{\"role\": \"user\", \"content\": candidate_prompt}], temperature=0.12, max_output_tokens=700)\n    candidates = _clean_candidates(_json_object(first.text).get("keyword_candidates"))\n    if not candidates:\n        raise RuntimeError("A IA não gerou candidatos válidos para a playlist.")\n    research = YouTubeResearchEngine(str(service.context.token_file), youtube_client=service._youtube())\n    age = max(1, min(180, int(max_age_days)))\n    measured = []\n    for keyword in candidates:\n        row = research.research(keyword, max_results=20, max_age_days=age)\n        measured.append({\n            "keyword": keyword,\n            "opportunity_score": int(row.opportunity.score),\n            "competition_label": row.competition_label,\n            "demand_index": int(row.estimated_daily_demand_index),\n            "demand_label": row.demand_label,\n            "result_count": int(row.result_count),\n            "fresh_7d_rate": row.fresh_7d_rate,\n            "fresh_30d_rate": row.fresh_30d_rate,\n            "fresh_90d_rate": row.fresh_90d_rate,\n            "median_views_per_day": row.median_views_per_day,\n        })\n    qualified = [r for r in measured if r["result_count"] >= 5 and r["demand_index"] >= 20 and r["competition_label"] in {"baixa", "média"} and (r["fresh_7d_rate"] > 0 or r["fresh_30d_rate"] > 0 or r["fresh_90d_rate"] > 0)]\n    qualified.sort(key=lambda r: (r["opportunity_score"], r["demand_index"], r["median_views_per_day"]), reverse=True)\n    if not qualified:\n        raise RuntimeError("Nenhuma palavra-chave recente passou pelos critérios de demanda e competição para esta playlist.")\n    final_prompt = f"""Você é um estrategista sênior de YouTube. Otimize a playlist usando SOMENTE os temas reais e as keywords qualificadas. Retorne JSON puro com title, description, rationale. O título deve ser natural e representar o conjunto dos vídeos, sem keyword stuffing. A descrição deve explicar a proposta da playlist e usar termos somente quando forem realmente coerentes.\\nCANAL: {json.dumps(channel, ensure_ascii=False)}\\nPLAYLIST ATUAL: {json.dumps(playlist, ensure_ascii=False)}\\nVÍDEOS: {json.dumps(video_titles[:50], ensure_ascii=False)}\\nKEYWORDS QUALIFICADAS (janela {age} dias): {json.dumps(qualified[:8], ensure_ascii=False)}\\nCONTEXTO: {context}"""\n    second = service.ai_runtime.generate([{\"role\": \"user\", \"content\": final_prompt}], temperature=0.10, max_output_tokens=1200)\n    plan = _json_object(second.text)\n    title = " ".join(str(plan.get("title", "")).split())[:150]\n    description = str(plan.get("description", "")).strip()[:5000]\n    if not title or not description:\n        raise RuntimeError("A IA não produziu uma proposta completa para a playlist.")\n    return {\n        "title": title,\n        "description": description,\n        "rationale": str(plan.get("rationale", "")).strip(),\n        "verified_keywords": qualified[:8],\n        "rejected_keywords": [r for r in measured if r not in qualified],\n        "max_age_days": age,\n        "provider": second.provider,\n        "model": second.model,\n    }\n'''
+              path.write_text(text, encoding='utf-8')
+
+          # --- routes for safe playlist AI preview/apply ---
+          path = Path('src/creator_service/dashboard_routes.py')
+          text = path.read_text(encoding='utf-8')
+          if 'grounded_playlist_plan,' not in text:
+              text = text.replace('    grounded_seo_plan,\n', '    grounded_seo_plan,\n    grounded_playlist_plan,\n', 1)
+          if 'class PlaylistAIRequest(BaseModel):' not in text:
+              anchor = 'class PlaylistCreateRequest(BaseModel):\n'
+              block = '''class PlaylistAIRequest(BaseModel):\n    user_context: str = Field(default="", max_length=4000)\n    max_age_days: int = Field(default=30, ge=1, le=180)\n\n\n'''
+              if anchor not in text:
+                  raise SystemExit('playlist request anchor missing')
+              text = text.replace(anchor, block + anchor, 1)
+          if '@app.post("/api/dashboard/playlists/{playlist_id}/ai-optimize")' not in text:
+              anchor = '    @app.get("/api/dashboard/live")\n'
+              block = '''    @app.post("/api/dashboard/playlists/{playlist_id}/ai-optimize")\n    async def dashboard_playlist_ai_optimize(playlist_id: str, payload: PlaylistAIRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        yt = service._youtube()\n        found = yt.playlists().list(part="snippet,status,contentDetails", id=playlist_id, maxResults=1).execute().get("items", [])\n        if not found:\n            raise HTTPException(status_code=404, detail="Playlist não encontrada.")\n        item = found[0]\n        snippet = item.get("snippet", {})\n        current = {"id": playlist_id, "title": str(snippet.get("title", "")), "description": str(snippet.get("description", "")), "privacy_status": item.get("status", {}).get("privacyStatus", "private")}\n        rows = yt.playlistItems().list(part="snippet,contentDetails", playlistId=playlist_id, maxResults=50).execute().get("items", [])\n        video_titles = [str(r.get("snippet", {}).get("title", "")) for r in rows if str(r.get("snippet", {}).get("title", "")).strip()]\n        try:\n            plan = grounded_playlist_plan(service, playlist=current, video_titles=video_titles, user_context=payload.user_context, max_age_days=payload.max_age_days)\n        except Exception as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        package = {"playlist_id": playlist_id, "baseline_digest": signer_from_env().payload_digest(current), "current": current, "plan": plan}\n        token = signer_from_env().issue("ai_optimize_playlist", playlist_id, package)\n        action_id = action_store.put(tenant_id=tenant.tenant_id, kind="ai_optimize_playlist", payload=package, secret_token=token, ttl_seconds=900)\n        audit(request, "dashboard_playlist_ai_preview", "success", tenant.tenant_id, {"playlist_id": playlist_id})\n        return {"action_id": action_id, "current": current, "plan": plan, "requires_explicit_user_confirmation": True, "expires_in_seconds": 900}\n\n    @app.post("/api/dashboard/playlists/ai-optimize/apply/{action_id}")\n    async def dashboard_playlist_ai_apply(action_id: str, payload: ConfirmRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        if payload.confirmed is not True:\n            raise HTTPException(status_code=400, detail="Confirmação explícita obrigatória.")\n        try:\n            action = action_store.consume(action_id=action_id, tenant_id=tenant.tenant_id, kind="ai_optimize_playlist")\n        except PermissionError as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        package = dict(action.payload or {})\n        playlist_id = str(package.get("playlist_id", "")).strip()\n        signer_from_env().verify(action.secret_token, action="ai_optimize_playlist", subject=playlist_id, payload=package)\n        service = service_for(tenant.tenant_id)\n        yt = service._youtube()\n        found = yt.playlists().list(part="snippet,status", id=playlist_id, maxResults=1).execute().get("items", [])\n        if not found:\n            raise HTTPException(status_code=404, detail="Playlist não encontrada.")\n        item = found[0]\n        snippet = item.get("snippet", {})\n        current = {"id": playlist_id, "title": str(snippet.get("title", "")), "description": str(snippet.get("description", "")), "privacy_status": item.get("status", {}).get("privacyStatus", "private")}\n        if signer_from_env().payload_digest(current) != str(package.get("baseline_digest", "")):\n            raise HTTPException(status_code=409, detail="A playlist mudou desde a análise. Gere uma nova prévia.")\n        plan = dict(package.get("plan", {}) or {})\n        response = yt.playlists().update(part="snippet,status", body={"id": playlist_id, "snippet": {"title": str(plan.get("title", current["title"]))[:150], "description": str(plan.get("description", current["description"]))[:5000]}, "status": {"privacyStatus": current["privacy_status"]}}).execute()\n        audit(request, "dashboard_playlist_ai_applied", "success", tenant.tenant_id, {"playlist_id": playlist_id})\n        return {"ok": True, "playlist": response}\n\n'''
+              if anchor not in text:
+                  raise SystemExit('playlist AI route anchor missing')
+              text = text.replace(anchor, block + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+
+          # --- front-end workspaces/modals and playlist placement ---
+          path = Path('src/creator_service/web/dashboard.html')
+          text = path.read_text(encoding='utf-8')
+          if '.workspace-modal{' not in text:
+              anchor = '    /* Elite UX hardening */\n'
+              css = '''    .workspace-modal{position:fixed;inset:0;z-index:95;display:none;align-items:flex-start;justify-content:center;padding:18px;background:rgba(3,7,15,.82);backdrop-filter:blur(14px);overflow:auto}.workspace-modal.open{display:flex}.workspace-shell{width:min(980px,100%);margin:auto;border:1px solid var(--line);border-radius:22px;background:var(--panel);box-shadow:0 30px 100px #000b;overflow:hidden}.workspace-head{position:sticky;top:0;z-index:4;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--panel) 94%,transparent);backdrop-filter:blur(18px)}.workspace-head h3{margin:0;font-size:17px}.workspace-body{padding:14px}.workspace-body>.card{box-shadow:none;transform:none!important;margin:0}.playlist-actions{display:flex;gap:6px;flex-wrap:wrap}.playlist-actions .btn{min-width:72px}.overview-playlists{margin-top:14px}@media(max-width:760px){.workspace-modal{padding:0;align-items:stretch}.workspace-shell{min-height:100dvh;border-radius:0;border:0}.workspace-head{padding-top:calc(12px + env(safe-area-inset-top));}.workspace-body{padding:12px 12px calc(88px + env(safe-area-inset-bottom))}.workspace-body>.card{border-radius:16px}.playlist-item{grid-template-columns:74px minmax(0,1fr)}.playlist-actions{grid-column:1/-1}.playlist-actions .btn{flex:1}}\n'''
+              if anchor not in text:
+                  raise SystemExit('css anchor missing')
+              text = text.replace(anchor, css + anchor, 1)
+
+          if 'id="workspaceModal"' not in text:
+              anchor = '<div id="toast" class="toast"></div>'
+              modal = '''<div id="workspaceModal" class="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="workspaceTitle"><div class="workspace-shell"><div class="workspace-head"><h3 id="workspaceTitle">Editor</h3><button class="btn" id="workspaceClose" aria-label="Fechar editor">Fechar</button></div><div class="workspace-body" id="workspaceBody"></div></div></div>\n'''
+              if anchor not in text:
+                  raise SystemExit('toast anchor missing')
+              text = text.replace(anchor, modal + anchor, 1)
+
+          # make lower editors hidden in normal video flow; modal opens them on demand
+          text = text.replace('<article class="card full" id="aiEditorCard">', '<article class="card full hidden" id="aiEditorCard">', 1)
+          text = text.replace('<article class="card span8" id="editorCard">', '<article class="card span8 hidden" id="editorCard">', 1)
+
+          # globals
+          text = text.replace('let currentAction=null,rollbackAction=null,uploadSession=null,publishAction=null,lastVideos=[];', 'let currentAction=null,rollbackAction=null,uploadSession=null,publishAction=null,lastVideos=[],lastPlaylists=[],workspaceOrigin=null;', 1)
+
+          # add workspace helpers before setTab
+          if 'function openWorkspace(' not in text:
+              anchor = 'function setTab(name){'
+              funcs = '''function openWorkspace(cardId,title){const card=$(cardId),modal=$('workspaceModal'),body=$('workspaceBody');if(!card||!modal||!body)return;if(workspaceOrigin)closeWorkspace();workspaceOrigin={card,parent:card.parentNode,next:card.nextSibling};$('workspaceTitle').textContent=title||'Editor';body.appendChild(card);card.classList.remove('hidden');modal.classList.add('open');document.body.style.overflow='hidden';setTimeout(()=>modal.scrollTo({top:0,behavior:'instant'}),0)}\nfunction closeWorkspace(){const modal=$('workspaceModal');if(workspaceOrigin){const {card,parent,next}=workspaceOrigin;card.classList.add('hidden');if(next&&next.parentNode===parent)parent.insertBefore(card,next);else parent.appendChild(card);workspaceOrigin=null}if(modal)modal.classList.remove('open');document.body.style.overflow=''}\nfunction placePlaylistsOnOverview(){const card=$('playlistManager'),grid=document.querySelector('#overview .grid');if(card&&grid&&card.parentNode!==grid){card.classList.add('overview-playlists');grid.appendChild(card)}}\n'''
+              if anchor not in text:
+                  raise SystemExit('setTab anchor missing')
+              text = text.replace(anchor, funcs + anchor, 1)
+
+          if "$('workspaceClose').onclick" not in text:
+              anchor = "$('refreshAll').onclick=refreshAll;"
+              handlers = "$('workspaceClose').onclick=closeWorkspace;$('workspaceModal').onclick=e=>{if(e.target===$('workspaceModal'))closeWorkspace()};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('workspaceModal')?.classList.contains('open'))closeWorkspace()});placePlaylistsOnOverview();"
+              if anchor not in text:
+                  raise SystemExit('refresh handler anchor missing')
+              text = text.replace(anchor, handlers + anchor, 1)
+
+          # playlists renderer with Edit + AI actions
+          old = "async function loadPlaylists(){const box=$('playlistList');if(!box)return;box.innerHTML='<div class=\"muted\"><span class=\"loader\"></span> Carregando playlists…</div>';try{const d=await api('/api/dashboard/playlists');const rows=d.playlists||[];box.innerHTML=rows.length?rows.map(p=>`<div class=\"playlist-item\"><img class=\"playlist-thumb\" src=\"${esc(p.thumbnail||'')}\" alt=\"\"><div><b>${esc(p.title)}</b><div class=\"muted\">${fmt(p.count)} vídeos · ${esc(p.privacy_status)}</div></div><button class=\"btn\" data-rename-playlist=\"${esc(p.id)}\" data-playlist-title=\"${esc(p.title)}\">Renomear</button></div>`).join(''):'<div class=\"notice\">Nenhuma playlist encontrada.</div>';document.querySelectorAll('[data-rename-playlist]').forEach(b=>b.onclick=async()=>{const title=prompt('Novo nome da playlist',b.dataset.playlistTitle||'');if(!title)return;try{await api('/api/dashboard/playlists/'+encodeURIComponent(b.dataset.renamePlaylist),{method:'PUT',body:JSON.stringify({title,description:'',privacy_status:'private'})});toast('Playlist atualizada.');await loadPlaylists()}catch(e){toast(e.message,true)}})}catch(e){box.innerHTML=`<div class=\"notice bad\">${esc(e.message)}</div>`}}"
+          new = "async function loadPlaylists(){const box=$('playlistList');if(!box)return;box.innerHTML='<div class=\"muted\"><span class=\"loader\"></span> Carregando playlists…</div>';try{const d=await api('/api/dashboard/playlists');lastPlaylists=d.playlists||[];box.innerHTML=lastPlaylists.length?lastPlaylists.map(p=>`<div class=\"playlist-item\"><img class=\"playlist-thumb\" src=\"${esc(p.thumbnail||'')}\" alt=\"Miniatura da playlist\"><div><b>${esc(p.title)}</b><div class=\"muted\">${fmt(p.count)} vídeos · ${esc(p.privacy_status)}</div></div><div class=\"playlist-actions\"><button class=\"btn primary\" data-ai-playlist=\"${esc(p.id)}\">IA</button><button class=\"btn\" data-edit-playlist=\"${esc(p.id)}\">Editar</button></div></div>`).join(''):'<div class=\"notice\">Nenhuma playlist encontrada.</div>';document.querySelectorAll('[data-edit-playlist]').forEach(b=>b.onclick=()=>openPlaylistEditor(b.dataset.editPlaylist));document.querySelectorAll('[data-ai-playlist]').forEach(b=>b.onclick=()=>openPlaylistAI(b.dataset.aiPlaylist))}catch(e){box.innerHTML=`<div class=\"notice bad\">${esc(e.message)}</div>`}}"
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'data-ai-playlist' not in text:
+              raise SystemExit('loadPlaylists renderer not matched')
+
+          if 'function openPlaylistEditor(' not in text:
+              anchor = 'async function loadLive()'
+              funcs = '''function openPlaylistEditor(id){const p=lastPlaylists.find(x=>x.id===id);if(!p)return toast('Playlist não encontrada.',true);const body=$('workspaceBody');if(workspaceOrigin)closeWorkspace();$('workspaceTitle').textContent='Editar playlist';body.innerHTML=`<article class="card full"><h3>Editar playlist</h3><div class="form"><label>Título<input id="plEditTitle" value="${esc(p.title)}"></label><label>Descrição<textarea id="plEditDescription">${esc(p.description||'')}</textarea></label><label>Privacidade<select id="plEditPrivacy"><option value="public" ${p.privacy_status==='public'?'selected':''}>Pública</option><option value="unlisted" ${p.privacy_status==='unlisted'?'selected':''}>Não listada</option><option value="private" ${p.privacy_status==='private'?'selected':''}>Privada</option></select></label><div class="toolbar"><button class="btn primary" id="plEditSave">Salvar alterações</button><button class="btn" id="plEditCancel">Cancelar</button></div></div></article>`;$('workspaceModal').classList.add('open');document.body.style.overflow='hidden';$('plEditCancel').onclick=()=>{$('workspaceModal').classList.remove('open');body.innerHTML='';document.body.style.overflow=''};$('plEditSave').onclick=async()=>{setBusy($('plEditSave'),true,'Salvando');try{await api('/api/dashboard/playlists/'+encodeURIComponent(id),{method:'PUT',body:JSON.stringify({title:$('plEditTitle').value.trim(),description:$('plEditDescription').value.trim(),privacy_status:$('plEditPrivacy').value})});toast('Playlist atualizada.');$('workspaceModal').classList.remove('open');body.innerHTML='';document.body.style.overflow='';await loadPlaylists()}catch(e){toast(e.message,true)}finally{setBusy($('plEditSave'),false)}}}\nfunction openPlaylistAI(id){const p=lastPlaylists.find(x=>x.id===id);if(!p)return toast('Playlist não encontrada.',true);const body=$('workspaceBody');if(workspaceOrigin)closeWorkspace();$('workspaceTitle').textContent='Otimizar playlist com IA';body.innerHTML=`<article class="card full"><h3>${esc(p.title)}</h3><div class="muted">A IA analisa os vídeos da playlist, o mercado do canal e somente keywords recentes com demanda e competição aceitável.</div><div class="form" style="margin-top:12px"><label>Contexto opcional<input id="plAiContext" placeholder="Ex.: objetivo desta playlist ou público principal"></label><label>Atualidade máxima<select id="plAiFresh"><option value="7">7 dias</option><option value="30" selected>30 dias</option><option value="90">3 meses</option><option value="180">6 meses</option></select></label><button class="btn primary" id="plAiRun">Analisar e propor otimização</button></div><div id="plAiResult" class="notice hidden" style="margin-top:12px"></div></article>`;$('workspaceModal').classList.add('open');document.body.style.overflow='hidden';$('plAiRun').onclick=async()=>{const out=$('plAiResult');out.className='notice';out.innerHTML='<span class="loader"></span> Pesquisando demanda e concorrência recentes…';try{const d=await api('/api/dashboard/playlists/'+encodeURIComponent(id)+'/ai-optimize',{method:'POST',body:JSON.stringify({user_context:$('plAiContext').value.trim(),max_age_days:Number($('plAiFresh').value)})});const plan=d.plan||{};out.className='notice good';out.innerHTML=`<div class="ai-plan"><b>${esc(plan.title||'')}</b><div>${esc(plan.description||'')}</div><div class="keyword-grid">${(plan.verified_keywords||[]).map(k=>`<span class="pill">${esc(k.keyword)} · ${esc(k.competition_label)} · D${esc(k.demand_index)}</span>`).join('')}</div><div class="muted">${esc(plan.rationale||'')}</div><div class="toolbar"><button class="btn primary" id="plAiApply">Aprovar e aplicar</button><button class="btn" id="plAiCancel">Cancelar</button></div></div>`;$('plAiCancel').onclick=()=>{$('workspaceModal').classList.remove('open');body.innerHTML='';document.body.style.overflow=''};$('plAiApply').onclick=async()=>{setBusy($('plAiApply'),true,'Aplicando');try{await api('/api/dashboard/playlists/ai-optimize/apply/'+encodeURIComponent(d.action_id),{method:'POST',body:JSON.stringify({confirmed:true})});toast('Playlist otimizada com segurança.');$('workspaceModal').classList.remove('open');body.innerHTML='';document.body.style.overflow='';await loadPlaylists()}catch(e){toast(e.message,true)}finally{setBusy($('plAiApply'),false)}}}catch(e){out.className='notice bad';out.textContent=e.message}}}\n'''
+              if anchor not in text:
+                  raise SystemExit('loadLive anchor missing')
+              text = text.replace(anchor, funcs + anchor, 1)
+
+          # video buttons now open focused workspaces instead of scrolling down
+          old = "document.querySelectorAll('[data-ai-video]').forEach(b=>b.onclick=async()=>{await selectVideo(b.dataset.aiVideo,false);$('aiEditorCard').scrollIntoView({behavior:'smooth',block:'start'});runAiOptimization(b.dataset.aiVideo,$('aiVideoContext').value,$('aiVideoPlan'))});document.querySelectorAll('[data-edit-video]').forEach(b=>b.onclick=()=>selectVideo(b.dataset.editVideo,true));"
+          new = "document.querySelectorAll('[data-ai-video]').forEach(b=>b.onclick=async()=>{await selectVideo(b.dataset.aiVideo,false);openWorkspace('aiEditorCard','Otimização avançada com IA');runAiOptimization(b.dataset.aiVideo,$('aiVideoContext').value,$('aiVideoPlan'))});document.querySelectorAll('[data-edit-video]').forEach(b=>b.onclick=async()=>{await selectVideo(b.dataset.editVideo,false);openWorkspace('editorCard','Editar vídeo')});"
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif "openWorkspace('aiEditorCard'" not in text:
+              raise SystemExit('video button handlers not matched')
+
+          # don't load playlists only when videos is opened anymore; they live on overview
+          text = text.replace("if(name==='videos'){loadVideos();loadPlaylists()}if(name==='publish')loadLive();", "if(name==='videos')loadVideos();if(name==='overview')loadPlaylists();if(name==='publish')loadLive();", 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python -m py_compile src/creator_service/dashboard_ai.py src/creator_service/dashboard_routes.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
+          blocks = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, flags=re.I|re.S)
+          if not blocks:
+              raise SystemExit('dashboard script missing')
+          Path('/tmp/dashboard-v4.js').write_text(blocks[-1], encoding='utf-8')
+          PY
+          node --check /tmp/dashboard-v4.js
+      - name: Commit UX workspace v4
+        run: |
+          if git diff --quiet; then
+            echo 'Already integrated'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/creator_service/dashboard_ai.py src/creator_service/dashboard_routes.py src/creator_service/web/dashboard.html
+          git commit -m 'feat: move editors to modal workspaces and add playlist AI'
+          git push origin HEAD:feat/web-dashboard-v1
