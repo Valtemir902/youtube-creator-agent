@@ -96,6 +96,17 @@ jobs:
               "build_channel_strategy",
           }
 
+          EXPECTED_HINTS = {
+              "creator_status": (True, False, False),
+              "get_creator_capabilities": (True, False, False),
+              "create_onboarding_link": (False, False, False),
+              "get_channel_profile": (True, False, False),
+              "get_strategy_evidence": (True, False, False),
+              "validate_keyword_candidates": (True, True, False),
+              "preview_video_metadata_update": (False, False, False),
+              "apply_video_metadata_update": (False, True, True),
+          }
+
           async def names_for(server):
               async with Client(server, raise_exceptions=True) as client:
                   result = await client.list_tools()
@@ -118,7 +129,20 @@ jobs:
                   assert "tenant_id" not in tool.input_schema.get("properties", {}), (
                       f"Cloud tool {tool.name} must derive tenant from auth, not model input"
                   )
-              print("ChatGPT-native MCP + onboarding contract: OK", sorted(cloud_names))
+                  annotations = tool.annotations
+                  assert annotations is not None, f"Cloud tool {tool.name} must declare annotations"
+                  hints = annotations.model_dump(by_alias=True, exclude_none=True)
+                  assert "readOnlyHint" in hints, f"{tool.name}: missing readOnlyHint"
+                  assert "openWorldHint" in hints, f"{tool.name}: missing openWorldHint"
+                  assert "destructiveHint" in hints, f"{tool.name}: missing destructiveHint"
+                  expected = EXPECTED_HINTS[tool.name]
+                  actual = (
+                      hints["readOnlyHint"],
+                      hints["openWorldHint"],
+                      hints["destructiveHint"],
+                  )
+                  assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
+              print("ChatGPT-native MCP + review annotations: OK", sorted(cloud_names))
 
           asyncio.run(main())
           PY
