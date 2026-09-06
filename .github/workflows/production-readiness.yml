@@ -1,6 +1,14 @@
 name: Production Readiness
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/production-readiness.yml"
+      - "config/chatgpt_app.json"
+      - "plugins/youtube-creator-agent/**"
+      - "src/creator_service/cloud_mcp_server.py"
+      - "src/creator_service/cloud_auth.py"
   workflow_dispatch:
   schedule:
     - cron: "17 10 * * *"
