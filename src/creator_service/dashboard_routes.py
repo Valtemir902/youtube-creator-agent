@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse
 from googleapiclient.http import MediaFileUpload
 from pydantic import BaseModel, Field
@@ -26,6 +26,7 @@ from .dashboard_ai import (
 from .channel_accounts import activate_channel, capture_current_channel, list_channel_accounts
 from .google_oauth import GoogleOAuthCoordinator
 from .dashboard_store import DashboardActionStore
+from .media_transcription import MediaTranscriptionError, WhisperCppTranscriber
 from .safe_service import SafeCreatorService
 from .security import signer_from_env
 from .upload_safety import (
@@ -85,6 +86,22 @@ class UploadAIPlanRequest(BaseModel):
     transcript: str = Field(default="", max_length=30000)
     user_context: str = Field(default="", max_length=4000)
     max_age_days: int = Field(default=30, ge=1, le=180)
+
+
+class UploadAnalysisRequest(BaseModel):
+    user_context: str = Field(default="", max_length=4000)
+    max_age_days: int = Field(default=30, ge=1, le=180)
+
+
+class UploadMetadataRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=5000)
+    tags: list[str] = Field(default_factory=list, max_length=12)
+    format: str = Field(default="long", pattern="^(long|short)$")
+    visibility: str = Field(default="public", pattern="^(public|unlisted|private|scheduled)$")
+    publish_at: str | None = Field(default=None, max_length=80)
+    category_id: str = Field(default="27", max_length=10)
+    default_language: str = Field(default="pt-BR", max_length=20)
 
 
 class PlaylistAIRequest(BaseModel):
@@ -264,6 +281,67 @@ def install_dashboard_routes(
         temp = path.with_suffix(".tmp")
         temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(path)
+
+    def apply_manifest_metadata(manifest: dict[str, Any], payload: UploadMetadataRequest) -> None:
+        try:
+            tags = _clean_tags(payload.tags)
+            publish_at = _validate_schedule(payload.publish_at) if payload.visibility == "scheduled" else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        manifest["metadata"] = {
+            "title": payload.title.strip(),
+            "description": payload.description.strip(),
+            "tags": tags,
+            "format": payload.format,
+            "visibility": payload.visibility,
+            "publish_at": publish_at,
+            "category_id": payload.category_id,
+            "default_language": payload.default_language,
+        }
+
+    def run_upload_analysis(tenant_id: str, session_id: str, user_context: str, max_age_days: int) -> None:
+        try:
+            manifest = load_manifest(tenant_id, session_id)
+            video_item = manifest.get("video", {})
+            if int(video_item.get("received", 0)) != int(video_item.get("size", 0)):
+                raise RuntimeError("O vídeo precisa terminar de chegar ao servidor antes da transcrição.")
+            directory = session_dir(tenant_id, session_id)
+            video_path = directory / f"video{video_item.get('suffix', '')}"
+            transcriber = WhisperCppTranscriber()
+            result = transcriber.transcribe(video_path)
+            service = service_for(tenant_id)
+            service.context.validate_youtube()
+            plan = grounded_seo_plan(
+                service,
+                source_text=result.text[:30000],
+                original_title=str(video_item.get("name", "")),
+                user_context=user_context,
+                max_age_days=max_age_days,
+                playlists=list_playlists(service._youtube()),
+            )
+            manifest = load_manifest(tenant_id, session_id)
+            manifest["analysis"] = {
+                "status": "completed",
+                "plan": plan,
+                "transcription": {
+                    "engine": result.engine,
+                    "language": result.language,
+                    "chars": result.chars,
+                },
+                "completed_at": int(time.time()),
+            }
+            save_manifest(tenant_id, session_id, manifest)
+        except Exception as exc:
+            try:
+                manifest = load_manifest(tenant_id, session_id)
+                manifest["analysis"] = {
+                    "status": "failed",
+                    "error": str(exc)[:1200],
+                    "completed_at": int(time.time()),
+                }
+                save_manifest(tenant_id, session_id, manifest)
+            except Exception:
+                pass
 
     @app.get("/dashboard", response_class=FileResponse)
     async def dashboard_page(request: Request):
@@ -773,6 +851,51 @@ def install_dashboard_routes(
         item["next_index"] = expected + 1
         save_manifest(tenant.tenant_id, session_id, manifest)
         return {"ok": True, "kind": kind, "received": item["received"], "total": declared, "next_index": item["next_index"]}
+
+    @app.put("/api/dashboard/upload/metadata/{session_id}")
+    async def dashboard_upload_metadata(
+        session_id: str,
+        payload: UploadMetadataRequest,
+        request: Request,
+        tenant: DashboardTenant = Depends(writable),
+    ) -> dict[str, Any]:
+        manifest = load_manifest(tenant.tenant_id, session_id)
+        apply_manifest_metadata(manifest, payload)
+        save_manifest(tenant.tenant_id, session_id, manifest)
+        audit(request, "dashboard_upload_metadata_updated", "success", tenant.tenant_id, {"session_id": session_id})
+        return {"ok": True}
+
+    @app.post("/api/dashboard/upload/analyze/{session_id}")
+    async def dashboard_upload_analyze_start(
+        session_id: str,
+        payload: UploadAnalysisRequest,
+        background_tasks: BackgroundTasks,
+        request: Request,
+        tenant: DashboardTenant = Depends(writable),
+    ) -> dict[str, Any]:
+        manifest = load_manifest(tenant.tenant_id, session_id)
+        video_item = manifest.get("video", {})
+        if int(video_item.get("received", 0)) != int(video_item.get("size", 0)):
+            raise HTTPException(status_code=409, detail="O vídeo ainda não terminou de chegar ao servidor.")
+        current = dict(manifest.get("analysis", {}) or {})
+        if current.get("status") in {"queued", "processing"}:
+            return {"status": current.get("status")}
+        manifest["analysis"] = {"status": "queued", "started_at": int(time.time())}
+        save_manifest(tenant.tenant_id, session_id, manifest)
+        background_tasks.add_task(run_upload_analysis, tenant.tenant_id, session_id, payload.user_context, payload.max_age_days)
+        audit(request, "dashboard_upload_analysis_started", "success", tenant.tenant_id, {"session_id": session_id})
+        return {"status": "queued"}
+
+    @app.get("/api/dashboard/upload/analyze/{session_id}")
+    async def dashboard_upload_analyze_status(
+        session_id: str,
+        tenant: DashboardTenant = Depends(readable),
+    ) -> dict[str, Any]:
+        manifest = load_manifest(tenant.tenant_id, session_id)
+        analysis = dict(manifest.get("analysis", {}) or {})
+        if not analysis:
+            return {"status": "not_started"}
+        return analysis
 
     @app.post("/api/dashboard/upload/finish/{session_id}")
     async def dashboard_upload_finish(
