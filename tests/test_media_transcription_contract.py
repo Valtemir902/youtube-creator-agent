@@ -11,8 +11,9 @@ def test_transcription_engine_is_server_side_and_portable():
     assert "subprocess.run" in code
     docker = Path("Dockerfile.server").read_text(encoding="utf-8")
     assert "apt-get" not in docker
-    assert "YCA_WHISPER_MODEL=base" in docker
+    assert "YCA_WHISPER_MODEL=/opt/yca-models/ggml-base.bin" in docker
     assert "Model('base'" in docker
+    assert "cp /root/.local/share/pywhispercpp/models/ggml-base.bin /opt/yca-models/ggml-base.bin" in docker
     requirements = Path("requirements-server.txt").read_text(encoding="utf-8")
     assert "pywhispercpp==1.5.1" in requirements
     assert "imageio-ffmpeg==0.6.0" in requirements
