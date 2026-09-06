@@ -43,6 +43,7 @@ jobs:
           const observe = (ok, message) => observations.push({ ok: !!ok, message });
           const shot = async (page, name) => { try { await page.screenshot({ path: `${out}/${name}.png`, fullPage: true }); } catch (e) { failures.push(`Screenshot ${name} failed: ${e.message}`); } };
           const scenario = async (name, fn) => { try { await fn(); } catch (e) { failures.push(`${name}: ${e.message}`); } };
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
           const waitCreatorReady = async page => page.waitForFunction(() => {
             const b=document.querySelector('#continueBtn'), r=document.querySelector('#recoverBtn');
             return b && r && !b.disabled && !r.disabled;
@@ -50,14 +51,37 @@ jobs:
           const checkKeycloakStyling = async (page, label) => {
             const sheets = await page.locator('link[rel="stylesheet"]').count();
             const font = await page.evaluate(() => getComputedStyle(document.body).fontFamily || '');
+            const rawSerif = /(^|,)\s*["']?(times new roman|times|serif)["']?\s*(,|$)/i.test(font.trim());
             check(sheets >= 1, `${label} has no stylesheet loaded`);
-            check(!/times new roman|serif$/i.test(font.trim()), `${label} appears unstyled; body font=${font}`);
+            check(!rawSerif, `${label} appears unstyled; body font=${font}`);
+          };
+          const waitForDeployedRevision = async request => {
+            const marker = 'três etapas simples';
+            for (let i=1; i<=45; i++) {
+              try {
+                const r = await request.get(`${base}/login`, { timeout: 10000 });
+                const body = (await r.text()).toLowerCase();
+                if (r.status() === 200 && body.includes(marker)) {
+                  observations.push({ok:true,message:`Deployed revision visible on attempt ${i}/45`});
+                  return;
+                }
+                observations.push({ok:false,message:`Waiting for deployed revision, HTTP ${r.status()}, attempt ${i}/45`});
+              } catch (e) {
+                observations.push({ok:false,message:`Waiting for deployed revision: ${e.message}, attempt ${i}/45`});
+              }
+              await sleep(2000);
+            }
+            throw new Error('Latest deployed login revision did not become visible within 90 seconds');
           };
 
           (async()=>{
             const browser = await chromium.launch({headless:true});
             const context = await browser.newContext({viewport:{width:1440,height:1100},locale:'pt-BR'});
             const page = await context.newPage();
+
+            // CI and production deploy run concurrently after a push. Wait until the
+            // public page proves that this revision is live before starting browser assertions.
+            await waitForDeployedRevision(context.request);
             page.on('console', msg => { if (msg.type()==='error') consoleErrors.push(msg.text()); });
             page.on('pageerror', err => consoleErrors.push(`pageerror: ${err.message}`));
 
