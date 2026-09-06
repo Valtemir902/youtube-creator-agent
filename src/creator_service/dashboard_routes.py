@@ -18,6 +18,13 @@ from pydantic import BaseModel, Field
 from .dashboard_store import DashboardActionStore
 from .safe_service import SafeCreatorService
 from .security import signer_from_env
+from .upload_safety import (
+    UploadCapacityError,
+    UploadSafetyPolicy,
+    ensure_capacity,
+    ensure_chunk_headroom,
+    purge_expired_sessions,
+)
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
@@ -25,7 +32,8 @@ THUMB_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_VIDEO_BYTES = 64 * 1024 * 1024 * 1024
 MAX_THUMB_BYTES = 10 * 1024 * 1024
-UPLOAD_SESSION_TTL_SECONDS = 60 * 60
+UPLOAD_SAFETY = UploadSafetyPolicy()
+UPLOAD_SESSION_TTL_SECONDS = UPLOAD_SAFETY.ttl_seconds
 
 
 @dataclass(frozen=True)
@@ -446,6 +454,17 @@ def install_dashboard_routes(
         tenant: DashboardTenant = Depends(writable),
     ) -> dict[str, Any]:
         service_for(tenant.tenant_id).context.validate_youtube()
+        root = upload_root(tenant.tenant_id)
+        try:
+            purge_expired_sessions(root, policy=UPLOAD_SAFETY)
+            ensure_capacity(
+                root,
+                int(payload.video_size) + int(payload.thumbnail_size),
+                policy=UPLOAD_SAFETY,
+            )
+        except UploadCapacityError as exc:
+            audit(request, "dashboard_upload_rejected_capacity", "denied", tenant.tenant_id, {"reason": str(exc)})
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
         video_suffix = Path(payload.video_name).suffix.lower()
         if video_suffix not in VIDEO_EXTENSIONS:
             raise HTTPException(status_code=400, detail="Formato de vídeo não suportado.")
@@ -509,6 +528,11 @@ def install_dashboard_routes(
             raise HTTPException(status_code=400, detail="Chunk vazio.")
         if len(body) > UPLOAD_CHUNK_BYTES:
             raise HTTPException(status_code=413, detail="Chunk excede o limite permitido.")
+        try:
+            ensure_chunk_headroom(upload_root(tenant.tenant_id), len(body), policy=UPLOAD_SAFETY)
+        except UploadCapacityError as exc:
+            audit(request, "dashboard_upload_paused_capacity", "denied", tenant.tenant_id, {"session_id": session_id})
+            raise HTTPException(status_code=507, detail=str(exc)) from exc
         declared = int(item.get("size", 0))
         received = int(item.get("received", 0))
         if received + len(body) > declared:
