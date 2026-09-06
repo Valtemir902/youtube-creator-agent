@@ -72,8 +72,6 @@ class ChannelProfile:
     measured_at: str
     channel_id: str
     channel_title: str
-    country: str
-    default_language: str
     subscribers: int
     total_views: int
     video_count: int
@@ -87,6 +85,8 @@ class ChannelProfile:
     topic_terms: tuple[str, ...]
     shorts_share_of_recent_views: float
     long_share_of_recent_views: float
+    country: str = "GLOBAL"
+    default_language: str = "und"
 
     def to_dict(self) -> dict:
         return asdict(self)
