@@ -9,6 +9,7 @@ on:
       - "plugins/youtube-creator-agent/**"
       - "src/creator_service/cloud_mcp_server.py"
       - "src/creator_service/cloud_auth.py"
+      - "src/creator_service/onboarding_api.py"
   workflow_dispatch:
   schedule:
     - cron: "17 10 * * *"
@@ -18,18 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check MCP health
-        run: curl --fail --show-error --silent --location --max-time 20 https://mcp.silvadigitaltech.com/health
+      - name: Check onboarding health
+        run: curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/health
 
-      - name: Check MCP readiness
-        run: curl --fail --show-error --silent --location --max-time 20 https://mcp.silvadigitaltech.com/ready
+      - name: Check publication readiness
+        run: curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/ready
 
-      - name: Check ChatGPT public pages
+      - name: Check public legal and support pages
         shell: bash
         run: |
           set -euo pipefail
           for url in \
-            https://creator.silvadigitaltech.com/onboarding \
             https://creator.silvadigitaltech.com/privacy \
             https://creator.silvadigitaltech.com/terms \
             https://creator.silvadigitaltech.com/support
@@ -37,6 +37,18 @@ jobs:
             echo "Checking $url"
             curl --fail --show-error --silent --location --max-time 20 --output /dev/null "$url"
           done
+
+      - name: Check onboarding route exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --show-error --silent --location --max-time 20 --output /tmp/onboarding-body.txt --write-out '%{http_code}' https://creator.silvadigitaltech.com/onboarding || true)"
+          echo "Onboarding HTTP status: $code"
+          # Without an onboarding session the app intentionally redirects to the session-expired page.
+          case "$code" in
+            2*|3*) exit 0 ;;
+            *) echo "Unexpected onboarding status: $code"; cat /tmp/onboarding-body.txt || true; exit 1 ;;
+          esac
 
       - name: Check MCP endpoint is reachable
         shell: bash
