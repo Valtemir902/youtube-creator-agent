@@ -53,7 +53,7 @@ class GoogleOAuthCoordinator:
     def _pkce_secret_name(cls, state: str) -> str:
         return f"{cls.PKCE_SECRET_PREFIX}{TenantDatabase.state_hash(state)}"
 
-    def start(self, tenant_id: str, ttl_seconds: int = 600) -> OAuthStart:
+    def start(self, tenant_id: str, ttl_seconds: int = 600, select_account: bool = False) -> OAuthStart:
         from google_auth_oauthlib.flow import Flow
 
         tenant_id = validate_tenant_id(tenant_id)
@@ -71,7 +71,7 @@ class GoogleOAuthCoordinator:
         url, returned_state = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
-            prompt="consent",
+            prompt="select_account consent" if select_account else "consent",
         )
         if returned_state != state:
             raise TenantStoreError("Falha interna ao criar estado OAuth.")

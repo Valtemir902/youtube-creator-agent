@@ -23,6 +23,8 @@ from .dashboard_ai import (
     list_playlists,
     youtube_transcript,
 )
+from .channel_accounts import activate_channel, capture_current_channel, list_channel_accounts
+from .google_oauth import GoogleOAuthCoordinator
 from .dashboard_store import DashboardActionStore
 from .safe_service import SafeCreatorService
 from .security import signer_from_env
@@ -284,6 +286,30 @@ def install_dashboard_routes(
     @app.get("/api/dashboard/channel")
     async def dashboard_channel(period_days: int = 28, tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
         return service_for(tenant.tenant_id).channel_profile(period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/channels")
+    async def dashboard_channels(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
+        return list_channel_accounts(resolver.db, tenant.tenant_id)
+
+    @app.post("/api/dashboard/channels/connect")
+    async def dashboard_channel_connect(request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        try:
+            if resolver.db.get_secret(tenant.tenant_id, "google:authorized_user_json"):
+                capture_current_channel(resolver.db, tenant.tenant_id)
+            oauth = GoogleOAuthCoordinator(resolver.db).start(tenant.tenant_id, select_account=True)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        audit(request, "dashboard_channel_connect_started", "success", tenant.tenant_id)
+        return {"authorization_url": oauth.authorization_url, "expires_in_seconds": oauth.expires_in_seconds}
+
+    @app.post("/api/dashboard/channels/{channel_id}/activate")
+    async def dashboard_channel_activate(channel_id: str, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        try:
+            channel = activate_channel(resolver.db, tenant.tenant_id, channel_id)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        audit(request, "dashboard_channel_activated", "success", tenant.tenant_id, {"channel_id": channel_id})
+        return {"ok": True, "channel": channel}
 
     @app.get("/api/dashboard/channel/identity")
     async def dashboard_channel_identity(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:

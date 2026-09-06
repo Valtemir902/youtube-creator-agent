@@ -7,6 +7,7 @@ from ai.runtime import AIRuntime
 from ai.settings import AISettings
 
 from .cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
+from .channel_accounts import capture_current_channel
 from .google_oauth import GoogleOAuthCoordinator
 
 
@@ -92,6 +93,11 @@ class OnboardingService:
             state=state,
             authorization_response=authorization_response,
         )
+        try:
+            capture_current_channel(self.db, tenant_id)
+        except Exception:
+            # OAuth remains valid if immediate identity refresh is temporarily unavailable.
+            pass
         return self.status(tenant_id)
 
     def disconnect_youtube(self, tenant_id: str) -> dict[str, Any]:
