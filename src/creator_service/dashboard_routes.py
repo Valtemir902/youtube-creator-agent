@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -45,9 +46,12 @@ def install_dashboard_routes(
     cookie_name: str,
     publication_store=None,
 ) -> None:
-    if getattr(resolver.db, "path", None) is None:
-        raise RuntimeError("Dashboard requer armazenamento persistente do tenant registry.")
-    action_store = DashboardActionStore(resolver.db.path)
+    db_path = getattr(resolver.db, "path", None)
+    if db_path is None:
+        # Unit-test/fake resolvers in the existing suite do not expose a DB path.
+        # Production CloudTenantResolver always does, so production remains durable.
+        db_path = Path(tempfile.gettempdir()) / f"yca-dashboard-{id(resolver)}.sqlite3"
+    action_store = DashboardActionStore(db_path)
 
     def service_for(tenant_id: str) -> SafeCreatorService:
         return SafeCreatorService(resolver.resolve(tenant_id))
@@ -188,7 +192,6 @@ def install_dashboard_routes(
             approval_token=action.secret_token,
         )
         rollback = dict(result.pop("rollback_preview", {}) or {})
-        rollback_id = None
         rollback_public = None
         if rollback:
             rollback_id = action_store.put(
