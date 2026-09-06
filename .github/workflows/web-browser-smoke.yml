@@ -1,8 +1,6 @@
 name: Web Browser Smoke
 
 on:
-  push:
-    branches: ["feat/web-dashboard-v1"]
   workflow_dispatch:
 
 jobs:
@@ -10,8 +8,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Checkout
+      - name: Checkout feature branch
         uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -28,170 +28,7 @@ jobs:
         env:
           CREATOR_BASE_URL: https://creator.silvadigitaltech.com
           AUTH_HOST: auth.silvadigitaltech.com
-        run: |
-          mkdir -p artifacts/screenshots
-          node <<'NODE'
-          const { chromium } = require('playwright');
-          const fs = require('fs');
-          const base = process.env.CREATOR_BASE_URL;
-          const authHost = process.env.AUTH_HOST;
-          const out = 'artifacts/screenshots';
-          const failures = [];
-          const observations = [];
-          const consoleErrors = [];
-          const check = (ok, message) => { observations.push({ ok: !!ok, message }); if (!ok) failures.push(message); };
-          const observe = (ok, message) => observations.push({ ok: !!ok, message });
-          const shot = async (page, name) => { try { await page.screenshot({ path: `${out}/${name}.png`, fullPage: true }); } catch (e) { failures.push(`Screenshot ${name} failed: ${e.message}`); } };
-          const scenario = async (name, fn) => { try { await fn(); } catch (e) { failures.push(`${name}: ${e.message}`); } };
-          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-          const waitCreatorReady = async page => page.waitForFunction(() => {
-            const b=document.querySelector('#continueBtn'), r=document.querySelector('#recoverBtn');
-            return b && r && !b.disabled && !r.disabled;
-          }, null, {timeout:15000});
-          const checkKeycloakStyling = async (page, label) => {
-            const sheets = await page.locator('link[rel="stylesheet"]').count();
-            const font = await page.evaluate(() => getComputedStyle(document.body).fontFamily || '');
-            const rawSerif = /(^|,)\s*["']?(times new roman|times|serif)["']?\s*(,|$)/i.test(font.trim());
-            check(sheets >= 1, `${label} has no stylesheet loaded`);
-            check(!rawSerif, `${label} appears unstyled; body font=${font}`);
-          };
-          const waitForDeployedRevision = async request => {
-            const marker = 'três etapas simples';
-            for (let i=1; i<=45; i++) {
-              try {
-                const r = await request.get(`${base}/login`, { timeout: 10000 });
-                const body = (await r.text()).toLowerCase();
-                if (r.status() === 200 && body.includes(marker)) {
-                  observations.push({ok:true,message:`Deployed revision visible on attempt ${i}/45`});
-                  return;
-                }
-                observations.push({ok:false,message:`Waiting for deployed revision, HTTP ${r.status()}, attempt ${i}/45`});
-              } catch (e) {
-                observations.push({ok:false,message:`Waiting for deployed revision: ${e.message}, attempt ${i}/45`});
-              }
-              await sleep(2000);
-            }
-            throw new Error('Latest deployed login revision did not become visible within 90 seconds');
-          };
-
-          (async()=>{
-            const browser = await chromium.launch({headless:true});
-            const context = await browser.newContext({viewport:{width:1440,height:1100},locale:'pt-BR'});
-            const page = await context.newPage();
-
-            // CI and production deploy run concurrently after a push. Wait until the
-            // public page proves that this revision is live before starting browser assertions.
-            await waitForDeployedRevision(context.request);
-            page.on('console', msg => { if (msg.type()==='error') { const loc=msg.location(); consoleErrors.push(`console@${loc.url||page.url()}:${loc.lineNumber||0}: ${msg.text()}`); } });
-            page.on('pageerror', err => consoleErrors.push(`pageerror@${page.url()}: ${err.stack||err.message}`));
-
-            await scenario('Creator login', async()=>{
-              const r=await page.goto(`${base}/login`,{waitUntil:'networkidle',timeout:30000});
-              check(r?.status()===200,`GET /login expected 200, got ${r?.status()}`);
-              await shot(page,'01-creator-login');
-              await waitCreatorReady(page);
-              const text=(await page.locator('body').innerText()).toLowerCase();
-              check(!text.includes('turnstile'),'Creator login still exposes Turnstile text');
-            });
-
-            await scenario('Creator error state', async()=>{
-              await page.goto(`${base}/login?error=teste_e2e_visivel`,{waitUntil:'networkidle',timeout:30000});
-              await waitCreatorReady(page);
-              await shot(page,'02-creator-login-error-state');
-              const status=await page.locator('#status').innerText();
-              check(status.includes('teste_e2e_visivel'),`Callback error is hidden from UI. Status: ${status}`);
-            });
-
-            await scenario('Creator register tab', async()=>{
-              await page.goto(`${base}/login`,{waitUntil:'networkidle',timeout:30000});
-              await waitCreatorReady(page);
-              await page.getByRole('button',{name:'Criar conta'}).click();
-              await shot(page,'03-creator-register-tab');
-              const body=(await page.locator('body').innerText()).toLowerCase();
-              check(body.includes('confirme o endereço') && body.includes('defina sua senha'),'Registration steps are not clearly explained before redirect');
-            });
-
-            await scenario('Keycloak registration', async()=>{
-              await page.goto(`${base}/login`,{waitUntil:'networkidle',timeout:30000});
-              await waitCreatorReady(page);
-              await page.getByRole('button',{name:'Criar conta'}).click();
-              await Promise.all([
-                page.waitForURL(url=>url.hostname===authHost,{timeout:20000}),
-                page.getByRole('button',{name:'Criar minha conta'}).click(),
-              ]);
-              await page.waitForLoadState('networkidle');
-              await shot(page,'04-keycloak-register');
-              await checkKeycloakStyling(page,'Keycloak registration');
-              const passwords=await page.locator('input[type="password"]').count();
-              observe(passwords>=2, passwords>=2 ? 'Registration asks for password + confirmation on first screen' : 'Registration uses Keycloak staged flow: verify e-mail before setting password');
-              const captcha=await page.locator('iframe[src*="recaptcha" i],iframe[src*="turnstile" i],.g-recaptcha,.cf-turnstile').count();
-              observe(captcha>=1, captcha>=1 ? 'Registration bot challenge is visible' : 'No visible CAPTCHA on registration; rate limits/identity controls remain the current anti-abuse layer');
-            });
-
-            await scenario('Keycloak login', async()=>{
-              await page.goto(`${base}/login`,{waitUntil:'networkidle',timeout:30000});
-              await waitCreatorReady(page);
-              await Promise.all([
-                page.waitForURL(url=>url.hostname===authHost,{timeout:20000}),
-                page.getByRole('button',{name:'Continuar para entrar'}).click(),
-              ]);
-              await page.waitForLoadState('networkidle');
-              await shot(page,'05-keycloak-login');
-              await checkKeycloakStyling(page,'Keycloak login');
-              const pw=await page.locator('input[type="password"]').count();
-              const id=await page.locator('input[type="email"],input[name="username"],input[id*="username" i]').count();
-              check(pw>=1,'Keycloak login has no password field');
-              check(id>=1,'Keycloak login has no username/e-mail field');
-            });
-
-            await scenario('Keycloak recovery', async()=>{
-              await page.goto(`${base}/login`,{waitUntil:'networkidle',timeout:30000});
-              await waitCreatorReady(page);
-              await Promise.all([
-                page.waitForURL(url=>url.hostname===authHost,{timeout:20000}),
-                page.getByRole('button',{name:'Esqueci minha senha'}).click(),
-              ]);
-              await page.waitForLoadState('networkidle');
-              await shot(page,'06-keycloak-recovery');
-              await checkKeycloakStyling(page,'Keycloak recovery');
-              const id=await page.locator('input[type="email"],input[name="username"],input[id*="username" i]').count();
-              check(id>=1,'Keycloak recovery has no e-mail/username field');
-            });
-
-            await scenario('Public legal pages', async()=>{
-              for (const [path,name] of [['/privacy','07-privacy'],['/terms','08-terms'],['/support','09-support']]) {
-                const r=await page.goto(`${base}${path}`,{waitUntil:'domcontentloaded',timeout:30000});
-                check(r?.status()===200,`${path} expected 200, got ${r?.status()}`);
-                await shot(page,name);
-              }
-            });
-
-            await scenario('Protected routes', async()=>{
-              for (const path of ['/dashboard','/onboarding']) {
-                const r=await context.request.get(`${base}${path}`,{maxRedirects:0});
-                check([302,303,307,308].includes(r.status()),`${path} should redirect anonymous user, got ${r.status()}`);
-              }
-            });
-
-            await scenario('Auth API', async()=>{
-              const health=await context.request.get(`${base}/health`);
-              check(health.status()===200,`/health expected 200, got ${health.status()}`);
-              const configResponse=await context.request.get(`${base}/api/auth/config`);
-              check(configResponse.status()===200,`/api/auth/config expected 200, got ${configResponse.status()}`);
-              if(configResponse.status()===200){const config=await configResponse.json();check(config.oidc_ready===true,`OIDC not ready: ${JSON.stringify(config)}`);}
-              const beginResponse=await context.request.post(`${base}/api/auth/begin`,{data:{mode:'login',next:'/dashboard'},headers:{'Content-Type':'application/json'}});
-              const beginText=await beginResponse.text();
-              check(beginResponse.status()===200,`/api/auth/begin expected 200, got ${beginResponse.status()}: ${beginText.slice(0,300)}`);
-              if(beginResponse.status()===200){const begin=JSON.parse(beginText);check(typeof begin.authorization_url==='string'&&begin.authorization_url.includes(authHost),'authorization_url does not point to Keycloak');}
-            });
-
-            check(consoleErrors.length===0,`Browser console errors detected: ${consoleErrors.join(' | ')}`);
-            fs.writeFileSync('artifacts/browser-audit.json',JSON.stringify({failures,observations,consoleErrors},null,2));
-            fs.writeFileSync('artifacts/browser-console-errors.txt',consoleErrors.join('\n'));
-            await browser.close();
-            if(failures.length){console.error(`Browser audit found ${failures.length} issue(s):\n- ${failures.join('\n- ')}`);process.exitCode=1;}
-          })().catch(err=>{console.error(err.stack||err);process.exitCode=1;});
-          NODE
+        run: node tests/live_browser_smoke.js
 
       - name: Upload screenshots and diagnostics
         if: always()
