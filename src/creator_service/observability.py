@@ -74,8 +74,7 @@ async def production_http_middleware(request: Request, call_next) -> Response:
             response_obj.headers.setdefault(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
-                "connect-src 'self' https://challenges.cloudflare.com; "
-                "frame-src https://challenges.cloudflare.com; "
+                "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; "
+                "connect-src 'self'; frame-src 'none'; object-src 'none'; "
                 "frame-ancestors 'none'; base-uri 'self'",
             )
