@@ -82,8 +82,8 @@ jobs:
             // CI and production deploy run concurrently after a push. Wait until the
             // public page proves that this revision is live before starting browser assertions.
             await waitForDeployedRevision(context.request);
-            page.on('console', msg => { if (msg.type()==='error') consoleErrors.push(msg.text()); });
-            page.on('pageerror', err => consoleErrors.push(`pageerror: ${err.message}`));
+            page.on('console', msg => { if (msg.type()==='error') { const loc=msg.location(); consoleErrors.push(`console@${loc.url||page.url()}:${loc.lineNumber||0}: ${msg.text()}`); } });
+            page.on('pageerror', err => consoleErrors.push(`pageerror@${page.url()}: ${err.stack||err.message}`));
 
             await scenario('Creator login', async()=>{
               const r=await page.goto(`${base}/login`,{waitUntil:'networkidle',timeout:30000});
