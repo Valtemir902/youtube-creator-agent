@@ -4,14 +4,18 @@ from pathlib import Path
 def test_transcription_engine_is_server_side_and_portable():
     code = Path("src/creator_service/media_transcription.py").read_text(encoding="utf-8")
     assert "class WhisperCppTranscriber" in code
+    assert "pywhispercpp.model" in code
+    assert "imageio_ffmpeg" in code
     assert "pcm_s16le" in code
     assert '"-ar",\n                "16000"' in code
     assert "subprocess.run" in code
     docker = Path("Dockerfile.server").read_text(encoding="utf-8")
-    assert "whisper.cpp" in docker
-    assert "ggml-base.bin" in docker
-    assert "ffmpeg" in docker
-    assert "GGML_NATIVE=OFF" in docker
+    assert "apt-get" not in docker
+    assert "YCA_WHISPER_MODEL=base" in docker
+    assert "Model('base'" in docker
+    requirements = Path("requirements-server.txt").read_text(encoding="utf-8")
+    assert "pywhispercpp==1.5.1" in requirements
+    assert "imageio-ffmpeg==0.6.0" in requirements
 
 
 def test_dashboard_smart_analysis_no_longer_uses_manual_prompt():
