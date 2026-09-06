@@ -18,7 +18,7 @@ jobs:
   deploy:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment: production
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -88,6 +88,42 @@ jobs:
           echo
           curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/ready
           echo
+          curl --fail --show-error --silent --location --max-time 20 https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration >/dev/null
           code="$(curl --show-error --silent --output /dev/null --write-out '%{http_code}' https://creator.silvadigitaltech.com/login)"
           test "$code" = "200"
           echo "Login page HTTP $code"
+
+      - name: Checkout deployed revision for browser audit
+        if: steps.creds.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.sha }}
+
+      - name: Set up Node for browser audit
+        if: steps.creds.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install browser audit runtime
+        if: steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Live browser audit after deploy
+        if: steps.creds.outputs.configured == 'true'
+        env:
+          CREATOR_BASE_URL: https://creator.silvadigitaltech.com
+          AUTH_HOST: auth.silvadigitaltech.com
+        run: node tests/live_browser_smoke.js
+
+      - name: Upload browser screenshots and diagnostics
+        if: always() && steps.creds.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-browser-audit
+          path: artifacts/
+          if-no-files-found: warn
