@@ -1,0 +1,146 @@
+name: Web Browser Smoke
+
+on:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+  workflow_dispatch:
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run live browser smoke tests
+        env:
+          CREATOR_BASE_URL: https://creator.silvadigitaltech.com
+          AUTH_HOST: auth.silvadigitaltech.com
+        run: |
+          mkdir -p artifacts/screenshots
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          const base = process.env.CREATOR_BASE_URL;
+          const authHost = process.env.AUTH_HOST;
+          const out = 'artifacts/screenshots';
+          const assert = (condition, message) => { if (!condition) throw new Error(message); };
+          const shot = async (page, name) => page.screenshot({ path: `${out}/${name}.png`, fullPage: true });
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext({
+              viewport: { width: 1440, height: 1100 },
+              locale: 'pt-BR',
+              ignoreHTTPSErrors: false,
+            });
+            const page = await context.newPage();
+            const consoleErrors = [];
+            page.on('console', msg => {
+              if (msg.type() === 'error') consoleErrors.push(msg.text());
+            });
+            page.on('pageerror', err => consoleErrors.push(`pageerror: ${err.message}`));
+
+            // Public login shell must boot and enable actions.
+            let response = await page.goto(`${base}/login`, { waitUntil: 'networkidle', timeout: 30000 });
+            assert(response && response.status() === 200, `GET /login expected 200, got ${response && response.status()}`);
+            await shot(page, '01-creator-login');
+            await page.waitForFunction(() => {
+              const b = document.querySelector('#continueBtn');
+              const r = document.querySelector('#recoverBtn');
+              return b && r && !b.disabled && !r.disabled;
+            }, null, { timeout: 15000 });
+            const bodyText = (await page.locator('body').innerText()).toLowerCase();
+            assert(!bodyText.includes('turnstile'), 'Creator login still exposes Turnstile text');
+            assert(!bodyText.includes('captcha intermediário') || bodyText.includes('não bloqueia mais'), 'Unexpected pre-login CAPTCHA gate');
+
+            // Error query must be visible to the human, not hidden only in the URL.
+            await page.goto(`${base}/login?error=teste_e2e_visivel`, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForFunction(() => !document.querySelector('#continueBtn')?.disabled, null, { timeout: 15000 });
+            await shot(page, '02-creator-login-error-state');
+            const errorStatus = await page.locator('#status').innerText();
+            assert(errorStatus.includes('teste_e2e_visivel'), `Login error query is not surfaced in UI. Status was: ${errorStatus}`);
+
+            // Register route must reach Keycloak and require a password at registration time.
+            await page.goto(`${base}/login`, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForFunction(() => !document.querySelector('#continueBtn')?.disabled, null, { timeout: 15000 });
+            await page.getByRole('button', { name: 'Criar conta' }).click();
+            await shot(page, '03-creator-register-tab');
+            await Promise.all([
+              page.waitForURL(url => url.hostname === authHost, { timeout: 20000 }),
+              page.getByRole('button', { name: 'Criar minha conta' }).click(),
+            ]);
+            await page.waitForLoadState('networkidle');
+            await shot(page, '04-keycloak-register');
+            const registerPasswords = await page.locator('input[type="password"]').count();
+            assert(registerPasswords >= 2, `Registration must ask for password + confirmation. Found ${registerPasswords} password fields.`);
+
+            // Login route must reach Keycloak with username/e-mail and password inputs.
+            await page.goto(`${base}/login`, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForFunction(() => !document.querySelector('#continueBtn')?.disabled, null, { timeout: 15000 });
+            await Promise.all([
+              page.waitForURL(url => url.hostname === authHost, { timeout: 20000 }),
+              page.getByRole('button', { name: 'Continuar para entrar' }).click(),
+            ]);
+            await page.waitForLoadState('networkidle');
+            await shot(page, '05-keycloak-login');
+            const loginPasswordCount = await page.locator('input[type="password"]').count();
+            const loginIdentifierCount = await page.locator('input[type="email"], input[name="username"], input[id*="username" i]').count();
+            assert(loginPasswordCount >= 1, 'Keycloak login has no password field');
+            assert(loginIdentifierCount >= 1, 'Keycloak login has no username/e-mail field');
+
+            // Recovery route must reach Keycloak recovery screen.
+            await page.goto(`${base}/login`, { waitUntil: 'networkidle', timeout: 30000 });
+            await page.waitForFunction(() => !document.querySelector('#recoverBtn')?.disabled, null, { timeout: 15000 });
+            await Promise.all([
+              page.waitForURL(url => url.hostname === authHost, { timeout: 20000 }),
+              page.getByRole('button', { name: 'Esqueci minha senha' }).click(),
+            ]);
+            await page.waitForLoadState('networkidle');
+            await shot(page, '06-keycloak-recovery');
+            const recoveryIdentifierCount = await page.locator('input[type="email"], input[name="username"], input[id*="username" i]').count();
+            assert(recoveryIdentifierCount >= 1, 'Keycloak recovery has no e-mail/username field');
+
+            // Public auth API contract.
+            const configResponse = await context.request.get(`${base}/api/auth/config`);
+            assert(configResponse.status() === 200, `/api/auth/config expected 200, got ${configResponse.status()}`);
+            const config = await configResponse.json();
+            assert(config.oidc_ready === true, `OIDC is not ready: ${JSON.stringify(config)}`);
+
+            const beginResponse = await context.request.post(`${base}/api/auth/begin`, {
+              data: { mode: 'login', next: '/dashboard' },
+              headers: { 'Content-Type': 'application/json' },
+            });
+            assert(beginResponse.status() === 200, `/api/auth/begin expected 200, got ${beginResponse.status()}: ${await beginResponse.text()}`);
+            const begin = await beginResponse.json();
+            assert(typeof begin.authorization_url === 'string' && begin.authorization_url.includes(authHost), 'authorization_url does not point to Keycloak');
+
+            fs.writeFileSync('artifacts/browser-console-errors.txt', consoleErrors.join('\n'));
+            assert(consoleErrors.length === 0, `Browser console errors detected:\n${consoleErrors.join('\n')}`);
+            await browser.close();
+          })().catch(async err => {
+            console.error(err.stack || err);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Upload screenshots and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-browser-smoke-artifacts
+          path: artifacts/
+          if-no-files-found: warn
