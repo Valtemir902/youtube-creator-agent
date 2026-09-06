@@ -1,0 +1,43 @@
+name: Production Readiness
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 10 * * *"
+
+jobs:
+  public-endpoints:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check MCP health
+        run: curl --fail --show-error --silent --location --max-time 20 https://mcp.silvadigitaltech.com/health
+
+      - name: Check MCP readiness
+        run: curl --fail --show-error --silent --location --max-time 20 https://mcp.silvadigitaltech.com/ready
+
+      - name: Check ChatGPT public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for url in \
+            https://creator.silvadigitaltech.com/onboarding \
+            https://creator.silvadigitaltech.com/privacy \
+            https://creator.silvadigitaltech.com/terms \
+            https://creator.silvadigitaltech.com/support
+          do
+            echo "Checking $url"
+            curl --fail --show-error --silent --location --max-time 20 --output /dev/null "$url"
+          done
+
+      - name: Check MCP endpoint is reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl --show-error --silent --location --max-time 20 --output /tmp/mcp-body.txt --write-out '%{http_code}' https://mcp.silvadigitaltech.com/mcp || true)"
+          echo "MCP HTTP status: $code"
+          # An authenticated MCP may reject an unauthenticated probe. 2xx, 401 and 403 all prove the public route exists.
+          case "$code" in
+            2*|401|403) exit 0 ;;
+            *) echo "Unexpected MCP status: $code"; cat /tmp/mcp-body.txt || true; exit 1 ;;
+          esac
