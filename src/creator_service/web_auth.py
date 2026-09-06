@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -13,6 +15,9 @@ from typing import Any
 
 from .cloud_auth import tenant_id_from_subject
 from .tenant_store import TenantDatabase
+
+
+LOGGER = logging.getLogger("youtube_creator_agent")
 
 
 @dataclass(frozen=True)
@@ -100,13 +105,7 @@ class BrowserAuthStore:
 
 
 class TurnstileVerifier:
-    """Deprecated compatibility shim.
-
-    Browser authentication no longer uses a CAPTCHA gate in front of Keycloak.
-    Abuse protection belongs with the identity-provider login/register/recovery
-    flows, while this service retains rate limits plus OIDC state/nonce/PKCE.
-    The class remains temporarily so older API code can roll forward safely.
-    """
+    """Deprecated compatibility shim for deployments upgrading from the pre-login gate."""
 
     def __init__(self) -> None:
         self.site_key = ""
@@ -166,6 +165,26 @@ class BrowserOIDCClient:
         digest = hashlib.sha256(verifier.encode("ascii")).digest()
         return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
+    @staticmethod
+    def _safe_provider_error(raw: bytes) -> tuple[str, str]:
+        try:
+            payload = json.loads(raw.decode("utf-8", errors="replace")[:4096])
+        except Exception:
+            return "provider_error", ""
+        error = str(payload.get("error", "provider_error"))[:80]
+        description = str(payload.get("error_description", ""))[:240]
+        return error, description
+
+    @staticmethod
+    def _token_exchange_message(error: str) -> str:
+        if error == "invalid_client":
+            return "O cliente OIDC do Creator Agent foi recusado pelo provedor de identidade."
+        if error == "invalid_grant":
+            return "O código de login expirou, já foi usado ou não corresponde à sessão iniciada. Inicie o login novamente."
+        if error == "unauthorized_client":
+            return "O provedor de identidade não autorizou este fluxo de login."
+        return "O provedor de identidade recusou a conclusão do login."
+
     def authorization_url(self, pending: PendingOIDC) -> str:
         endpoint = self.forgot_credentials_endpoint if pending.mode == "recover" else self.authorization_endpoint
         query = {
@@ -200,8 +219,22 @@ class BrowserOIDCClient:
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:
-            raise PermissionError("Não foi possível concluir o login seguro.") from exc
+        except urllib.error.HTTPError as exc:
+            raw = exc.read(4096)
+            error, description = self._safe_provider_error(raw)
+            LOGGER.warning(
+                "OIDC token exchange rejected status=%s error=%s description=%s",
+                exc.code,
+                error,
+                description,
+            )
+            raise PermissionError(self._token_exchange_message(error)) from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            LOGGER.warning("OIDC token endpoint unavailable: %s", type(exc).__name__)
+            raise PermissionError("Não foi possível conectar ao provedor de identidade para concluir o login.") from exc
+        except (ValueError, json.JSONDecodeError) as exc:
+            LOGGER.warning("OIDC token endpoint returned an invalid response")
+            raise PermissionError("O provedor de identidade retornou uma resposta inválida ao concluir o login.") from exc
         access_token = str(data.get("access_token", "")).strip()
         if not access_token:
             raise PermissionError("O provedor de identidade não retornou um token de acesso.")
@@ -216,8 +249,14 @@ class BrowserOIDCClient:
         try:
             with urllib.request.urlopen(request, timeout=8) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except Exception as exc:
-            raise PermissionError("Não foi possível confirmar a identidade da conta.") from exc
+        except urllib.error.HTTPError as exc:
+            LOGGER.warning("OIDC userinfo rejected status=%s", exc.code)
+            raise PermissionError("O provedor de identidade recusou a validação da conta autenticada.") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            LOGGER.warning("OIDC userinfo endpoint unavailable: %s", type(exc).__name__)
+            raise PermissionError("Não foi possível confirmar a identidade da conta no provedor.") from exc
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise PermissionError("O provedor de identidade retornou dados de usuário inválidos.") from exc
         subject = str(data.get("sub", "")).strip()
         if not subject:
             raise PermissionError("A conta autenticada não possui identificador de usuário.")
