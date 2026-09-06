@@ -47,7 +47,7 @@
 
     <div class="security-note">A proteção contra abuso fica no fluxo de identidade, onde fazem sentido login, cadastro e recuperação de senha. Esta tela não bloqueia mais o acesso por um CAPTCHA intermediário.</div>
     <div class="actions"><button id="continueBtn" class="btn primary" disabled>Continuar para entrar</button><button id="recoverBtn" class="btn secondary" disabled>Esqueci minha senha</button></div>
-    <div id="status" class="status">Preparando acesso seguro…</div>
+    <div id="status" class="status" role="status" aria-live="polite">Preparando acesso seguro…</div>
     <div class="smalllinks"><a href="/privacy">Política de Privacidade</a><a href="/terms">Termos de Uso</a><a href="/support">Suporte</a></div>
     <div class="terms">Ao criar uma conta, você concorda com os Termos de Uso e a Política de Privacidade.</div>
   </section>
@@ -55,13 +55,14 @@
 <div class="footer">YouTube Creator Agent Elite · autenticação segura via OIDC</div>
 <script>
 const $=s=>document.querySelector(s);let mode='login',config=null,busy=false;
+const params=new URLSearchParams(location.search);const callbackError=(params.get('error')||'').trim().slice(0,300);
 function setStatus(text,error=false){const el=$('#status');el.textContent=text;el.className='status'+(error?' error':'')}
 function updateButtons(){const ready=!!config?.oidc_ready&&!busy;$('#continueBtn').disabled=!ready;$('#recoverBtn').disabled=!ready}
-function setMode(next){mode=next;document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));$('#loginPane').classList.toggle('hidden',mode!=='login');$('#registerPane').classList.toggle('hidden',mode!=='register');$('#continueBtn').textContent=mode==='register'?'Criar minha conta':'Continuar para entrar';setStatus('Acesso seguro pronto.');updateButtons()}
+function setMode(next){mode=next;document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));$('#loginPane').classList.toggle('hidden',mode!=='login');$('#registerPane').classList.toggle('hidden',mode!=='register');$('#continueBtn').textContent=mode==='register'?'Criar minha conta':'Continuar para entrar';setStatus(callbackError||'Acesso seguro pronto.',!!callbackError);updateButtons()}
 async function getConfig(){const r=await fetch('/api/auth/config',{credentials:'same-origin'});if(!r.ok)throw new Error('Não foi possível carregar a configuração de acesso.');return r.json()}
 async function begin(selectedMode){if(!config?.oidc_ready||busy)return;busy=true;updateButtons();setStatus('Abrindo acesso seguro…');try{const r=await fetch('/api/auth/begin',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:selectedMode,next:'/dashboard'})});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.detail||'Não foi possível iniciar o acesso.');location.assign(data.authorization_url)}catch(e){busy=false;updateButtons();setStatus(e.message,true)}}
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#continueBtn').onclick=()=>begin(mode);$('#recoverBtn').onclick=()=>begin('recover');
-(async()=>{try{config=await getConfig();if(!config.oidc_ready)throw new Error('Login seguro ainda não está configurado no servidor.');setStatus('Acesso seguro pronto.');updateButtons()}catch(e){setStatus(e.message,true)}})();
+(async()=>{try{config=await getConfig();if(!config.oidc_ready)throw new Error('Login seguro ainda não está configurado no servidor.');setStatus(callbackError||'Acesso seguro pronto.',!!callbackError);updateButtons()}catch(e){setStatus(e.message,true)}})();
 </script>
 </body>
 </html>
