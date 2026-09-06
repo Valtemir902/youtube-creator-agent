@@ -279,7 +279,7 @@ def create_app(
             separator = "&" if "?" in success_url else "?"
             return RedirectResponse(f"{success_url}{separator}youtube=connected", status_code=302)
         if request.cookies.get(COOKIE_NAME):
-            return RedirectResponse("/onboarding", status_code=303)
+            return RedirectResponse("/dashboard", status_code=303)
         return {
             "ok": True,
             "youtube_connected": result["youtube_connected"],
