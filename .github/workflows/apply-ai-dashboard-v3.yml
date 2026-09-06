@@ -1,0 +1,176 @@
+name: Apply AI Dashboard V3
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-ai-dashboard-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+          fetch-depth: 0
+      - name: Patch grounded AI dashboard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # 1) Enforce a real freshness window in YouTube research.
+          path = Path('src/intelligence/youtube_research.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'def research(self, query: str, max_results: int = 25) -> KeywordResearchResult:',
+              'def research(self, query: str, max_results: int = 25, max_age_days: int | None = None) -> KeywordResearchResult:',
+              1,
+          )
+          old = '''        yt = self._client()\n\n        search = yt.search().list(\n            part="snippet",\n            q=query,\n            type="video",\n            order="relevance",\n            maxResults=max_results,\n            safeSearch="moderate",\n        ).execute()\n'''
+          new = '''        yt = self._client()\n        now = self._now_provider()\n        search_args = {\n            "part": "snippet",\n            "q": query,\n            "type": "video",\n            "order": "relevance",\n            "maxResults": max_results,\n            "safeSearch": "moderate",\n        }\n        if max_age_days is not None:\n            days = max(1, min(180, int(max_age_days)))\n            search_args["publishedAfter"] = (now - timedelta(days=days)).isoformat().replace("+00:00", "Z")\n        search = yt.search().list(**search_args).execute()\n'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          text = text.replace('        now = self._now_provider()\n        normalized_query = _norm(query)', '        normalized_query = _norm(query)', 1)
+          path.write_text(text, encoding='utf-8')
+
+          # 2) Add dashboard routes for channel identity, playlists, live and grounded AI optimization.
+          path = Path('src/creator_service/dashboard_routes.py')
+          text = path.read_text(encoding='utf-8')
+          if 'from .dashboard_ai import (' not in text:
+              anchor = 'from .dashboard_store import DashboardActionStore\n'
+              block = '''from .dashboard_ai import (\n    channel_identity,\n    grounded_seo_plan,\n    list_live_broadcasts,\n    list_playlists,\n    youtube_transcript,\n)\n'''
+              if anchor not in text:
+                  raise SystemExit('dashboard import anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+
+          if 'class AIOptimizeRequest(BaseModel):' not in text:
+              anchor = 'class UploadStartRequest(BaseModel):\n'
+              block = '''class AIOptimizeRequest(BaseModel):\n    user_context: str = Field(default="", max_length=4000)\n    max_age_days: int = Field(default=30, ge=1, le=180)\n\n\nclass UploadAIPlanRequest(BaseModel):\n    video_name: str = Field(min_length=1, max_length=255)\n    transcript: str = Field(default="", max_length=30000)\n    user_context: str = Field(default="", max_length=4000)\n    max_age_days: int = Field(default=30, ge=1, le=180)\n\n\nclass PlaylistCreateRequest(BaseModel):\n    title: str = Field(min_length=1, max_length=150)\n    description: str = Field(default="", max_length=5000)\n    privacy_status: str = Field(default="private", pattern="^(public|unlisted|private)$")\n\n\nclass PlaylistRenameRequest(BaseModel):\n    title: str = Field(min_length=1, max_length=150)\n    description: str = Field(default="", max_length=5000)\n    privacy_status: str = Field(default="private", pattern="^(public|unlisted|private)$")\n\n\n'''
+              if anchor not in text:
+                  raise SystemExit('request class anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+
+          text = text.replace(
+              '    title: str = Field(min_length=1, max_length=100)\n',
+              '    title: str = Field(default="", max_length=100)\n',
+              1,
+          )
+
+          marker = '@app.get("/api/dashboard/channel/identity")'
+          if marker not in text:
+              anchor = '''    @app.get("/api/dashboard/videos")\n'''
+              block = '''    @app.get("/api/dashboard/channel/identity")\n    async def dashboard_channel_identity(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        return channel_identity(service._youtube())\n\n    @app.get("/api/dashboard/playlists")\n    async def dashboard_playlists(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        return {"playlists": list_playlists(service._youtube())}\n\n    @app.post("/api/dashboard/playlists")\n    async def dashboard_playlist_create(payload: PlaylistCreateRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        response = service._youtube().playlists().insert(\n            part="snippet,status",\n            body={"snippet": {"title": payload.title.strip(), "description": payload.description.strip()}, "status": {"privacyStatus": payload.privacy_status}},\n        ).execute()\n        audit(request, "dashboard_playlist_created", "success", tenant.tenant_id, {"playlist_id": response.get("id")})\n        return {"ok": True, "playlist": response}\n\n    @app.put("/api/dashboard/playlists/{playlist_id}")\n    async def dashboard_playlist_update(playlist_id: str, payload: PlaylistRenameRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        response = service._youtube().playlists().update(\n            part="snippet,status",\n            body={"id": playlist_id, "snippet": {"title": payload.title.strip(), "description": payload.description.strip()}, "status": {"privacyStatus": payload.privacy_status}},\n        ).execute()\n        audit(request, "dashboard_playlist_updated", "success", tenant.tenant_id, {"playlist_id": playlist_id})\n        return {"ok": True, "playlist": response}\n\n    @app.get("/api/dashboard/live")\n    async def dashboard_live(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        return {"broadcasts": list_live_broadcasts(service._youtube())}\n\n    @app.post("/api/dashboard/video/{video_id}/ai-optimize")\n    async def dashboard_video_ai_optimize(video_id: str, payload: AIOptimizeRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        service.memory.assert_not_recently_edited(video_id)\n        current = service._current_video_snippet(video_id)\n        transcript = youtube_transcript(service._youtube(), video_id)\n        source = transcript.get("text", "") or current.get("description", "") or current.get("title", "")\n        playlists = list_playlists(service._youtube())\n        try:\n            plan = grounded_seo_plan(\n                service, source_text=source, original_title=current.get("title", ""),\n                user_context=payload.user_context, max_age_days=payload.max_age_days, playlists=playlists,\n            )\n        except Exception as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        package = {"video_id": video_id, "baseline_digest": signer_from_env().payload_digest(current), "current": current, "plan": plan}\n        token = signer_from_env().issue("ai_optimize_video", video_id, package)\n        action_id = action_store.put(tenant_id=tenant.tenant_id, kind="ai_optimize_video", payload=package, secret_token=token, ttl_seconds=900)\n        audit(request, "dashboard_ai_optimization_preview", "success", tenant.tenant_id, {"video_id": video_id})\n        return {"action_id": action_id, "video_id": video_id, "current": current, "plan": plan, "transcript": {k: v for k, v in transcript.items() if k != "text"}, "requires_explicit_user_confirmation": True, "expires_in_seconds": 900}\n\n    @app.post("/api/dashboard/ai-optimize/apply/{action_id}")\n    async def dashboard_video_ai_apply(action_id: str, payload: ConfirmRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        if payload.confirmed is not True:\n            raise HTTPException(status_code=400, detail="Confirmação explícita obrigatória.")\n        try:\n            action = action_store.consume(action_id=action_id, tenant_id=tenant.tenant_id, kind="ai_optimize_video")\n        except PermissionError as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        package = dict(action.payload or {})\n        video_id = str(package.get("video_id", "")).strip()\n        signer_from_env().verify(action.secret_token, action="ai_optimize_video", subject=video_id, payload=package)\n        service = service_for(tenant.tenant_id)\n        service.memory.assert_not_recently_edited(video_id)\n        current = service._current_video_snippet(video_id)\n        if signer_from_env().payload_digest(current) != str(package.get("baseline_digest", "")):\n            raise HTTPException(status_code=409, detail="O vídeo mudou desde a análise. Gere uma nova otimização.")\n        plan = dict(package.get("plan", {}) or {})\n        tags = _clean_tags(list(plan.get("tags", []) or []))\n        snippet = {\n            "title": str(plan.get("title", current["title"]))[:100],\n            "description": str(plan.get("description", current["description"]))[:5000],\n            "tags": tags,\n            "categoryId": str(plan.get("category_id") or current.get("categoryId") or "22"),\n        }\n        language = str(plan.get("language") or current.get("defaultLanguage") or "").strip()\n        if language:\n            snippet["defaultLanguage"] = language\n        response = service._youtube().videos().update(part="snippet", body={"id": video_id, "snippet": snippet}).execute()\n        playlist_id = str(plan.get("playlist_id", "")).strip()\n        playlist_added = False\n        if playlist_id:\n            try:\n                service._youtube().playlistItems().insert(\n                    part="snippet", body={"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}},\n                ).execute()\n                playlist_added = True\n            except Exception:\n                playlist_added = False\n        service.memory.record_video_action(video_id=video_id, action_type="ai_metadata_update", surface="dashboard_web", changed_fields=["title", "description", "tags", "categoryId"], before=current, after=snippet, details={"tenant_id": tenant.tenant_id, "playlist_id": playlist_id})\n        audit(request, "dashboard_ai_optimization_applied", "success", tenant.tenant_id, {"video_id": video_id})\n        return {"ok": True, "video_id": video_id, "title": response.get("snippet", {}).get("title", snippet["title"]), "playlist_added": playlist_added}\n\n    @app.post("/api/dashboard/upload/ai-plan")\n    async def dashboard_upload_ai_plan(payload: UploadAIPlanRequest, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:\n        service = service_for(tenant.tenant_id)\n        service.context.validate_youtube()\n        try:\n            plan = grounded_seo_plan(\n                service, source_text=payload.transcript, original_title=payload.video_name, user_context=payload.user_context,\n                max_age_days=payload.max_age_days, playlists=list_playlists(service._youtube()),\n            )\n        except Exception as exc:\n            raise HTTPException(status_code=409, detail=str(exc)) from exc\n        return {"plan": plan, "requires_review": True}\n\n'''
+              if anchor not in text:
+                  raise SystemExit('route insertion anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+          path.write_text(text, encoding='utf-8')
+
+          # 3) Upgrade mobile dashboard UI without breaking the existing six-tab navigation.
+          path = Path('src/creator_service/web/dashboard.html')
+          text = path.read_text(encoding='utf-8')
+          if '.channel-hero{' not in text:
+              css_anchor = '    /* Elite UX hardening */\n'
+              css = '''    .channel-hero{display:flex;align-items:center;gap:14px}.channel-avatar{width:74px;height:74px;border-radius:50%;object-fit:cover;border:2px solid var(--accent);box-shadow:var(--glow);background:var(--card2)}.ai-plan{display:grid;gap:9px}.ai-plan .keyword-grid{display:flex;gap:6px;flex-wrap:wrap}.playlist-list{display:grid;gap:9px}.playlist-item{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid var(--line);border-radius:13px;padding:9px;background:var(--card2)}.playlist-thumb{width:64px;aspect-ratio:16/9;object-fit:cover;border-radius:8px;background:#000}.subtabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}.subtabs .btn.active{border-color:var(--accent);color:var(--accent)}\n'''
+              if css_anchor not in text:
+                  raise SystemExit('css anchor not found')
+              text = text.replace(css_anchor, css + css_anchor, 1)
+
+          if 'id="channelIdentity"' not in text:
+              anchor = '<article class="card full"><h3>Resumo do canal</h3>'
+              insert = '''<article class="card full"><div id="channelIdentity" class="channel-hero"><div class="loader"></div><div><h3 style="margin:0">Carregando identidade do canal…</h3><div class="muted">Foto, idioma e mercado do canal conectado</div></div></div></article>\n          '''
+              if anchor not in text:
+                  raise SystemExit('overview anchor not found')
+              text = text.replace(anchor, insert + anchor, 1)
+
+          if 'id="aiEditorCard"' not in text:
+              anchor = '<article class="card span8" id="editorCard">'
+              block = '''<article class="card full" id="aiEditorCard"><div class="toolbar" style="justify-content:space-between"><div><h3 style="margin:0">Otimização avançada com IA</h3><div class="muted">Lê legenda/transcrição disponível no YouTube, pesquisa sinais recentes e só aceita keywords com demanda e competição baixa/média.</div></div><span class="pill">janela 1–180 dias</span></div><div class="form" style="margin-top:12px"><label>Contexto opcional do criador<input id="aiVideoContext" placeholder="Ex.: foco do vídeo, produto exato, público alvo"></label><div class="row"><label>Atualidade máxima<select id="aiFreshness"><option value="7">7 dias</option><option value="30" selected>30 dias</option><option value="90">3 meses</option><option value="180">6 meses</option></select></label><button class="btn primary" id="optimizeSelectedVideo">Analisar e otimizar vídeo selecionado com IA</button></div></div><div id="aiVideoPlan" class="notice hidden" style="margin-top:12px"></div></article>\n          '''
+              if anchor not in text:
+                  raise SystemExit('video editor anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+
+          if 'id="playlistManager"' not in text:
+              anchor = '<article class="card full hidden" id="rollbackCard">'
+              block = '''<article class="card full" id="playlistManager"><div class="toolbar" style="justify-content:space-between"><div><h3 style="margin:0">Playlists</h3><div class="muted">Organize a biblioteca do canal e deixe a IA escolher a playlist mais coerente durante a otimização.</div></div><button class="btn" id="reloadPlaylists">Atualizar playlists</button></div><div class="row" style="margin-top:12px"><label>Nova playlist<input id="newPlaylistTitle" placeholder="Nome da playlist"></label><label>Privacidade<select id="newPlaylistPrivacy"><option value="public">Pública</option><option value="unlisted">Não listada</option><option value="private">Privada</option></select></label></div><button class="btn success" id="createPlaylist" style="margin-top:8px">Criar playlist</button><div id="playlistList" class="playlist-list" style="margin-top:12px"><div class="muted">Carregando playlists…</div></div></article>\n          '''
+              if anchor not in text:
+                  raise SystemExit('playlist anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+
+          text = text.replace('>Preparar e enviar para a VPS</button>', '>Modo manual: preparar upload</button>', 1)
+
+          if 'id="smartAnalyzeUpload"' not in text:
+              anchor = '<button class="btn primary" id="stageUpload">Modo manual: preparar upload</button>'
+              block = '''<button class="btn primary" id="smartAnalyzeUpload">Analisar vídeo e montar SEO com IA</button><div class="notice" id="smartUploadHint">O modo inteligente não exige título preenchido. Ele usa transcrição/contexto real antes de propor título, descrição, tags, categoria e playlist. O motor local de áudio será usado quando disponível.</div>'''
+              if anchor not in text:
+                  raise SystemExit('smart upload anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+
+          if 'id="liveOptimizer"' not in text:
+              anchor = '<article class="card"><h3>Upload em blocos</h3>'
+              block = '''<article class="card full" id="liveOptimizer"><div class="toolbar" style="justify-content:space-between"><div><h3 style="margin:0">Live em tempo real</h3><div class="muted">Selecione uma live ativa ou agendada, descreva o assunto e gere SEO recente antes ou durante a transmissão.</div></div><button class="btn" id="reloadLive">Atualizar lives</button></div><div class="row" style="margin-top:12px"><label>Live<select id="liveSelect"><option value="">Carregando…</option></select></label><label>O que será/está sendo falado<input id="liveContext" placeholder="Contexto real da transmissão"></label></div><button class="btn primary" id="optimizeLive">Otimizar live com IA</button><div id="livePlan" class="notice hidden" style="margin-top:10px"></div></article>\n          '''
+              if anchor not in text:
+                  raise SystemExit('live anchor not found')
+              text = text.replace(anchor, block + anchor, 1)
+
+          if 'async function loadChannelIdentity()' not in text:
+              anchor = 'async function loadCapabilities()'
+              funcs = '''async function loadChannelIdentity(){try{const d=await api('/api/dashboard/channel/identity');const box=$('channelIdentity');box.innerHTML=`<img class="channel-avatar" src="${esc(d.thumbnail||'')}" alt="Foto do canal"><div><h3 style="margin:0">${esc(d.title||'Canal conectado')}</h3><div class="muted">${esc(d.country||'Mercado global')} · ${esc(d.default_language||'idioma detectado pela estratégia')} · ${fmt(d.subscribers)} inscritos</div></div>`}catch(e){$('channelIdentity').innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}}\nasync function loadPlaylists(){const box=$('playlistList');if(!box)return;box.innerHTML='<div class="muted"><span class="loader"></span> Carregando playlists…</div>';try{const d=await api('/api/dashboard/playlists');const rows=d.playlists||[];box.innerHTML=rows.length?rows.map(p=>`<div class="playlist-item"><img class="playlist-thumb" src="${esc(p.thumbnail||'')}" alt=""><div><b>${esc(p.title)}</b><div class="muted">${fmt(p.count)} vídeos · ${esc(p.privacy_status)}</div></div><button class="btn" data-rename-playlist="${esc(p.id)}" data-playlist-title="${esc(p.title)}">Renomear</button></div>`).join(''):'<div class="notice">Nenhuma playlist encontrada.</div>';document.querySelectorAll('[data-rename-playlist]').forEach(b=>b.onclick=async()=>{const title=prompt('Novo nome da playlist',b.dataset.playlistTitle||'');if(!title)return;try{await api('/api/dashboard/playlists/'+encodeURIComponent(b.dataset.renamePlaylist),{method:'PUT',body:JSON.stringify({title,description:'',privacy_status:'private'})});toast('Playlist atualizada.');await loadPlaylists()}catch(e){toast(e.message,true)}})}catch(e){box.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`}}\nasync function loadLive(){if(!$('liveSelect'))return;try{const d=await api('/api/dashboard/live');const rows=d.broadcasts||[];$('liveSelect').innerHTML='<option value="">Selecione uma live</option>'+rows.map(x=>`<option value="${esc(x.id)}">${esc(x.title)} · ${esc(x.life_cycle_status||'')}</option>`).join('')}catch(e){$('liveSelect').innerHTML='<option value="">Lives indisponíveis</option>'}}\nasync function runAiOptimization(videoId,context,target){if(!videoId)return toast('Selecione um vídeo primeiro.',true);target.classList.remove('hidden');target.className='notice';target.innerHTML='<span class="loader"></span> Lendo contexto e validando keywords recentes…';try{const d=await api('/api/dashboard/video/'+encodeURIComponent(videoId)+'/ai-optimize',{method:'POST',body:JSON.stringify({user_context:context||'',max_age_days:Number($('aiFreshness')?.value||30)})});const p=d.plan||{};target.className='notice good';target.innerHTML=`<div class="ai-plan"><b>${esc(p.title||'')}</b><div>${esc(p.description||'')}</div><div class="keyword-grid">${(p.verified_keywords||[]).map(k=>`<span class="pill">${esc(k.keyword)} · ${esc(k.competition_label)} · D${esc(k.demand_index)}</span>`).join('')}</div><div class="muted">Categoria: ${esc(p.category_name||p.category_id||'')} · Playlist: ${esc(p.playlist_id||'nenhuma')} · Janela: ${esc(p.max_age_days)} dias</div><div class="toolbar"><button class="btn primary" data-apply-ai="${esc(d.action_id)}">Aprovar e aplicar</button><button class="btn" data-cancel-ai>Cancelar</button></div></div>`;target.querySelector('[data-apply-ai]').onclick=async e=>{setBusy(e.currentTarget,true,'Aplicando');try{await api('/api/dashboard/ai-optimize/apply/'+encodeURIComponent(d.action_id),{method:'POST',body:JSON.stringify({confirmed:true})});toast('Otimização aplicada com segurança.');target.classList.add('hidden');await loadVideos()}catch(err){toast(err.message,true)}finally{setBusy(e.currentTarget,false)}};target.querySelector('[data-cancel-ai]').onclick=()=>target.classList.add('hidden')}catch(e){target.className='notice bad';target.textContent=e.message}}\n'''
+              if anchor not in text:
+                  raise SystemExit('function anchor not found')
+              text = text.replace(anchor, funcs + anchor, 1)
+
+          text = text.replace('async function refreshAll(){await Promise.allSettled([loadStatus(),loadChannel(),loadCapabilities()])}', 'async function refreshAll(){await Promise.allSettled([loadStatus(),loadChannel(),loadChannelIdentity(),loadCapabilities(),loadPlaylists(),loadLive()])}', 1)
+          text = text.replace('if(name===\'videos\')loadVideos();', "if(name==='videos'){loadVideos();loadPlaylists()}if(name==='publish')loadLive();", 1)
+
+          if "$('reloadPlaylists').onclick" not in text:
+              anchor = "$('reloadVideos').onclick=loadVideos;"
+              handlers = '''$('reloadPlaylists').onclick=loadPlaylists;$('createPlaylist').onclick=async()=>{const title=$('newPlaylistTitle').value.trim();if(!title)return toast('Informe o nome da playlist.',true);try{await api('/api/dashboard/playlists',{method:'POST',body:JSON.stringify({title,description:'',privacy_status:$('newPlaylistPrivacy').value})});$('newPlaylistTitle').value='';toast('Playlist criada.');await loadPlaylists()}catch(e){toast(e.message,true)}};\n'''
+              if anchor not in text:
+                  raise SystemExit('playlist handlers anchor not found')
+              text = text.replace(anchor, anchor + handlers, 1)
+
+          if 'data-ai-video' not in text:
+              old = '<button class="btn" data-edit-video="${esc(v.id)}" aria-label="Editar ${esc(v.title)}">Editar</button>'
+              new = '<button class="btn primary" data-ai-video="${esc(v.id)}" aria-label="Otimizar ${esc(v.title)} com IA">IA</button><button class="btn" data-edit-video="${esc(v.id)}" aria-label="Editar ${esc(v.title)}">Editar</button>'
+              if old not in text:
+                  raise SystemExit('video AI button anchor not found')
+              text = text.replace(old, new, 1)
+              old2 = "document.querySelectorAll('[data-edit-video]').forEach(b=>b.onclick=()=>selectVideo(b.dataset.editVideo,true));"
+              new2 = "document.querySelectorAll('[data-ai-video]').forEach(b=>b.onclick=async()=>{await selectVideo(b.dataset.aiVideo,false);$('aiEditorCard').scrollIntoView({behavior:'smooth',block:'start'});runAiOptimization(b.dataset.aiVideo,$('aiVideoContext').value,$('aiVideoPlan'))});" + old2
+              text = text.replace(old2, new2, 1)
+
+          if "$('optimizeSelectedVideo').onclick" not in text:
+              anchor = "$('preview').onclick=async()=>"
+              handlers = '''$('optimizeSelectedVideo').onclick=()=>runAiOptimization($('videoId').value.trim(),$('aiVideoContext').value,$('aiVideoPlan'));$('reloadLive').onclick=loadLive;$('optimizeLive').onclick=()=>{const id=$('liveSelect').value;if(!id)return toast('Selecione uma live.',true);runAiOptimization(id,$('liveContext').value,$('livePlan'))};$('smartAnalyzeUpload').onclick=async()=>{const video=$('uploadVideo').files[0];if(!video)return toast('Escolha o vídeo primeiro.',true);const context=prompt('O motor local de transcrição ainda está sendo integrado. Informe brevemente o conteúdo real do vídeo para esta análise sem enviar o arquivo à VPS.');if(!context)return;setBusy($('smartAnalyzeUpload'),true,'Pesquisando SEO');try{const d=await api('/api/dashboard/upload/ai-plan',{method:'POST',body:JSON.stringify({video_name:video.name,transcript:'',user_context:context,max_age_days:30})});const p=d.plan||{};$('uploadTitle').value=p.title||'';$('uploadDescription').value=p.description||'';$('uploadTags').value=(p.tags||[]).join(', ');$('smartUploadHint').className='notice good';$('smartUploadHint').textContent='Plano de SEO gerado com dados recentes. Revise os campos e use o modo manual de upload enquanto o envio direto ao YouTube pelo dispositivo é integrado.';toast('SEO inteligente preparado.')}catch(e){toast(e.message,true)}finally{setBusy($('smartAnalyzeUpload'),false)}};\n'''
+              if anchor not in text:
+                  raise SystemExit('AI handlers anchor not found')
+              text = text.replace(anchor, handlers + anchor, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python -m py_compile src/intelligence/youtube_research.py src/creator_service/dashboard_ai.py src/creator_service/dashboard_routes.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html = Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
+          blocks = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, flags=re.I|re.S)
+          if not blocks:
+              raise SystemExit('dashboard script missing')
+          Path('/tmp/dashboard.js').write_text(blocks[-1], encoding='utf-8')
+          PY
+          node --check /tmp/dashboard.js
+      - name: Commit dashboard v3
+        run: |
+          if git diff --quiet; then
+            echo 'Already integrated'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/intelligence/youtube_research.py src/creator_service/dashboard_routes.py src/creator_service/web/dashboard.html
+          git commit -m 'feat: add grounded AI SEO playlists live and channel identity'
+          git push origin HEAD:feat/web-dashboard-v1
