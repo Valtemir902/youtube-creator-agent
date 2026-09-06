@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from .dashboard_ai import (
     channel_identity,
     grounded_seo_plan,
+    grounded_playlist_plan,
     list_live_broadcasts,
     list_playlists,
     youtube_transcript,
@@ -80,6 +81,11 @@ class AIOptimizeRequest(BaseModel):
 class UploadAIPlanRequest(BaseModel):
     video_name: str = Field(min_length=1, max_length=255)
     transcript: str = Field(default="", max_length=30000)
+    user_context: str = Field(default="", max_length=4000)
+    max_age_days: int = Field(default=30, ge=1, le=180)
+
+
+class PlaylistAIRequest(BaseModel):
     user_context: str = Field(default="", max_length=4000)
     max_age_days: int = Field(default=30, ge=1, le=180)
 
@@ -311,6 +317,55 @@ def install_dashboard_routes(
             body={"id": playlist_id, "snippet": {"title": payload.title.strip(), "description": payload.description.strip()}, "status": {"privacyStatus": payload.privacy_status}},
         ).execute()
         audit(request, "dashboard_playlist_updated", "success", tenant.tenant_id, {"playlist_id": playlist_id})
+        return {"ok": True, "playlist": response}
+
+    @app.post("/api/dashboard/playlists/{playlist_id}/ai-optimize")
+    async def dashboard_playlist_ai_optimize(playlist_id: str, payload: PlaylistAIRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        service.context.validate_youtube()
+        yt = service._youtube()
+        found = yt.playlists().list(part="snippet,status,contentDetails", id=playlist_id, maxResults=1).execute().get("items", [])
+        if not found:
+            raise HTTPException(status_code=404, detail="Playlist não encontrada.")
+        item = found[0]
+        snippet = item.get("snippet", {})
+        current = {"id": playlist_id, "title": str(snippet.get("title", "")), "description": str(snippet.get("description", "")), "privacy_status": item.get("status", {}).get("privacyStatus", "private")}
+        rows = yt.playlistItems().list(part="snippet,contentDetails", playlistId=playlist_id, maxResults=50).execute().get("items", [])
+        video_titles = [str(r.get("snippet", {}).get("title", "")) for r in rows if str(r.get("snippet", {}).get("title", "")).strip()]
+        try:
+            plan = grounded_playlist_plan(service, playlist=current, video_titles=video_titles, user_context=payload.user_context, max_age_days=payload.max_age_days)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        package = {"playlist_id": playlist_id, "baseline_digest": signer_from_env().payload_digest(current), "current": current, "plan": plan}
+        token = signer_from_env().issue("ai_optimize_playlist", playlist_id, package)
+        action_id = action_store.put(tenant_id=tenant.tenant_id, kind="ai_optimize_playlist", payload=package, secret_token=token, ttl_seconds=900)
+        audit(request, "dashboard_playlist_ai_preview", "success", tenant.tenant_id, {"playlist_id": playlist_id})
+        return {"action_id": action_id, "current": current, "plan": plan, "requires_explicit_user_confirmation": True, "expires_in_seconds": 900}
+
+    @app.post("/api/dashboard/playlists/ai-optimize/apply/{action_id}")
+    async def dashboard_playlist_ai_apply(action_id: str, payload: ConfirmRequest, request: Request, tenant: DashboardTenant = Depends(writable)) -> dict[str, Any]:
+        if payload.confirmed is not True:
+            raise HTTPException(status_code=400, detail="Confirmação explícita obrigatória.")
+        try:
+            action = action_store.consume(action_id=action_id, tenant_id=tenant.tenant_id, kind="ai_optimize_playlist")
+        except PermissionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        package = dict(action.payload or {})
+        playlist_id = str(package.get("playlist_id", "")).strip()
+        signer_from_env().verify(action.secret_token, action="ai_optimize_playlist", subject=playlist_id, payload=package)
+        service = service_for(tenant.tenant_id)
+        yt = service._youtube()
+        found = yt.playlists().list(part="snippet,status", id=playlist_id, maxResults=1).execute().get("items", [])
+        if not found:
+            raise HTTPException(status_code=404, detail="Playlist não encontrada.")
+        item = found[0]
+        snippet = item.get("snippet", {})
+        current = {"id": playlist_id, "title": str(snippet.get("title", "")), "description": str(snippet.get("description", "")), "privacy_status": item.get("status", {}).get("privacyStatus", "private")}
+        if signer_from_env().payload_digest(current) != str(package.get("baseline_digest", "")):
+            raise HTTPException(status_code=409, detail="A playlist mudou desde a análise. Gere uma nova prévia.")
+        plan = dict(package.get("plan", {}) or {})
+        response = yt.playlists().update(part="snippet,status", body={"id": playlist_id, "snippet": {"title": str(plan.get("title", current["title"]))[:150], "description": str(plan.get("description", current["description"]))[:5000]}, "status": {"privacyStatus": current["privacy_status"]}}).execute()
+        audit(request, "dashboard_playlist_ai_applied", "success", tenant.tenant_id, {"playlist_id": playlist_id})
         return {"ok": True, "playlist": response}
 
     @app.get("/api/dashboard/live")

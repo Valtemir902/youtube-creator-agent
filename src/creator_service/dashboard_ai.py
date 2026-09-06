@@ -274,3 +274,64 @@ def grounded_seo_plan(
         "provider": second.provider,
         "model": second.model,
     }
+
+
+def grounded_playlist_plan(
+    service,
+    *,
+    playlist: dict[str, Any],
+    video_titles: list[str],
+    user_context: str = "",
+    max_age_days: int = 30,
+) -> dict[str, Any]:
+    settings = service.ai_runtime.load_settings()
+    if not settings.model:
+        raise RuntimeError("Configure uma IA externa em Ajustes para usar a otimização automática dentro do painel.")
+    channel = channel_identity(service._youtube())
+    context = " ".join(str(user_context or "").split())
+    source = " | ".join([str(playlist.get("title", "")), str(playlist.get("description", "")), *[str(x) for x in video_titles[:50]]])
+    if len(source.strip()) < 10:
+        raise RuntimeError("A playlist ainda não possui contexto suficiente para uma otimização segura.")
+    candidate_prompt = f"""Você é um pesquisador de SEO para playlists do YouTube. Gere apenas consultas de busca coerentes com o tema REAL da playlist e dos vídeos. Não invente temas. Retorne JSON puro {{"keyword_candidates":[...]}} com 8 a 12 frases naturais no idioma e mercado do canal.\nCANAL: {json.dumps(channel, ensure_ascii=False)}\nPLAYLIST: {json.dumps(playlist, ensure_ascii=False)}\nVÍDEOS: {json.dumps(video_titles[:50], ensure_ascii=False)}\nCONTEXTO: {context}"""
+    first = service.ai_runtime.generate([{"role": "user", "content": candidate_prompt}], temperature=0.12, max_output_tokens=700)
+    candidates = _clean_candidates(_json_object(first.text).get("keyword_candidates"))
+    if not candidates:
+        raise RuntimeError("A IA não gerou candidatos válidos para a playlist.")
+    research = YouTubeResearchEngine(str(service.context.token_file), youtube_client=service._youtube())
+    age = max(1, min(180, int(max_age_days)))
+    measured = []
+    for keyword in candidates:
+        row = research.research(keyword, max_results=20, max_age_days=age)
+        measured.append({
+            "keyword": keyword,
+            "opportunity_score": int(row.opportunity.score),
+            "competition_label": row.competition_label,
+            "demand_index": int(row.estimated_daily_demand_index),
+            "demand_label": row.demand_label,
+            "result_count": int(row.result_count),
+            "fresh_7d_rate": row.fresh_7d_rate,
+            "fresh_30d_rate": row.fresh_30d_rate,
+            "fresh_90d_rate": row.fresh_90d_rate,
+            "median_views_per_day": row.median_views_per_day,
+        })
+    qualified = [r for r in measured if r["result_count"] >= 5 and r["demand_index"] >= 20 and r["competition_label"] in {"baixa", "média"} and (r["fresh_7d_rate"] > 0 or r["fresh_30d_rate"] > 0 or r["fresh_90d_rate"] > 0)]
+    qualified.sort(key=lambda r: (r["opportunity_score"], r["demand_index"], r["median_views_per_day"]), reverse=True)
+    if not qualified:
+        raise RuntimeError("Nenhuma palavra-chave recente passou pelos critérios de demanda e competição para esta playlist.")
+    final_prompt = f"""Você é um estrategista sênior de YouTube. Otimize a playlist usando SOMENTE os temas reais e as keywords qualificadas. Retorne JSON puro com title, description, rationale. O título deve ser natural e representar o conjunto dos vídeos, sem keyword stuffing. A descrição deve explicar a proposta da playlist e usar termos somente quando forem realmente coerentes.\nCANAL: {json.dumps(channel, ensure_ascii=False)}\nPLAYLIST ATUAL: {json.dumps(playlist, ensure_ascii=False)}\nVÍDEOS: {json.dumps(video_titles[:50], ensure_ascii=False)}\nKEYWORDS QUALIFICADAS (janela {age} dias): {json.dumps(qualified[:8], ensure_ascii=False)}\nCONTEXTO: {context}"""
+    second = service.ai_runtime.generate([{"role": "user", "content": final_prompt}], temperature=0.10, max_output_tokens=1200)
+    plan = _json_object(second.text)
+    title = " ".join(str(plan.get("title", "")).split())[:150]
+    description = str(plan.get("description", "")).strip()[:5000]
+    if not title or not description:
+        raise RuntimeError("A IA não produziu uma proposta completa para a playlist.")
+    return {
+        "title": title,
+        "description": description,
+        "rationale": str(plan.get("rationale", "")).strip(),
+        "verified_keywords": qualified[:8],
+        "rejected_keywords": [r for r in measured if r not in qualified],
+        "max_age_days": age,
+        "provider": second.provider,
+        "model": second.model,
+    }
