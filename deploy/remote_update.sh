@@ -33,6 +33,25 @@ rollback() {
 }
 trap rollback ERR
 
+wait_for_url() {
+  local url="$1"
+  local label="$2"
+  local attempts="${3:-30}"
+  local delay="${4:-2}"
+  local i code
+  for ((i=1; i<=attempts; i++)); do
+    code="$(curl --show-error --silent --location --max-time 10 --output /dev/null --write-out '%{http_code}' "$url" || true)"
+    if [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+      echo "$label ready (HTTP $code) on attempt $i/$attempts"
+      return 0
+    fi
+    echo "$label not ready yet (HTTP ${code:-000}), attempt $i/$attempts"
+    sleep "$delay"
+  done
+  echo "$label failed to become ready: $url" >&2
+  return 1
+}
+
 echo "Deploying commit $TARGET_SHA (previous: $PREVIOUS_SHA)"
 git fetch --prune origin "$TARGET_SHA"
 git checkout feat/web-dashboard-v1
@@ -58,9 +77,11 @@ docker compose -f "$COMPOSE_FILE" ps mcp onboarding keycloak
 docker compose -f "$COMPOSE_FILE" exec -T onboarding \
   python -c "import urllib.request; r=urllib.request.urlopen('http://keycloak:8080/realms/yca/.well-known/openid-configuration', timeout=8); print('keycloak_backchannel', r.status); assert r.status == 200"
 
-# Public probes prove the tunnel and application are serving again.
-curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/health >/dev/null
-curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/ready >/dev/null
+# The app can briefly return 502 while Docker restarts the containers. Wait for it
+# instead of rolling back a healthy deployment just because the first probe was early.
+wait_for_url "https://creator.silvadigitaltech.com/health" "creator health" 30 2
+wait_for_url "https://creator.silvadigitaltech.com/ready" "creator readiness" 30 2
+wait_for_url "https://creator.silvadigitaltech.com/login" "creator login" 30 2
 
 ROLLBACK_NEEDED=0
 trap - ERR
