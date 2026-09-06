@@ -1,0 +1,126 @@
+name: Validate Deploy Overview Channels V5
+
+on:
+  push:
+    paths:
+      - '.github/workflows/validate-deploy-overview-channels-v5.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yca-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+
+    steps:
+      - name: Checkout feature revision
+        uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest "cryptography>=45,<51" "mcp>=2.0,<3" "fastapi>=0.116,<1" "httpx>=0.28,<1" "requests>=2.32,<3" "google-api-python-client>=2.140,<3" "google-auth>=2.34,<3" "google-auth-oauthlib>=1.2,<2"
+
+      - name: Compile Python and validate JavaScript
+        run: |
+          python -m compileall -q src
+          python -m py_compile main.py mcp_server.py cloud_mcp_server.py onboarding_server.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          for source in [Path('src/creator_service/web/login.html'), Path('src/creator_service/web/dashboard.html'), Path('src/creator_service/web/onboarding.html')]:
+              html = source.read_text(encoding='utf-8')
+              blocks = re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>', html, flags=re.I|re.S)
+              if not blocks:
+                  raise SystemExit(f'No script in {source}')
+              for i, block in enumerate(blocks):
+                  Path(f'/tmp/{source.stem}-{i}.js').write_text(block, encoding='utf-8')
+          PY
+          for file in /tmp/login-*.js /tmp/dashboard-*.js /tmp/onboarding-*.js; do node --check "$file"; done
+
+      - name: Run full unit suite
+        env:
+          PYTHONPATH: src
+        run: pytest -q
+
+      - name: Verify multi-channel contract
+        run: |
+          grep -q 'api/dashboard/channels/connect' src/creator_service/dashboard_routes.py
+          grep -q 'api/dashboard/channels/{channel_id}/activate' src/creator_service/dashboard_routes.py
+          grep -q 'id="channelProfileCard"' src/creator_service/web/dashboard.html
+          grep -q 'id="playlistHomeSlot"' src/creator_service/web/dashboard.html
+          grep -q 'id="addChannel"' src/creator_service/web/dashboard.html
+
+      - name: Verify production credentials
+        run: |
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy validated feature revision
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          port="${VPS_PORT:-22}"
+          echo "Deploying validated revision $sha"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "set -euo pipefail; cd ~/apps/youtube-creator-agent; git fetch origin '$sha'; git show '$sha:deploy/remote_update.sh' > /tmp/yca-remote-update.sh; chmod 700 /tmp/yca-remote-update.sh; /tmp/yca-remote-update.sh '$sha'"
+
+      - name: Public production checks
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/health
+          echo
+          curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/ready
+          echo
+          code="$(curl --show-error --silent --output /dev/null --write-out '%{http_code}' https://creator.silvadigitaltech.com/login)"
+          test "$code" = "200"
+          echo "Login HTTP $code"
+
+      - name: Browser smoke after deploy
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+          CREATOR_BASE_URL=https://creator.silvadigitaltech.com AUTH_HOST=auth.silvadigitaltech.com node tests/live_browser_smoke.js
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: overview-channels-v5-browser-audit
+          path: artifacts/
+          if-no-files-found: warn
