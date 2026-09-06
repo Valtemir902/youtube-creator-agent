@@ -4,21 +4,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src \
     PIP_NO_CACHE_DIR=1 \
-    XDG_CACHE_HOME=/opt/yca-cache \
-    YCA_WHISPER_MODEL=base \
+    YCA_WHISPER_MODEL=/opt/yca-models/ggml-base.bin \
     YCA_WHISPER_THREADS=4
 
 WORKDIR /app
 
 RUN useradd --create-home --uid 10001 appuser && \
-    mkdir -p /opt/yca-cache /app/data && \
-    chown -R appuser:appuser /opt/yca-cache /app
+    mkdir -p /opt/yca-models /app/data && \
+    chown -R appuser:appuser /app
 
 COPY requirements-server.txt ./
 RUN python -m pip install --upgrade pip && \
     python -m pip install -r requirements-server.txt && \
     python -c "from pywhispercpp.model import Model; Model('base', print_progress=False, print_realtime=False)" && \
-    chmod -R a+rX /opt/yca-cache
+    cp /root/.local/share/pywhispercpp/models/ggml-base.bin /opt/yca-models/ggml-base.bin && \
+    chmod 644 /opt/yca-models/ggml-base.bin
 
 COPY src ./src
 COPY cloud_mcp_server.py onboarding_server.py ./
