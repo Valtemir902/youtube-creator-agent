@@ -21,6 +21,17 @@ class SafeCreatorService(CreatorService):
             snippet["defaultLanguage"] = normalized["defaultLanguage"]
         return snippet
 
+    @staticmethod
+    def _digestable_snippet(metadata: dict[str, Any]) -> dict[str, Any]:
+        """Canonical remote snippet shape used for baseline comparisons."""
+        return {
+            "title": str(metadata.get("title", "")),
+            "description": str(metadata.get("description", "")),
+            "tags": list(metadata.get("tags", []) or []),
+            "categoryId": str(metadata.get("categoryId", "22")),
+            "defaultLanguage": metadata.get("defaultLanguage"),
+        }
+
     def apply_video_metadata_update(self, *, approval_payload: dict, approval_token: str) -> dict:
         self.context.validate_youtube()
         proposed = dict(approval_payload.get("proposed", {}) or {})
@@ -80,7 +91,7 @@ class SafeCreatorService(CreatorService):
             "defaultLanguage": current.get("defaultLanguage"),
         }
         rollback_payload = {
-            "baseline_digest": signer.payload_digest(normalized),
+            "baseline_digest": signer.payload_digest(self._digestable_snippet(normalized)),
             "proposed": rollback_proposed,
         }
         rollback_token = signer.issue(
