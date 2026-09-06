@@ -68,13 +68,14 @@ async def production_http_middleware(request: Request, call_next) -> Response:
         if response_obj is not None:
             response_obj.headers["X-Request-ID"] = request_id
             response_obj.headers["X-Content-Type-Options"] = "nosniff"
-            response_obj.headers["Referrer-Policy"] = "no-referrer"
+            response_obj.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
             response_obj.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             response_obj.headers["X-Frame-Options"] = "DENY"
             response_obj.headers.setdefault(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
                 "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "
-                "connect-src 'self'; frame-src https://challenges.cloudflare.com; "
+                "connect-src 'self' https://challenges.cloudflare.com; "
+                "frame-src https://challenges.cloudflare.com; "
                 "frame-ancestors 'none'; base-uri 'self'",
             )
