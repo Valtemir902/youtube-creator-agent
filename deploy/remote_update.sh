@@ -77,6 +77,26 @@ docker compose -f "$COMPOSE_FILE" ps mcp onboarding keycloak
 docker compose -f "$COMPOSE_FILE" exec -T onboarding \
   python -c "import urllib.request; r=urllib.request.urlopen('http://keycloak:8080/realms/yca/.well-known/openid-configuration', timeout=8); print('keycloak_backchannel', r.status); assert r.status == 200"
 
+# Keep the customer login on Keycloak's current supported login theme. This only
+# changes the yca realm login theme; admin and email themes remain untouched.
+# Theme configuration is best-effort so a stale bootstrap-admin credential does
+# not roll back an otherwise healthy application deploy.
+if docker compose -f "$COMPOSE_FILE" exec -T keycloak sh -lc '
+  set -eu
+  admin_user="${KC_BOOTSTRAP_ADMIN_USERNAME:-}"
+  admin_pass="${KC_BOOTSTRAP_ADMIN_PASSWORD:-}"
+  test -n "$admin_user" && test -n "$admin_pass"
+  cfg=/tmp/kcadm-yca-deploy.config
+  rm -f "$cfg"
+  /opt/keycloak/bin/kcadm.sh config credentials --config "$cfg" --server http://127.0.0.1:8080 --realm master --user "$admin_user" --password "$admin_pass" >/dev/null
+  /opt/keycloak/bin/kcadm.sh update realms/yca --config "$cfg" -s loginTheme=keycloak.v2 >/dev/null
+  rm -f "$cfg"
+'; then
+  echo "keycloak login theme: keycloak.v2"
+else
+  echo "WARNING: could not enforce keycloak.v2 login theme automatically; application deploy will continue" >&2
+fi
+
 # The app can briefly return 502 while Docker restarts the containers. Wait for it
 # instead of rolling back a healthy deployment just because the first probe was early.
 wait_for_url "https://creator.silvadigitaltech.com/health" "creator health" 30 2
