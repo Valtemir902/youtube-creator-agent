@@ -1,0 +1,52 @@
+name: Fix Overview V5 Contract
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-overview-v5-contract.yml'
+      - 'scripts/fix_overview_v5_contract.py'
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: patcher
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+          path: app
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply compatibility fix
+        working-directory: app
+        run: |
+          python ../patcher/scripts/fix_overview_v5_contract.py
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          html=Path('src/creator_service/web/dashboard.html').read_text(encoding='utf-8')
+          assert 'id="ytStatus"' in html
+          blocks=re.findall(r'<script(?:\s[^>]*)?>(.*?)</script>',html,flags=re.I|re.S)
+          Path('/tmp/dashboard.js').write_text(blocks[-1],encoding='utf-8')
+          PY
+          node --check /tmp/dashboard.js
+      - name: Commit fix
+        working-directory: app
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/creator_service/web/dashboard.html
+          git commit -m 'fix: keep connection status contract inside channel profile'
+          git push origin HEAD:feat/web-dashboard-v1
