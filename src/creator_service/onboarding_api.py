@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from .cloud_auth import IntrospectionTokenVerifier
 from .cloud_runtime import CloudTenantResolver
+from .dashboard_routes import install_dashboard_routes
 from .observability import production_http_middleware
 from .onboarding_service import OnboardingService
 from .onboarding_sessions import OnboardingSessionStore
@@ -342,4 +343,12 @@ def create_app(
         )
         return result
 
+    install_dashboard_routes(
+        app,
+        resolver=resolver,
+        verifier=verifier,
+        web_sessions=web_sessions,
+        cookie_name=COOKIE_NAME,
+        publication_store=publication_store,
+    )
     return app
