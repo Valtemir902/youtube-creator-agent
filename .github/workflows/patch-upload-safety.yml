@@ -1,0 +1,66 @@
+name: Patch Upload Safety
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-upload-safety.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+          fetch-depth: 0
+      - name: Apply guarded upload policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/creator_service/dashboard_routes.py')
+          text = path.read_text(encoding='utf-8')
+
+          old = 'from .security import signer_from_env\n'
+          new = '''from .security import signer_from_env\nfrom .upload_safety import (\n    UploadCapacityError,\n    UploadSafetyPolicy,\n    ensure_capacity,\n    ensure_chunk_headroom,\n    purge_expired_sessions,\n)\n'''
+          if old not in text:
+              raise SystemExit('security import anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = 'UPLOAD_SESSION_TTL_SECONDS = 60 * 60\n'
+          new = 'UPLOAD_SAFETY = UploadSafetyPolicy()\nUPLOAD_SESSION_TTL_SECONDS = UPLOAD_SAFETY.ttl_seconds\n'
+          if old not in text:
+              raise SystemExit('upload ttl anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    ) -> dict[str, Any]:\n        service_for(tenant.tenant_id).context.validate_youtube()\n        video_suffix = Path(payload.video_name).suffix.lower()\n'''
+          new = '''    ) -> dict[str, Any]:\n        service_for(tenant.tenant_id).context.validate_youtube()\n        root = upload_root(tenant.tenant_id)\n        try:\n            purge_expired_sessions(root, policy=UPLOAD_SAFETY)\n            ensure_capacity(\n                root,\n                int(payload.video_size) + int(payload.thumbnail_size),\n                policy=UPLOAD_SAFETY,\n            )\n        except UploadCapacityError as exc:\n            audit(request, "dashboard_upload_rejected_capacity", "denied", tenant.tenant_id, {"reason": str(exc)})\n            raise HTTPException(status_code=507, detail=str(exc)) from exc\n        video_suffix = Path(payload.video_name).suffix.lower()\n'''
+          if old not in text:
+              raise SystemExit('upload start anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        if len(body) > UPLOAD_CHUNK_BYTES:\n            raise HTTPException(status_code=413, detail="Chunk excede o limite permitido.")\n        declared = int(item.get("size", 0))\n'''
+          new = '''        if len(body) > UPLOAD_CHUNK_BYTES:\n            raise HTTPException(status_code=413, detail="Chunk excede o limite permitido.")\n        try:\n            ensure_chunk_headroom(upload_root(tenant.tenant_id), len(body), policy=UPLOAD_SAFETY)\n        except UploadCapacityError as exc:\n            audit(request, "dashboard_upload_paused_capacity", "denied", tenant.tenant_id, {"session_id": session_id})\n            raise HTTPException(status_code=507, detail=str(exc)) from exc\n        declared = int(item.get("size", 0))\n'''
+          if old not in text:
+              raise SystemExit('chunk headroom anchor not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python -m py_compile src/creator_service/dashboard_routes.py src/creator_service/upload_safety.py
+          PYTHONPATH=src pytest -q tests/test_upload_safety.py
+      - name: Commit guarded upload policy
+        run: |
+          if git diff --quiet; then
+            echo 'No changes needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/creator_service/dashboard_routes.py
+          git commit -m 'feat: enforce bounded temporary upload storage'
+          git push origin HEAD:feat/web-dashboard-v1
