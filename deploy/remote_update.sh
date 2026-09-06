@@ -96,13 +96,15 @@ if docker compose -f "$COMPOSE_FILE" exec -T keycloak sh -lc '
   echo "keycloak login theme set via Admin API: keycloak.v2"
 else
   echo "Keycloak bootstrap-admin login is stale; applying scoped realm-theme DB fallback" >&2
-  if docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc '
-    set -eu
-    current="$(psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT COALESCE(login_theme, '\''\'') FROM realm WHERE name='\''yca'\'';")"
-    echo "current yca login theme: ${current:-<default>}"
-    count="$(psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE realm SET login_theme='\''keycloak.v2'\'' WHERE name='\''yca'\'' AND COALESCE(login_theme, '\''\'') <> '\''keycloak.v2'\''; SELECT COUNT(*) FROM realm WHERE name='\''yca'\'' AND login_theme='\''keycloak.v2'\'';")"
-    test "${count##*$'\n'}" = "1"
-  '; then
+  set +e
+  db_result="$({ docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+UPDATE realm SET login_theme='keycloak.v2' WHERE name='yca';
+SELECT COUNT(*) FROM realm WHERE name='yca' AND login_theme='keycloak.v2';
+SQL
+  } 2>&1)"
+  db_code=$?
+  set -e
+  if [[ "$db_code" == "0" && "${db_result##*$'\n'}" == "1" ]]; then
     theme_updated=1
     echo "keycloak login theme set via scoped DB fallback: keycloak.v2"
     docker compose -f "$COMPOSE_FILE" restart keycloak >/dev/null
@@ -120,6 +122,7 @@ else
     done
   else
     echo "WARNING: could not enforce keycloak.v2 login theme; application deploy will continue" >&2
+    printf '%s\n' "$db_result" >&2
   fi
 fi
 
