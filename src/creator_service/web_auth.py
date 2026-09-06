@@ -128,6 +128,7 @@ class BrowserOIDCClient:
             os.environ.get("YCA_WEB_OIDC_ISSUER_URL", "").strip()
             or os.environ.get("YCA_AUTH_ISSUER_URL", "").strip()
         ).rstrip("/")
+        self.backchannel_base_url = os.environ.get("YCA_WEB_OIDC_BACKCHANNEL_BASE_URL", "").strip().rstrip("/")
         self.client_id = os.environ.get("YCA_WEB_OIDC_CLIENT_ID", "").strip()
         self.client_secret = os.environ.get("YCA_WEB_OIDC_CLIENT_SECRET", "").strip()
         public_origin = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
@@ -141,6 +142,10 @@ class BrowserOIDCClient:
             raise RuntimeError("Configuração OIDC web incompleta.")
 
     @property
+    def _backchannel_origin(self) -> str:
+        return self.backchannel_base_url or self.issuer
+
+    @property
     def authorization_endpoint(self) -> str:
         return f"{self.issuer}/protocol/openid-connect/auth"
 
@@ -150,11 +155,11 @@ class BrowserOIDCClient:
 
     @property
     def token_endpoint(self) -> str:
-        return f"{self.issuer}/protocol/openid-connect/token"
+        return f"{self._backchannel_origin}/protocol/openid-connect/token"
 
     @property
     def userinfo_endpoint(self) -> str:
-        return f"{self.issuer}/protocol/openid-connect/userinfo"
+        return f"{self._backchannel_origin}/protocol/openid-connect/userinfo"
 
     @property
     def logout_endpoint(self) -> str:
