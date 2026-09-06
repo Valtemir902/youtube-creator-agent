@@ -1,0 +1,37 @@
+name: Smoke Production Transcription
+
+on:
+  push:
+    paths:
+      - '.github/workflows/smoke-transcription-production.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download public-domain speech fixture
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/ggml-org/whisper.cpp/master/samples/jfk.wav -o /tmp/jfk.wav
+          test -s /tmp/jfk.wav
+      - name: Configure SSH
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+      - name: Copy speech fixture and transcribe inside production image
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          port="${VPS_PORT:-22}"
+          scp -i ~/.ssh/id_ed25519 -P "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes /tmp/jfk.wav "$VPS_USER@$VPS_HOST:/tmp/yca-jfk.wav"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'set -eu; cd ~/apps/youtube-creator-agent; container=$(docker compose -f deploy/docker-compose.oracle.yml ps -q onboarding); docker cp /tmp/yca-jfk.wav "$container:/tmp/yca-jfk.wav"; docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding python -c "from creator_service.media_transcription import WhisperCppTranscriber; r=WhisperCppTranscriber().transcribe(\"/tmp/yca-jfk.wav\", language=\"en\"); print(\"ENGINE=\"+r.engine); print(\"CHARS=\"+str(r.chars)); print(\"TEXT=\"+r.text[:240]); assert r.chars > 40; assert \"country\" in r.text.lower()"; docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding rm -f /tmp/yca-jfk.wav; rm -f /tmp/yca-jfk.wav'
