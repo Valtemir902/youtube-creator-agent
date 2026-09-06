@@ -1,0 +1,26 @@
+{
+  "name": "youtube-creator-agent",
+  "version": "0.1.0",
+  "description": "MCP autenticado para análise e operações seguras no YouTube.",
+  "author": {
+    "name": "Silva Digital Tech",
+    "email": "silvadigitaltech@gmail.com"
+  },
+  "interface": {
+    "displayName": "YouTube Creator Agent",
+    "shortDescription": "Dados reais, estratégia e alterações seguras no YouTube.",
+    "longDescription": "Conecta o Codex ao YouTube Creator Agent via MCP autenticado para analisar o canal e preparar alterações com aprovação explícita.",
+    "developerName": "Silva Digital Tech",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://creator.silvadigitaltech.com",
+    "privacyPolicyURL": "https://creator.silvadigitaltech.com/privacy",
+    "termsOfServiceURL": "https://creator.silvadigitaltech.com/terms",
+    "defaultPrompt": [
+      "Verifique o status do meu canal no YouTube.",
+      "Analise evidências reais para a estratégia do meu canal.",
+      "Crie uma prévia segura para atualizar os metadados de um vídeo."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
