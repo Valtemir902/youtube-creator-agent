@@ -26,6 +26,18 @@ https://mcp.silvadigitaltech.com/mcp
 
 Do not submit localhost URLs, tunnel URLs, secrets, bearer tokens, or a development-only `plugin_asdk_app_*` ID.
 
+## Production metadata
+
+The repository now includes `config/chatgpt_app.json` with the intended public listing endpoints:
+
+- MCP: `https://mcp.silvadigitaltech.com/mcp`
+- Product/onboarding: `https://creator.silvadigitaltech.com/onboarding`
+- Privacy: `https://creator.silvadigitaltech.com/privacy`
+- Terms: `https://creator.silvadigitaltech.com/terms`
+- Support: `https://creator.silvadigitaltech.com/support`
+
+These URLs must be live and accurate before submission.
+
 ## Packaged plugin behavior
 
 The repository keeps `.mcp.json` so Codex/desktop can continue using the remote MCP directly.
@@ -52,6 +64,12 @@ and temporarily add this field to `.codex-plugin/plugin.json`:
 
 Do not commit a personal/development app ID unless the release process explicitly requires a stable public app ID.
 
+## Current ChatGPT plan reality
+
+OpenAI's current product documentation says full custom MCP support, including write/modify actions, is available in beta for Business and Enterprise/Edu workspaces. Pro can test custom MCP apps with read/fetch permissions in developer mode. Plus does not currently have the same custom-MCP developer-mode path documented.
+
+That means a Plus account should not be used as proof that the backend is broken merely because a private/custom MCP plugin is visible but its tools are not invokable in a normal chat. For broad normal-ChatGPT use, the important target is an approved/public app/plugin distributed through the Plugin Directory, where install/invocation still depends on plan, surface and app capabilities.
+
 ## Release checks before submission
 
 1. `https://mcp.silvadigitaltech.com/mcp` is reachable over HTTPS.
@@ -63,6 +81,7 @@ Do not commit a personal/development app ID unless the release process explicitl
 7. Privacy, Terms and support URLs are public and accurate.
 8. Tool names/descriptions clearly distinguish read-only actions from modifying actions.
 9. Submission screenshots/listing copy describe ChatGPT and Codex, not Codex only.
+10. Test the public app/plugin on an eligible normal ChatGPT account after approval, not only in Codex.
 
 ## Expected result
 
