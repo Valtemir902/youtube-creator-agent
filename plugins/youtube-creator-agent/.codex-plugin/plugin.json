@@ -1,6 +1,6 @@
 {
   "name": "youtube-creator-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP autenticado para análise e operações seguras no YouTube.",
   "author": {
     "name": "Silva Digital Tech",
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "YouTube Creator Agent",
     "shortDescription": "Dados reais, estratégia e alterações seguras no YouTube.",
-    "longDescription": "Conecta o Codex ao YouTube Creator Agent via MCP autenticado para analisar o canal e preparar alterações com aprovação explícita.",
+    "longDescription": "Conecta ChatGPT e Codex ao YouTube Creator Agent para analisar dados reais do canal, consultar evidências e preparar alterações de metadados com aprovação explícita.",
     "developerName": "Silva Digital Tech",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
