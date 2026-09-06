@@ -13,6 +13,9 @@ from creator_service.upload_safety import (
 )
 
 
+FUTURE = 4_000_000_000
+
+
 def _session(root: Path, name: str, *, expires_at: int, video_size: int, thumb_size: int = 0) -> Path:
     directory = root / name
     directory.mkdir(parents=True)
@@ -48,7 +51,7 @@ def test_active_usage_counts_declared_bytes(tmp_path):
 
 def test_capacity_rejects_too_many_active_sessions(tmp_path):
     root = tmp_path / "uploads"
-    _session(root, "a", expires_at=1000, video_size=10)
+    _session(root, "a", expires_at=FUTURE, video_size=10)
     policy = UploadSafetyPolicy(max_active_sessions=1, max_staged_bytes=1000, min_free_bytes=100)
     with pytest.raises(UploadCapacityError):
         ensure_capacity(root, 10, policy=policy, disk_free_bytes=1000)
@@ -56,7 +59,7 @@ def test_capacity_rejects_too_many_active_sessions(tmp_path):
 
 def test_capacity_rejects_tenant_staging_quota(tmp_path):
     root = tmp_path / "uploads"
-    _session(root, "a", expires_at=1000, video_size=700)
+    _session(root, "a", expires_at=FUTURE, video_size=700)
     policy = UploadSafetyPolicy(max_active_sessions=2, max_staged_bytes=1000, min_free_bytes=100)
     with pytest.raises(UploadCapacityError):
         ensure_capacity(root, 400, policy=policy, disk_free_bytes=5000)
