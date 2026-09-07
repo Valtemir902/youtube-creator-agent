@@ -121,6 +121,8 @@ jobs:
           CLOUD_EXPECTED = {
               "creator_status",
               "get_creator_capabilities",
+              "list_connected_channels",
+              "activate_connected_channel",
               "create_onboarding_link",
               "get_channel_profile",
               "get_strategy_evidence",
@@ -138,6 +140,8 @@ jobs:
           EXPECTED_HINTS = {
               "creator_status": (True, False, False),
               "get_creator_capabilities": (True, False, False),
+              "list_connected_channels": (True, False, False),
+              "activate_connected_channel": (False, False, False),
               "create_onboarding_link": (False, False, False),
               "get_channel_profile": (True, False, False),
               "get_strategy_evidence": (True, False, False),
