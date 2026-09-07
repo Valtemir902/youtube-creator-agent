@@ -13,7 +13,7 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_PORT: ${{ secrets.VPS_PORT }}
@@ -36,7 +36,7 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Run safe live YouTube API audit
+      - name: Run reversible live-video write audit
         shell: bash
         run: |
           set -euo pipefail
@@ -48,16 +48,10 @@ jobs:
           echo '=== deployed revision ==='
           git rev-parse HEAD
           $compose exec -T mcp python - <<'PY'
-          import io
-          import json
           import sqlite3
-          
-          from googleapiclient.errors import HttpError
-          from googleapiclient.http import MediaIoBaseUpload
-          
           from creator_service.advanced_service import AdvancedSafeCreatorService
           from creator_service.cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
-          
+
           resolver = CloudTenantResolver()
           with sqlite3.connect(resolver.db.path) as conn:
               row = conn.execute(
@@ -69,108 +63,161 @@ jobs:
               ).fetchone()
           if not row:
               raise RuntimeError('Nenhum tenant com YouTube conectado foi encontrado.')
+
           tenant_id = str(row[0])
           context = resolver.resolve(tenant_id)
           service = AdvancedSafeCreatorService(context)
           youtube = service._youtube()
-          
-          print('tenant_selected=ok')
-          print('youtube_connected=', context.youtube_connected)
-          
+
           channel_response = youtube.channels().list(part='snippet,contentDetails', mine=True).execute()
           channel_items = channel_response.get('items', [])
           if not channel_items:
-              raise RuntimeError('A conta Google conectada não retornou um canal do YouTube.')
+              raise RuntimeError('A conta conectada não retornou um canal do YouTube.')
           channel = channel_items[0]
           uploads = channel.get('contentDetails', {}).get('relatedPlaylists', {}).get('uploads')
           if not uploads:
               raise RuntimeError('Playlist de uploads do canal não encontrada.')
-          print('channel_read=ok')
-          
-          playlist = youtube.playlistItems().list(
-              part='contentDetails', playlistId=uploads, maxResults=1
-          ).execute()
-          items = playlist.get('items', [])
-          if not items:
-              raise RuntimeError('O canal não possui vídeo disponível para o teste seguro.')
-          video_id = items[0].get('contentDetails', {}).get('videoId')
-          if not video_id:
-              raise RuntimeError('video_id não encontrado no upload mais recente.')
-          
+
+          playlist = youtube.playlistItems().list(part='contentDetails', playlistId=uploads, maxResults=50).execute()
+          ids = [
+              item.get('contentDetails', {}).get('videoId')
+              for item in playlist.get('items', [])
+              if item.get('contentDetails', {}).get('videoId')
+          ]
+          if not ids:
+              raise RuntimeError('Nenhum vídeo encontrado para auditoria.')
+
+          videos = youtube.videos().list(
+              part='snippet,liveStreamingDetails,status',
+              id=','.join(ids),
+              maxResults=50,
+          ).execute().get('items', [])
+          by_id = {item.get('id'): item for item in videos}
+
+          chosen = None
+          for video_id in ids:
+              item = by_id.get(video_id) or {}
+              if not item.get('liveStreamingDetails'):
+                  continue
+              state = service.memory.recent_edit_state(video_id)
+              if not state.protected:
+                  chosen = item
+                  break
+          if chosen is None:
+              raise RuntimeError('Nenhuma live publicada sem proteção recente foi encontrada para o teste reversível.')
+
+          video_id = chosen['id']
           before = service._current_video_snippet(video_id)
-          print('video_read=ok')
-          
-          categories = service.list_video_categories('BR')
-          if not categories.get('categories'):
-              raise RuntimeError('A API não retornou categorias de vídeo para BR.')
-          if not any(c.get('id') == before.get('categoryId') for c in categories['categories']):
-              print('category_current_not_in_BR_list=warning')
-          print('category_read=ok')
-          
-          caption_listing = service.list_video_captions(video_id)
-          if 'captions' not in caption_listing:
-              raise RuntimeError('Resposta de captions.list inválida.')
-          print('caption_read=ok count=', len(caption_listing['captions']))
-          
-          # Production validation of the signed caption-preview path. No caption is created.
-          caption_preview = service.preview_caption_upload(
-              video_id=video_id,
-              language='pt-BR',
-              content='1\n00:00:00,000 --> 00:00:01,000\nTeste técnico do Creator Agent\n',
-              name='Creator Agent validation',
-              caption_format='srt',
-          )
-          if not caption_preview.get('approval_token'):
-              raise RuntimeError('A prévia de legenda não gerou approval_token.')
-          print('caption_signed_preview=ok')
-          
-          # Real, reversible-in-effect write permission test: write the exact current snippet
-          # back to the same video and verify that all user-visible metadata stayed identical.
-          snippet = {
-              'title': before['title'],
-              'description': before['description'],
-              'tags': list(before.get('tags', []) or []),
-              'categoryId': before['categoryId'],
-          }
-          if before.get('defaultLanguage'):
-              snippet['defaultLanguage'] = before['defaultLanguage']
-          youtube.videos().update(part='snippet', body={'id': video_id, 'snippet': snippet}).execute()
-          after = service._current_video_snippet(video_id)
-          for key in ('title', 'description', 'tags', 'categoryId', 'defaultLanguage'):
-              if before.get(key) != after.get(key):
-                  raise RuntimeError(f'No-op metadata write changed {key!r}: before={before.get(key)!r} after={after.get(key)!r}')
-          print('real_metadata_noop_write=ok')
-          
-          # Probe the real captions.insert endpoint with a guaranteed-nonexistent target.
-          # A normal YouTube validation/not-found response proves authenticated endpoint access
-          # without creating a caption on the user's channel. Auth/scope failures are fatal.
-          fake_video = 'YCA_TEST_NONEXISTENT_000'
-          media = MediaIoBaseUpload(
-              io.BytesIO(b'1\n00:00:00,000 --> 00:00:01,000\nprobe\n'),
-              mimetype='application/x-subrip',
-              resumable=False,
-          )
+          print('selected_live_video_id=', video_id)
+          print('selected_live_title=', before['title'])
+          print('live_actual_start=', chosen.get('liveStreamingDetails', {}).get('actualStartTime'))
+          print('live_actual_end=', chosen.get('liveStreamingDetails', {}).get('actualEndTime'))
+
+          categories = service.list_video_categories('BR').get('categories', [])
+          alternatives = [c['id'] for c in categories if c.get('assignable') and c.get('id') != before.get('categoryId')]
+          if not alternatives:
+              raise RuntimeError('Não há categoria alternativa atribuível para testar rollback de categoria.')
+          test_category = alternatives[0]
+
+          marker = '[YCA TESTE REVERSIVEL]'
+          base_title = before['title']
+          suffix = ' [YCA TEST]'
+          test_title = (base_title[:max(1, 100-len(suffix))].rstrip() + suffix)[:100]
+          test_description = (before['description'].rstrip() + '\n\n' + marker).strip()
+          if len(test_description) > 5000:
+              test_description = marker + '\n' + before['description'][:4900]
+          test_tags = list(before.get('tags', []) or [])
+          if 'yca-test' not in [t.casefold() for t in test_tags]:
+              test_tags.append('yca-test')
+          test_tags = test_tags[:12]
+
+          applied = None
+          caption_id = None
+          restored = False
           try:
-              youtube.captions().insert(
-                  part='snippet',
-                  body={'snippet': {'videoId': fake_video, 'language': 'pt-BR', 'name': 'probe', 'isDraft': False}},
-                  media_body=media,
-              ).execute()
-          except HttpError as exc:
-              status = int(getattr(exc.resp, 'status', 0) or 0)
-              body = ''
-              try:
-                  body = exc.content.decode('utf-8', 'replace') if isinstance(exc.content, bytes) else str(exc.content)
-              except Exception:
-                  body = str(exc)
-              lowered = body.lower()
-              auth_markers = ('insufficientpermissions', 'invalid credentials', 'autherror', 'login required')
-              if status in (401,) or any(marker in lowered for marker in auth_markers):
-                  raise RuntimeError(f'captions.insert authorization failed: HTTP {status}: {body[:500]}') from exc
-              print('caption_insert_endpoint_auth=ok expected_rejection_http=', status)
-          else:
-              raise RuntimeError('Unexpectedly created a caption for a deliberately invalid video id.')
-          
-          print('LIVE_YOUTUBE_CAPABILITY_AUDIT=PASS')
+              preview = service.preview_video_metadata_update(
+                  video_id=video_id,
+                  title=test_title,
+                  description=test_description,
+                  tags=test_tags,
+                  category_id=test_category,
+              )
+              changed = preview.get('changed', {})
+              required = ('title', 'description', 'tags', 'categoryId')
+              if not all(changed.get(key) for key in required):
+                  raise RuntimeError(f'Prévia não marcou todos os campos como alterados: {changed}')
+              print('metadata_preview=ok changed=', changed)
+
+              applied = service.apply_video_metadata_update(
+                  approval_payload=preview['approval_payload'],
+                  approval_token=preview['approval_token'],
+              )
+              current = service._current_video_snippet(video_id)
+              assert current['title'] == preview['proposed']['title']
+              assert current['description'] == preview['proposed']['description']
+              assert current['tags'] == preview['proposed']['tags']
+              assert current['categoryId'] == preview['proposed']['categoryId']
+              print('real_metadata_edit=ok changed_fields=', applied.get('changed_fields'))
+
+              caption_text = '1\n00:00:00,000 --> 00:00:01,500\nTeste técnico reversível do YouTube Creator Agent\n'
+              caption_preview = service.preview_caption_upload(
+                  video_id=video_id,
+                  language='pt-BR',
+                  content=caption_text,
+                  name='YCA teste reversível',
+                  caption_format='srt',
+              )
+              caption_result = service.apply_caption_upload(
+                  approval_payload=caption_preview['approval_payload'],
+                  approval_token=caption_preview['approval_token'],
+              )
+              caption_id = caption_result['caption_id']
+              listed = service.list_video_captions(video_id).get('captions', [])
+              if not any(c.get('id') == caption_id for c in listed):
+                  raise RuntimeError('Legenda criada não apareceu em captions.list.')
+              print('real_caption_upload=ok caption_id=', caption_id)
+
+              caption_rollback = caption_result['rollback_preview']
+              service.apply_caption_delete(
+                  rollback_payload=caption_rollback['rollback_payload'],
+                  rollback_token=caption_rollback['rollback_token'],
+              )
+              caption_id = None
+              listed_after = service.list_video_captions(video_id).get('captions', [])
+              if any(c.get('name') == 'YCA teste reversível' for c in listed_after):
+                  raise RuntimeError('Legenda de teste permaneceu após rollback.')
+              print('caption_rollback=ok')
+
+              rollback = applied['rollback_preview']
+              service.apply_video_metadata_rollback(
+                  rollback_payload=rollback['rollback_payload'],
+                  rollback_token=rollback['rollback_token'],
+              )
+              restored = True
+              after = service._current_video_snippet(video_id)
+              for key in ('title', 'description', 'tags', 'categoryId', 'defaultLanguage'):
+                  if before.get(key) != after.get(key):
+                      raise RuntimeError(f'Rollback não restaurou {key}: before={before.get(key)!r} after={after.get(key)!r}')
+              print('metadata_rollback=ok')
+          finally:
+              if caption_id:
+                  try:
+                      youtube.captions().delete(id=caption_id).execute()
+                      print('emergency_caption_cleanup=ok')
+                  except Exception as exc:
+                      print('emergency_caption_cleanup=failed', repr(exc))
+              if applied is not None and not restored:
+                  snippet = {
+                      'title': before['title'],
+                      'description': before['description'],
+                      'tags': list(before.get('tags', []) or []),
+                      'categoryId': before['categoryId'],
+                  }
+                  if before.get('defaultLanguage'):
+                      snippet['defaultLanguage'] = before['defaultLanguage']
+                  youtube.videos().update(part='snippet', body={'id': video_id, 'snippet': snippet}).execute()
+                  print('emergency_metadata_restore=ok')
+
+          print('REAL_LIVE_VIDEO_WRITE_AUDIT=PASS')
           PY
           REMOTE
