@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
+import time
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +20,8 @@ ALLOWED_DCR_SCOPES = frozenset({
 })
 DEFAULT_DCR_SCOPE = "yca:read"
 DEFAULT_ALLOWED_REDIRECT_HOSTS = frozenset({"chatgpt.com"})
+# Public OIDC client dedicated to ChatGPT. A public client id is not a secret.
+DEFAULT_CHATGPT_PUBLIC_CLIENT_ID = "82da41e4-4d89-4ccf-b134-c6a8b01f8453"
 
 
 class OAuthCompatError(ValueError):
@@ -56,6 +57,16 @@ def oauth_compat_issuer() -> str:
     if not issuer:
         raise RuntimeError("YCA_ONBOARDING_PUBLIC_URL ou YCA_CHATGPT_OAUTH_ISSUER_URL é obrigatório.")
     return issuer
+
+
+def _chatgpt_public_client_id() -> str:
+    client_id = (
+        os.environ.get("YCA_CHATGPT_OAUTH_CLIENT_ID", "").strip()
+        or DEFAULT_CHATGPT_PUBLIC_CLIENT_ID
+    )
+    if not client_id:
+        raise RuntimeError("Cliente OAuth público do ChatGPT não configurado.")
+    return client_id
 
 
 def oauth_authorization_server_metadata() -> dict[str, Any]:
@@ -109,9 +120,8 @@ def _normalize_scope(scope_value: Any) -> str:
     seen: set[str] = set()
     for scope in requested:
         if scope == "openid":
-            # ChatGPT inclui o escopo de protocolo OIDC no DCR. O Keycloak
-            # espera apenas objetos de client-scope na política de DCR, então
-            # removemos openid apenas do registro e o mantemos na autorização.
+            # openid é um escopo de protocolo OIDC e continua sendo pedido na
+            # autorização. Ele não precisa virar um Client Scope registrado.
             continue
         if scope not in ALLOWED_DCR_SCOPES:
             raise OAuthCompatError("invalid_scope", f"Escopo de registro não permitido: {scope}")
@@ -163,32 +173,22 @@ def normalize_dynamic_client_registration(payload: dict[str, Any]) -> dict[str, 
 
 
 def register_dynamic_client(payload: dict[str, Any]) -> UpstreamResponse:
+    """RFC 7591 compatibility facade backed by one audited public Keycloak client.
+
+    ChatGPT still performs Dynamic Client Registration against this endpoint. We
+    validate the full request, but deliberately do not create anonymous Keycloak
+    clients. All approved ChatGPT connections reuse the dedicated public client,
+    protected by exact redirect URIs, authorization code flow and PKCE S256.
+    """
     normalized = normalize_dynamic_client_registration(payload)
-    endpoint = f"{_keycloak_issuer()}/clients-registrations/openid-connect"
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(normalized).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
+    response = dict(normalized)
+    response.update(
+        {
+            "client_id": _chatgpt_public_client_id(),
+            "client_id_issued_at": int(time.time()),
+        }
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            body = response.read(1024 * 1024)
-            parsed = json.loads(body.decode("utf-8"))
-            return UpstreamResponse(status_code=int(response.status), payload=parsed)
-    except urllib.error.HTTPError as exc:
-        body = exc.read(1024 * 1024)
-        try:
-            parsed = json.loads(body.decode("utf-8", errors="replace"))
-        except Exception:
-            parsed = {"error": "server_error", "error_description": "O provedor de identidade recusou o registro."}
-        return UpstreamResponse(status_code=int(exc.code), payload=parsed)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise OAuthCompatError(
-            "temporarily_unavailable",
-            "O provedor de identidade está temporariamente indisponível.",
-            status_code=503,
-        ) from exc
+    return UpstreamResponse(status_code=201, payload=response)
 
 
 def install_oauth_compat_routes(app: FastAPI) -> None:
@@ -218,6 +218,12 @@ def install_oauth_compat_routes(app: FastAPI) -> None:
             return JSONResponse(
                 {"error": exc.error, "error_description": exc.description},
                 status_code=exc.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
+        except RuntimeError as exc:
+            return JSONResponse(
+                {"error": "server_error", "error_description": str(exc)},
+                status_code=503,
                 headers={"Cache-Control": "no-store"},
             )
         except (ValueError, json.JSONDecodeError):
