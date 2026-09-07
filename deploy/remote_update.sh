@@ -10,7 +10,8 @@ fi
 APP_DIR="${YCA_DEPLOY_DIR:-$HOME/apps/youtube-creator-agent}"
 COMPOSE_FILE="deploy/docker-compose.oracle.yml"
 BACKCHANNEL_VALUE="http://keycloak:8080/realms/yca"
-INTROSPECTION_BACKCHANNEL_VALUE="http://keycloak:8080/realms/yca/protocol/openid-connect/token/introspect"
+INTROSPECTION_VALUE="http://keycloak:8080/realms/yca/protocol/openid-connect/token/introspect"
+FALLBACK_CHATGPT_CLIENT_ID="82da41e4-4d89-4ccf-b134-c6a8b01f8453"
 DESIRED_LOGIN_THEME="keycloak.v2"
 
 cd "$APP_DIR"
@@ -28,7 +29,7 @@ rollback() {
   local code=$?
   trap - ERR
   if [[ "$ROLLBACK_NEEDED" == "1" ]]; then
-    echo "Deploy failed with exit code $code. Rolling back to $PREVIOUS_SHA" >&2
+    echo "Deploy failed with exit code $code. Rolling back code to $PREVIOUS_SHA" >&2
     git reset --hard "$PREVIOUS_SHA" || true
     docker compose -f "$COMPOSE_FILE" up -d --build mcp onboarding || true
   fi
@@ -37,10 +38,7 @@ rollback() {
 trap rollback ERR
 
 wait_for_url() {
-  local url="$1"
-  local label="$2"
-  local attempts="${3:-30}"
-  local delay="${4:-2}"
+  local url="$1" label="$2" attempts="${3:-30}" delay="${4:-2}"
   local i code
   for ((i=1; i<=attempts; i++)); do
     code="$(curl --show-error --silent --location --max-time 10 --output /dev/null --write-out '%{http_code}' "$url" || true)"
@@ -56,8 +54,7 @@ wait_for_url() {
 }
 
 set_env_value() {
-  local key="$1"
-  local value="$2"
+  local key="$1" value="$2"
   if grep -q "^${key}=" config/server.env; then
     sed -i "s#^${key}=.*#${key}=${value}#" config/server.env
   else
@@ -75,24 +72,35 @@ if [[ ! -f config/server.env ]]; then
   exit 4
 fi
 
-# Browser-facing OIDC remains public, while server-to-server calls stay on the
-# Docker network. Sending introspection through Cloudflare caused Error 1010.
+echo "[oauth] forcing private Docker backchannels"
 set_env_value YCA_WEB_OIDC_BACKCHANNEL_BASE_URL "$BACKCHANNEL_VALUE"
-set_env_value YCA_AUTH_INTROSPECTION_URL "$INTROSPECTION_BACKCHANNEL_VALUE"
+set_env_value YCA_AUTH_INTROSPECTION_URL "$INTROSPECTION_VALUE"
 
-# Repair the fixed ChatGPT OAuth client's custom scopes idempotently. The
-# bootstrap admin account may be stale, so this narrowly-scoped migration uses
-# the Keycloak database and restarts Keycloak only when rows actually change.
-chatgpt_client_id="$(grep -E '^YCA_CHATGPT_OAUTH_CLIENT_ID=' config/server.env | tail -n1 | cut -d= -f2- | tr -d '\r')"
+# Read the fixed public OAuth client without letting grep/pipefail abort the
+# deploy when an older server.env does not yet contain the variable.
+chatgpt_client_id="$(sed -n 's/^YCA_CHATGPT_OAUTH_CLIENT_ID=//p' config/server.env | tail -n1 | tr -d '\r' || true)"
 if [[ -z "$chatgpt_client_id" ]]; then
-  echo "YCA_CHATGPT_OAUTH_CLIENT_ID is required for OAuth repair" >&2
-  exit 5
+  chatgpt_client_id="$(docker compose -f "$COMPOSE_FILE" exec -T onboarding sh -lc 'printf %s "${YCA_CHATGPT_OAUTH_CLIENT_ID:-}"' 2>/dev/null || true)"
+fi
+if [[ -z "$chatgpt_client_id" ]]; then
+  chatgpt_client_id="$FALLBACK_CHATGPT_CLIENT_ID"
+  set_env_value YCA_CHATGPT_OAUTH_CLIENT_ID "$chatgpt_client_id"
+  echo "[oauth] restored fixed ChatGPT public-client identifier in server.env"
+else
+  echo "[oauth] fixed ChatGPT public-client identifier found"
 fi
 
-scope_migration="$({ docker compose -f "$COMPOSE_FILE" exec -T -e CHATGPT_CLIENT_ID="$chatgpt_client_id" keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+# One idempotent migration creates the custom scopes and attaches them to the
+# fixed public client. yca:read is default; yca:write remains optional.
+echo "[oauth] repairing Keycloak custom scopes"
+migration_result="$({ docker compose -f "$COMPOSE_FILE" exec -T -e CHATGPT_CLIENT_ID="$chatgpt_client_id" keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID"' <<'SQL'
 WITH realm_row AS (
   SELECT id FROM realm WHERE name='yca'
-), inserted_read AS (
+), target AS (
+  SELECT c.id AS client_pk, r.id AS realm_pk
+  FROM client c JOIN realm r ON r.id=c.realm_id
+  WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id'
+), new_read AS (
   INSERT INTO client_scope (id, name, realm_id, description, protocol)
   SELECT md5(random()::text || clock_timestamp()::text), 'yca:read', id,
          'Read access to the authenticated YouTube Creator Agent tenant', 'openid-connect'
@@ -102,7 +110,7 @@ WITH realm_row AS (
     WHERE r.name='yca' AND cs.name='yca:read'
   )
   RETURNING 1
-), inserted_write AS (
+), new_write AS (
   INSERT INTO client_scope (id, name, realm_id, description, protocol)
   SELECT md5(random()::text || clock_timestamp()::text), 'yca:write', id,
          'Write access to explicitly approved YouTube Creator Agent actions', 'openid-connect'
@@ -112,183 +120,120 @@ WITH realm_row AS (
     WHERE r.name='yca' AND cs.name='yca:write'
   )
   RETURNING 1
-), inserted_read_assignment AS (
+), add_read AS (
   INSERT INTO client_scope_client (client_id, scope_id, default_scope)
-  SELECT c.id, cs.id, TRUE
-  FROM client c
-  JOIN realm r ON r.id=c.realm_id
-  JOIN client_scope cs ON cs.realm_id=r.id AND cs.name='yca:read'
-  WHERE r.name='yca' AND c.client_id=current_setting('CHATGPT_CLIENT_ID', true)
-    AND NOT EXISTS (
-      SELECT 1 FROM client_scope_client x WHERE x.client_id=c.id AND x.scope_id=cs.id
-    )
+  SELECT t.client_pk, cs.id, TRUE
+  FROM target t
+  JOIN client_scope cs ON cs.realm_id=t.realm_pk AND cs.name='yca:read'
+  WHERE NOT EXISTS (
+    SELECT 1 FROM client_scope_client x WHERE x.client_id=t.client_pk AND x.scope_id=cs.id
+  )
   RETURNING 1
-), inserted_write_assignment AS (
+), add_write AS (
   INSERT INTO client_scope_client (client_id, scope_id, default_scope)
-  SELECT c.id, cs.id, FALSE
-  FROM client c
-  JOIN realm r ON r.id=c.realm_id
-  JOIN client_scope cs ON cs.realm_id=r.id AND cs.name='yca:write'
-  WHERE r.name='yca' AND c.client_id=current_setting('CHATGPT_CLIENT_ID', true)
-    AND NOT EXISTS (
-      SELECT 1 FROM client_scope_client x WHERE x.client_id=c.id AND x.scope_id=cs.id
-    )
+  SELECT t.client_pk, cs.id, FALSE
+  FROM target t
+  JOIN client_scope cs ON cs.realm_id=t.realm_pk AND cs.name='yca:write'
+  WHERE NOT EXISTS (
+    SELECT 1 FROM client_scope_client x WHERE x.client_id=t.client_pk AND x.scope_id=cs.id
+  )
   RETURNING 1
 )
 SELECT
-  (SELECT count(*) FROM inserted_read) +
-  (SELECT count(*) FROM inserted_write) +
-  (SELECT count(*) FROM inserted_read_assignment) +
-  (SELECT count(*) FROM inserted_write_assignment);
+  (SELECT count(*) FROM target) || '|' ||
+  ((SELECT count(*) FROM new_read) + (SELECT count(*) FROM new_write)) || '|' ||
+  ((SELECT count(*) FROM add_read) + (SELECT count(*) FROM add_write));
 SQL
-} )"
+} | tr -d '\r' | tail -n1)"
 
-# PostgreSQL custom settings are not automatically inherited from shell env.
-# If the first migration could not resolve the client via current_setting, apply
-# the assignment with psql variables while preserving the already-created scopes.
-if [[ ! "$scope_migration" =~ ^[0-9]+$ ]]; then
-  echo "Unexpected OAuth scope migration result: $scope_migration" >&2
-  exit 6
+if [[ ! "$migration_result" =~ ^1\|[0-9]+\|[0-9]+$ ]]; then
+  echo "OAuth migration did not resolve exactly one fixed ChatGPT client: $migration_result" >&2
+  exit 5
 fi
+scope_created="$(cut -d'|' -f2 <<<"$migration_result")"
+assignment_created="$(cut -d'|' -f3 <<<"$migration_result")"
+echo "[oauth] scope migration verified (created scopes=$scope_created, assignments=$assignment_created)"
 
-# Ensure assignments exist using a quoted psql variable. This is idempotent and
-# does not expose the client identifier in logs.
-assignment_migration="$({ docker compose -f "$COMPOSE_FILE" exec -T -e CHATGPT_CLIENT_ID="$chatgpt_client_id" keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID"' <<'SQL'
-WITH target AS (
-  SELECT c.id AS client_pk, r.id AS realm_pk
-  FROM client c JOIN realm r ON r.id=c.realm_id
-  WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id'
-), read_add AS (
-  INSERT INTO client_scope_client (client_id, scope_id, default_scope)
-  SELECT t.client_pk, cs.id, TRUE
-  FROM target t JOIN client_scope cs ON cs.realm_id=t.realm_pk AND cs.name='yca:read'
-  WHERE NOT EXISTS (SELECT 1 FROM client_scope_client x WHERE x.client_id=t.client_pk AND x.scope_id=cs.id)
-  RETURNING 1
-), write_add AS (
-  INSERT INTO client_scope_client (client_id, scope_id, default_scope)
-  SELECT t.client_pk, cs.id, FALSE
-  FROM target t JOIN client_scope cs ON cs.realm_id=t.realm_pk AND cs.name='yca:write'
-  WHERE NOT EXISTS (SELECT 1 FROM client_scope_client x WHERE x.client_id=t.client_pk AND x.scope_id=cs.id)
-  RETURNING 1
-)
-SELECT (SELECT count(*) FROM target), (SELECT count(*) FROM read_add) + (SELECT count(*) FROM write_add);
-SQL
-} )"
-
-if [[ ! "$assignment_migration" =~ ^1\|[0-9]+$ ]]; then
-  echo "Fixed ChatGPT OAuth client was not found or scope assignment failed" >&2
-  exit 7
-fi
-
-scope_changes="${scope_migration}"
-assignment_changes="${assignment_migration#*|}"
-if (( scope_changes > 0 || assignment_changes > 0 )); then
-  echo "OAuth client scopes repaired; restarting Keycloak to invalidate cached realm/client metadata"
+if (( scope_created > 0 || assignment_created > 0 )); then
+  echo "[oauth] restarting Keycloak once to clear cached realm/client metadata"
   docker compose -f "$COMPOSE_FILE" restart keycloak
-  wait_for_url "https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration" "public keycloak after OAuth scope repair" 45 2
-else
-  echo "OAuth client scopes already configured"
+  wait_for_url "https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration" "public keycloak after OAuth repair" 45 2
 fi
 
-# Build only application services. Postgres/Cloudflared remain untouched here.
+echo "[deploy] rebuilding application services"
 docker compose -f "$COMPOSE_FILE" up -d --build mcp onboarding
-
 docker compose -f "$COMPOSE_FILE" ps mcp onboarding keycloak
 
-# Internal identity-provider backchannel must be reachable from onboarding.
-docker compose -f "$COMPOSE_FILE" exec -T onboarding \
-  python -c "import urllib.request; r=urllib.request.urlopen('http://keycloak:8080/realms/yca/.well-known/openid-configuration', timeout=8); print('keycloak_backchannel', r.status); assert r.status == 200"
+echo "[smoke] internal OIDC discovery"
+docker compose -f "$COMPOSE_FILE" exec -T onboarding python - <<'PY'
+import urllib.request
+with urllib.request.urlopen('http://keycloak:8080/realms/yca/.well-known/openid-configuration', timeout=8) as r:
+    assert r.status == 200
+print('keycloak_backchannel=ok')
+PY
 
-# MCP introspection must never hairpin through Cloudflare. An invalid token should
-# still produce a valid RFC 7662 response with active=false.
+echo "[smoke] RFC7662 introspection through private Docker network"
 docker compose -f "$COMPOSE_FILE" exec -T mcp python - <<'PY'
 import base64, json, os, urllib.parse, urllib.request
 endpoint=os.environ['YCA_AUTH_INTROSPECTION_URL']
-assert endpoint.startswith('http://keycloak:8080/'), endpoint
-client_id=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_ID']
+assert endpoint == 'http://keycloak:8080/realms/yca/protocol/openid-connect/token/introspect', endpoint
+cid=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_ID']
 secret=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_SECRET']
 body=urllib.parse.urlencode({'token':'deployment-smoke-invalid-token'}).encode('ascii')
-basic=base64.b64encode(f'{client_id}:{secret}'.encode()).decode('ascii')
+basic=base64.b64encode(f'{cid}:{secret}'.encode()).decode('ascii')
 req=urllib.request.Request(endpoint,data=body,method='POST',headers={'Authorization':f'Basic {basic}','Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'})
-with urllib.request.urlopen(req,timeout=8) as response:
-    payload=json.loads(response.read().decode())
-    assert response.status == 200
-    assert payload.get('active') is False, payload
-print('mcp_introspection_backchannel ok')
+with urllib.request.urlopen(req,timeout=8) as r:
+    payload=json.loads(r.read().decode())
+    assert r.status == 200 and payload.get('active') is False, payload
+print('mcp_introspection_backchannel=ok')
 PY
 
-# Verify both custom scopes are recognized by the fixed public client. No user
-# credentials are involved; a valid authorization request must render login,
-# not bounce invalid_scope back to ChatGPT.
+echo "[smoke] Keycloak accepts both YCA scopes for ChatGPT PKCE client"
 docker compose -f "$COMPOSE_FILE" exec -T onboarding python - <<'PY'
 import base64, hashlib, os, secrets, urllib.parse, urllib.request
-client_id=os.environ['YCA_CHATGPT_OAUTH_CLIENT_ID']
+cid=os.environ['YCA_CHATGPT_OAUTH_CLIENT_ID']
 verifier=secrets.token_urlsafe(48)
 challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
 params={
-    'response_type':'code',
-    'client_id':client_id,
-    'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
-    'scope':'openid email offline_access yca:read yca:write',
-    'state':'deploy-smoke',
-    'code_challenge':challenge,
-    'code_challenge_method':'S256',
+  'response_type':'code',
+  'client_id':cid,
+  'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
+  'scope':'openid email offline_access yca:read yca:write',
+  'state':'deploy-smoke',
+  'code_challenge':challenge,
+  'code_challenge_method':'S256',
 }
 url='http://keycloak:8080/realms/yca/protocol/openid-connect/auth?'+urllib.parse.urlencode(params)
 req=urllib.request.Request(url,headers={'Host':'auth.silvadigitaltech.com','X-Forwarded-Proto':'https'})
-with urllib.request.urlopen(req,timeout=8) as response:
-    body=response.read(4096).decode('utf-8','replace').lower()
-    assert response.status == 200
+with urllib.request.urlopen(req,timeout=8) as r:
+    body=r.read(8192).decode('utf-8','replace').lower()
+    assert r.status == 200
     assert 'invalid_scope' not in body
-print('keycloak_custom_scopes ok')
+print('keycloak_custom_scopes=ok')
 PY
 
-# Do not touch or restart Keycloak on every application deploy. First inspect the
-# current realm theme directly. Only attempt a mutation when the configured theme
-# actually differs from the desired value.
+# Theme is cosmetic. Keep its repair best-effort and never let a stale bootstrap
+# admin account break authentication deployment.
 theme_updated=0
-current_theme="$({ docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+current_theme="$({ docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
 SELECT COALESCE(login_theme, '') FROM realm WHERE name='yca';
 SQL
-} | tr -d '\r' | tail -n 1)"
-
-if [[ "$current_theme" == "$DESIRED_LOGIN_THEME" ]]; then
-  echo "keycloak login theme already configured: $DESIRED_LOGIN_THEME"
-else
-  echo "keycloak login theme differs (${current_theme:-<empty>}); updating to $DESIRED_LOGIN_THEME"
-  if docker compose -f "$COMPOSE_FILE" exec -T keycloak sh -lc '
-    set -eu
-    admin_user="${KC_BOOTSTRAP_ADMIN_USERNAME:-}"
-    admin_pass="${KC_BOOTSTRAP_ADMIN_PASSWORD:-}"
-    test -n "$admin_user" && test -n "$admin_pass"
-    cfg=/tmp/kcadm-yca-deploy.config
-    rm -f "$cfg"
-    /opt/keycloak/bin/kcadm.sh config credentials --config "$cfg" --server http://127.0.0.1:8080 --realm master --user "$admin_user" --password "$admin_pass" >/dev/null
-    /opt/keycloak/bin/kcadm.sh update realms/yca --config "$cfg" -s loginTheme=keycloak.v2 >/dev/null
-    rm -f "$cfg"
-  '; then
-    theme_updated=1
-    echo "keycloak login theme set via Admin API: $DESIRED_LOGIN_THEME"
-  else
-    echo "Keycloak bootstrap-admin login is stale; applying scoped realm-theme DB fallback" >&2
-    set +e
-    db_result="$({ docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+} | tr -d '\r' | tail -n1)"
+if [[ "$current_theme" != "$DESIRED_LOGIN_THEME" ]]; then
+  set +e
+  db_result="$({ docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
 UPDATE realm SET login_theme='keycloak.v2' WHERE name='yca' AND login_theme IS DISTINCT FROM 'keycloak.v2';
 SELECT COALESCE(login_theme, '') FROM realm WHERE name='yca';
 SQL
-    } 2>&1)"
-    db_code=$?
-    set -e
-    if [[ "$db_code" == "0" && "${db_result##*$'\n'}" == "$DESIRED_LOGIN_THEME" ]]; then
-      theme_updated=1
-      echo "keycloak login theme set via scoped DB fallback: $DESIRED_LOGIN_THEME"
-    else
-      echo "WARNING: could not enforce $DESIRED_LOGIN_THEME login theme; application deploy will continue" >&2
-      printf '%s\n' "$db_result" >&2
-    fi
+  } 2>&1)"
+  db_code=$?
+  set -e
+  if [[ "$db_code" == "0" && "${db_result##*$'\n'}" == "$DESIRED_LOGIN_THEME" ]]; then
+    theme_updated=1
+    echo "[theme] login theme set to $DESIRED_LOGIN_THEME"
+  else
+    echo "[theme] warning: cosmetic theme repair skipped" >&2
   fi
-
-  wait_for_url "https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration" "public keycloak after theme update" 30 2
 fi
 
 wait_for_url "https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration" "public keycloak" 30 2
