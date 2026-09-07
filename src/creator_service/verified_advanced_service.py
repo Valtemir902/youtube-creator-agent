@@ -222,7 +222,7 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             )
         raise RuntimeError(
             "O YouTube não confirmou todos os campos solicitados "
-            f"({', '.join(mismatches)}). A alteração foi revertida e a restauração foi verificada."
+            f"({', '.join(mismatches)}). A alteração foi revertida automaticamente e a restauração foi verificada."
         )
 
     def apply_video_metadata_rollback(self, *, rollback_payload: dict, rollback_token: str) -> dict:
