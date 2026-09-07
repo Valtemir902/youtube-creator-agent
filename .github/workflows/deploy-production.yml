@@ -41,8 +41,52 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Deploy candidate: $sha"
 
+      - name: Checkout deploy candidate for classification
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.sha }}
+          fetch-depth: 2
+
+      - name: Decide whether production deploy is needed
+        id: classify
+        shell: bash
+        env:
+          DEPLOY_SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch: production deploy explicitly requested."
+            exit 0
+          fi
+
+          parent="$(git rev-parse "$DEPLOY_SHA^")"
+          mapfile -t changed < <(git diff --name-only "$parent" "$DEPLOY_SHA")
+          printf 'Changed files:\n'
+          printf ' - %s\n' "${changed[@]}"
+
+          needed=false
+          for path in "${changed[@]}"; do
+            case "$path" in
+              .github/*|tests/*|docs/*|README.md|*.md)
+                ;;
+              *)
+                needed=true
+                break
+                ;;
+            esac
+          done
+
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          if [[ "$needed" == "true" ]]; then
+            echo "Runtime/deploy-affecting change detected; production deploy will run."
+          else
+            echo "Only CI/test/docs files changed; skipping production deploy to avoid needless service churn."
+          fi
+
       - name: Check deployment credentials
         id: creds
+        if: steps.classify.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -54,7 +98,7 @@ jobs:
           fi
 
       - name: Configure SSH
-        if: steps.creds.outputs.configured == 'true'
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -66,7 +110,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy application to VPS
-        if: steps.creds.outputs.configured == 'true'
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
         shell: bash
         env:
           DEPLOY_SHA: ${{ steps.ref.outputs.sha }}
@@ -79,7 +123,7 @@ jobs:
             "set -euo pipefail; cd ~/apps/youtube-creator-agent; git fetch origin '$DEPLOY_SHA'; git show '$DEPLOY_SHA:deploy/remote_update.sh' > /tmp/yca-remote-update.sh; chmod 700 /tmp/yca-remote-update.sh; /tmp/yca-remote-update.sh '$DEPLOY_SHA'"
 
       - name: Public post-deploy checks
-        if: steps.creds.outputs.configured == 'true'
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -87,6 +131,43 @@ jobs:
           echo
           curl --fail --show-error --silent --location --max-time 20 https://creator.silvadigitaltech.com/ready
           echo
+          curl --fail --show-error --silent --location --max-time 20 https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration >/dev/null
           code="$(curl --show-error --silent --output /dev/null --write-out '%{http_code}' https://creator.silvadigitaltech.com/login)"
           test "$code" = "200"
           echo "Login page HTTP $code"
+
+      - name: Checkout deployed revision for browser audit
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.sha }}
+
+      - name: Set up Node for browser audit
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install browser audit runtime
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Live browser audit after deploy
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        shell: bash
+        env:
+          CREATOR_BASE_URL: https://creator.silvadigitaltech.com
+          AUTH_HOST: auth.silvadigitaltech.com
+        run: node tests/live_browser_smoke.js
+
+      - name: Upload browser screenshots and diagnostics
+        if: always() && steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-browser-audit
+          path: artifacts/
+          if-no-files-found: warn
