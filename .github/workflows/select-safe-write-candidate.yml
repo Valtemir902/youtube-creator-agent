@@ -94,7 +94,7 @@ jobs:
               tags=list(snippet.get('tags',[]) or [])
               tag_budget=sum(len(str(tag)) + (2 if ' ' in str(tag) else 0) + 1 for tag in tags)
               memory=service.video_memory_state(video_id)
-              protected=bool(memory.get('recently_edited', False))
+              protected=bool(memory.get('protected', False))
               rows.append({
                   'video_id':video_id,
                   'title':str(snippet.get('title','')),
@@ -104,6 +104,7 @@ jobs:
                   'tags_count':len(tags),
                   'tag_budget':tag_budget,
                   'recently_edited':protected,
+                  'protection_seconds_remaining':int(memory.get('seconds_remaining',0) or 0),
               })
 
           privacy_rank={'private':0,'unlisted':1,'public':2}
