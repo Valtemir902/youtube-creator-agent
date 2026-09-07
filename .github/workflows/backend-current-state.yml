@@ -1,0 +1,104 @@
+name: Backend Current Metadata State
+
+on:
+  push:
+    branches: ["test/mcp-real-write-validation"]
+    paths:
+      - ".github/workflows/backend-current-state.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      TARGET_CHANNEL_ID: UCePN99heaPy2YfUJPEMwbGA
+      TARGET_VIDEO_ID: l4gm7rYg8KQ
+
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Read current metadata and compare action digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "cd ~/apps/youtube-creator-agent && docker compose -f deploy/docker-compose.oracle.yml exec -T -e CHANNEL_ID='$TARGET_CHANNEL_ID' -e VIDEO_ID='$TARGET_VIDEO_ID' mcp python -" <<'PY'
+          import json, os
+          from creator_service.cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
+          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
+          from intelligence.creator_memory import payload_digest
+
+          channel_id=os.environ['CHANNEL_ID'].strip()
+          video_id=os.environ['VIDEO_ID'].strip()
+          resolver=CloudTenantResolver()
+          with resolver.db._connect() as conn:
+              tenant_ids=[str(r[0]) for r in conn.execute(
+                  "SELECT DISTINCT tenant_id FROM tenant_secrets WHERE secret_name=? ORDER BY updated_at DESC",
+                  (GOOGLE_SECRET_NAME,),
+              ).fetchall()]
+          context=None
+          for tenant_id in tenant_ids:
+              try:
+                  candidate=resolver.resolve(tenant_id)
+                  youtube,_=candidate.google_clients()
+                  items=youtube.channels().list(part='id',mine=True).execute().get('items',[])
+                  if items and str(items[0].get('id',''))==channel_id:
+                      context=candidate
+                      break
+              except Exception:
+                  pass
+          if context is None:
+              raise RuntimeError('tenant alvo não encontrado')
+          service=VerifiedAdvancedSafeCreatorService(context)
+          current=service._current_video_snippet(video_id)
+          current_digest=payload_digest(current)
+          actions=service.memory.recent_actions(video_id,limit=10)
+          update=next((a for a in actions if a['action_type']=='metadata_update'),None)
+          verification=next((a for a in actions if a['action_type']=='metadata_write_verification_rollback'),None)
+          marker='[TESTE MCP: validação temporária de edição pelo YouTube Creator Agent]'
+          suffix=' | TESTE MCP'
+          output={
+              'ok':True,
+              'video_id':video_id,
+              'current_digest':current_digest,
+              'title_has_test_suffix':str(current.get('title','')).endswith(suffix),
+              'description_has_test_marker':marker in str(current.get('description','')),
+              'tags_have_test_values':any(str(x).casefold() in {'teste mcp','youtube creator agent'} for x in (current.get('tags',[]) or [])),
+              'current_tags_count':len(current.get('tags',[]) or []),
+              'matches_original_before_digest':bool(update and current_digest==update['before_digest']),
+              'matches_requested_after_digest':bool(update and current_digest==update['after_digest']),
+              'latest_actions':[
+                  {
+                      'action_type':a['action_type'],
+                      'changed_fields':a['changed_fields'],
+                      'before_digest':a['before_digest'],
+                      'after_digest':a['after_digest'],
+                      'details':a['details'],
+                  }
+                  for a in actions[:3]
+              ],
+              'verification_record_present':verification is not None,
+          }
+          print(json.dumps(output,ensure_ascii=False))
+          if output['title_has_test_suffix'] or output['description_has_test_marker'] or output['tags_have_test_values']:
+              raise SystemExit('TEST_METADATA_STILL_PRESENT')
+          PY
