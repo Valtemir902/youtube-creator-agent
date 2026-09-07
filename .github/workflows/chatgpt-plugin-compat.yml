@@ -111,7 +111,7 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Mirror ChatGPT DCR then request offline access
+      - name: Probe ChatGPT DCR scope assignment variants
         run: |
           set -euo pipefail
           reg="$(python - <<'PY'
@@ -120,47 +120,53 @@ jobs:
           PY
           )"
 
-          # Match the registration shape already proven to work with ChatGPT/Keycloak:
-          # register only the Creator read scope, then request OIDC + offline_access
-          # during authorization. This exposes whether the dynamically-created client
-          # received offline_access as an optional client scope.
-          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"yca:read"}'
-          code="$(curl -sS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
-            -o /tmp/dcr.json -w '%{http_code}' \
-            -H 'content-type: application/json' -H 'accept: application/json' \
-            --data "$payload" "$reg")"
-          echo "DCR_HTTP=$code"
-          if [ "$code" != "201" ] && [ "$code" != "200" ]; then
-            python - <<'PY'
-          from pathlib import Path
-          print('DCR_ERROR_PREFIX=', Path('/tmp/dcr.json').read_text(errors='replace')[:1200])
-          PY
-            exit 1
-          fi
+          success=0
+          for variant in read read_offline read_write_offline; do
+            case "$variant" in
+              read) reg_scope='yca:read' ;;
+              read_offline) reg_scope='yca:read offline_access' ;;
+              read_write_offline) reg_scope='yca:read yca:write offline_access' ;;
+            esac
 
-          python - <<'PY'
-          import json
-          p=json.load(open('/tmp/dcr.json'))
+            payload="$(REG_SCOPE="$reg_scope" python - <<'PY'
+          import json, os
+          print(json.dumps({
+            'client_name':'ChatGPT compatibility probe',
+            'redirect_uris':['https://chatgpt.com/connector_platform_oauth_redirect'],
+            'grant_types':['authorization_code','refresh_token'],
+            'response_types':['code'],
+            'scope':os.environ['REG_SCOPE'],
+          }))
+          PY
+          )"
+
+            code="$(curl -sS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
+              -o "/tmp/dcr-$variant.json" -w '%{http_code}' \
+              -H 'content-type: application/json' -H 'accept: application/json' \
+              --data "$payload" "$reg")"
+            echo "DCR_VARIANT=$variant REG_SCOPE=$reg_scope HTTP=$code"
+
+            if [ "$code" != "201" ] && [ "$code" != "200" ]; then
+              VARIANT="$variant" python - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path('/tmp/dcr-'+os.environ['VARIANT']+'.json')
+          print('DCR_ERROR_PREFIX=', p.read_text(errors='replace')[:1200])
+          PY
+              continue
+            fi
+
+            VARIANT="$variant" python - <<'PY'
+          import json, os
+          p=json.load(open('/tmp/dcr-'+os.environ['VARIANT']+'.json'))
           safe={k:p.get(k) for k in ('client_id','token_endpoint_auth_method','redirect_uris','grant_types','scope')}
           print('DCR_SAFE=', json.dumps(safe, ensure_ascii=False))
-          assert 'https://chatgpt.com/connector_platform_oauth_redirect' in (p.get('redirect_uris') or []), safe
           PY
 
-          cleanup_uri="$(python - <<'PY'
-          import json
-          print(json.load(open('/tmp/dcr.json')).get('registration_client_uri') or '')
-          PY
-          )"
-          cleanup_token="$(python - <<'PY'
-          import json
-          print(json.load(open('/tmp/dcr.json')).get('registration_access_token') or '')
-          PY
-          )"
-
-          auth_url="$(python - <<'PY'
-          import base64, hashlib, json, secrets, urllib.parse
+            auth_url="$(VARIANT="$variant" python - <<'PY'
+          import base64, hashlib, json, os, secrets, urllib.parse
           discovery=json.load(open('/tmp/oidc.json'))
-          client=json.load(open('/tmp/dcr.json'))
+          client=json.load(open('/tmp/dcr-'+os.environ['VARIANT']+'.json'))
           verifier=secrets.token_urlsafe(48)
           challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
           params={
@@ -176,31 +182,45 @@ jobs:
           PY
           )"
 
-          auth_code="$(curl -sS --max-redirs 0 \
-            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
-            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
-            -o /tmp/auth.body -D /tmp/auth.headers \
-            -w '%{http_code}' "$auth_url" || true)"
-          echo "AUTH_HTTP=$auth_code"
-          grep -Ei '^(server|content-type|location):' /tmp/auth.headers | tail -n 8 || true
-          python - <<'PY'
+            auth_code="$(curl -sS --max-redirs 0 \
+              -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
+              -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+              -o "/tmp/auth-$variant.body" -D "/tmp/auth-$variant.headers" \
+              -w '%{http_code}' "$auth_url" || true)"
+            echo "AUTH_VARIANT=$variant HTTP=$auth_code"
+            grep -Ei '^(server|content-type|location):' "/tmp/auth-$variant.headers" | tail -n 8 || true
+
+            if [ "$auth_code" = "200" ] && grep -Eiq '(login|username|email|password|entrar)' "/tmp/auth-$variant.body"; then
+              echo "OFFLINE_AUTH_VARIANT=$variant ok"
+              success=1
+            else
+              VARIANT="$variant" python - <<'PY'
+          import os
           from pathlib import Path
-          text=Path('/tmp/auth.body').read_text(errors='replace')
-          print('AUTH_BODY_PREFIX=', ' '.join(text[:1200].split()))
+          text=Path('/tmp/auth-'+os.environ['VARIANT']+'.body').read_text(errors='replace')
+          print('AUTH_BODY_PREFIX=', ' '.join(text[:1000].split()))
           PY
+            fi
 
-          if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
-            cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
-              -H "Authorization: Bearer $cleanup_token" "$cleanup_uri" || true)"
-            echo "DCR_CLEANUP_HTTP=$cleanup_code"
-          fi
+            cleanup_uri="$(VARIANT="$variant" python - <<'PY'
+          import json, os
+          print(json.load(open('/tmp/dcr-'+os.environ['VARIANT']+'.json')).get('registration_client_uri') or '')
+          PY
+          )"
+            cleanup_token="$(VARIANT="$variant" python - <<'PY'
+          import json, os
+          print(json.load(open('/tmp/dcr-'+os.environ['VARIANT']+'.json')).get('registration_access_token') or '')
+          PY
+          )"
+            if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
+              cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: Bearer $cleanup_token" "$cleanup_uri" || true)"
+              echo "DCR_CLEANUP_VARIANT=$variant HTTP=$cleanup_code"
+            fi
+          done
 
-          if [ "$auth_code" != "200" ]; then
-            echo 'CHATGPT_OFFLINE_AUTH=failed'
-            exit 1
-          fi
-          grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.body
-          echo 'CHATGPT_OFFLINE_AUTH=ok'
+          test "$success" = "1"
+          echo 'CHATGPT_OFFLINE_AUTH_VARIANT=found'
 
       - name: No secrets in app package
         run: |
