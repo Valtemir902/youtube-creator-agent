@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import requests
@@ -87,6 +88,41 @@ class GeminiProvider(AIProvider):
             )
         return "\n\n".join(system_parts) or None, contents
 
+    @staticmethod
+    def _is_model_compatibility_error(exc: Exception) -> bool:
+        text = " ".join(str(exc).lower().split())
+        signals = (
+            "not found for api version",
+            "not supported for generatecontent",
+            "method is not supported",
+            "unsupported model",
+            "only supports interactions api",
+            "does not support generatecontent",
+            "model is not supported",
+        )
+        return any(signal in text for signal in signals)
+
+    @staticmethod
+    def _model_rank(model_id: str, requested: str) -> tuple[int, int, int, int, str]:
+        value = model_id.lower()
+        requested_value = requested.lower()
+        family = 0
+        for token, weight in (("flash-lite", 3), ("flash", 2), ("pro", 1)):
+            if token in requested_value and token in value:
+                family = weight
+                break
+        stable = 0 if any(token in value for token in ("preview", "exp", "experimental", "latest")) else 1
+        match = re.search(r"gemini-(\d+)(?:\.(\d+))?", value)
+        major = int(match.group(1)) if match else 0
+        minor = int(match.group(2) or 0) if match else 0
+        return family, stable, major, minor, value
+
+    def _fallback_generate_content_model(self, requested: str) -> str | None:
+        candidates = [model.id for model in self.list_models() if model.id != requested]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda model_id: self._model_rank(model_id, requested))
+
     def generate(
         self,
         model: str,
@@ -111,12 +147,33 @@ class GeminiProvider(AIProvider):
         if system_instruction:
             body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
 
-        payload = self._request(
-            "POST",
-            f"/models/{model}:generateContent",
-            json=body,
-            headers={"Content-Type": "application/json"},
-        ).json()
+        selected_model = str(model or "").strip()
+        if not selected_model:
+            raise AIProviderError("Modelo Gemini ausente.")
+
+        try:
+            payload = self._request(
+                "POST",
+                f"/models/{selected_model}:generateContent",
+                json=body,
+                headers={"Content-Type": "application/json"},
+            ).json()
+        except AIProviderError as exc:
+            if not self._is_model_compatibility_error(exc):
+                raise
+            fallback = self._fallback_generate_content_model(selected_model)
+            if not fallback:
+                raise AIProviderError(
+                    f"O modelo Gemini '{selected_model}' é incompatível com generateContent e nenhuma alternativa compatível foi encontrada."
+                ) from exc
+            selected_model = fallback
+            payload = self._request(
+                "POST",
+                f"/models/{selected_model}:generateContent",
+                json=body,
+                headers={"Content-Type": "application/json"},
+            ).json()
+
         candidates = payload.get("candidates") or []
         if not candidates:
             raise AIProviderError("Gemini não retornou nenhum candidato de resposta.")
@@ -126,7 +183,7 @@ class GeminiProvider(AIProvider):
             raise AIProviderError("Gemini retornou uma resposta sem texto utilizável.")
         return AIResponse(
             text=text,
-            model=model,
+            model=selected_model,
             provider=self.provider_name,
             usage=payload.get("usageMetadata") or {},
             raw=payload,
