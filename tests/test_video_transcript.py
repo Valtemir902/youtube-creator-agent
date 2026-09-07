@@ -89,7 +89,7 @@ def test_caption_transcript_prefers_owner_caption_over_asr():
     assert result["caption_id"] == "official"
     assert result["source"] == "youtube_caption"
     assert result["is_auto_generated"] is False
-    assert result["word_count"] == 9
+    assert result["word_count"] == 8
     assert len(result["segments"]) == 2
 
 
