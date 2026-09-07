@@ -107,7 +107,7 @@ def create_server() -> MCPServer:
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(oauth_issuer),
             resource_server_url=AnyHttpUrl(resource),
-            required_scopes=[READ_SCOPE, WRITE_SCOPE],
+            required_scopes=[READ_SCOPE],
             validate_token_resource=True,
         ),
     )
