@@ -4,6 +4,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from .base import AIProviderError
 from .credential_store import CredentialStore
 from .key_pool import APIKeyPoolStore
 from .registry import AIProviderRegistry
@@ -40,9 +41,34 @@ class AIRuntime:
             settings.auto_rotate_keys = self.key_pool.auto_rotate(settings.provider) or settings.auto_rotate_keys
         return settings
 
+    def validate_model_selection(
+        self,
+        settings: AISettings,
+        *,
+        api_key: str | None = None,
+        key_id: str | None = None,
+    ) -> None:
+        """Reject saved models that cannot be used by the provider's generation path."""
+        selected = str(settings.model or "").strip()
+        if not selected:
+            return
+        models = self.list_models(settings, api_key, key_id=key_id)
+        ids = {item.id for item in models}
+        if selected not in ids:
+            provider = settings.provider.strip().lower()
+            raise AIProviderError(
+                f"unsupported model: '{selected}' is not compatible with the configured {provider} generation endpoint."
+            )
+
     def save_settings(self, settings: AISettings, api_key: str | None = None) -> None:
         provider = settings.provider.strip().lower()
         settings.provider = provider
+
+        # Validate first so an incompatible model is never persisted. When a
+        # fresh key is supplied, use it directly for validation before storing it.
+        if provider != "ollama" and settings.model.strip():
+            self.validate_model_selection(settings, api_key=api_key)
+
         if provider != "ollama":
             self._migrate_legacy_key_if_needed(provider)
             self.key_pool.set_auto_rotate(provider, settings.auto_rotate_keys)
@@ -239,7 +265,9 @@ class AIRuntime:
             selected_model = (model or "").strip()
             if selected_model:
                 if selected_model not in model_ids:
-                    raise RuntimeError(f"O modelo selecionado não está disponível para esta chave: {selected_model}")
+                    raise AIProviderError(
+                        f"unsupported model: '{selected_model}' is not compatible with the configured generation endpoint."
+                    )
                 provider_obj = self._provider(settings, key_id=key_id)
                 provider_obj.generate(
                     selected_model,
