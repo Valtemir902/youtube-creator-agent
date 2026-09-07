@@ -19,13 +19,26 @@ def tenant_id_from_subject(issuer: str, subject: str) -> str:
 
 
 class IntrospectionTokenVerifier(TokenVerifier):
-    """RFC 7662 verifier for an external OAuth/OIDC authorization server."""
+    """RFC 7662 verifier for the external Keycloak authorization server.
+
+    Keycloak does not implement RFC 8707 resource indicators as a token-audience
+    mapper by default. Therefore, an otherwise valid ChatGPT token may have a
+    conventional Keycloak ``aud`` (for example ``account``) instead of the MCP
+    resource URL even though the OAuth request carried ``resource=...``.
+
+    Security is bound to the dedicated ChatGPT public OAuth client instead: the
+    token must be active, issued by the configured Keycloak realm (because it is
+    introspected there), have a subject, and, when configured, belong to the
+    dedicated ChatGPT client id. MCP's AuthSettings still validates the logical
+    resource carried by the AccessToken object.
+    """
 
     def __init__(self):
         self.endpoint = os.environ.get("YCA_AUTH_INTROSPECTION_URL", "").strip()
         self.client_id = os.environ.get("YCA_AUTH_INTROSPECTION_CLIENT_ID", "").strip()
         self.client_secret = os.environ.get("YCA_AUTH_INTROSPECTION_CLIENT_SECRET", "").strip()
         self.resource = os.environ.get("YCA_MCP_PUBLIC_URL", "").strip()
+        self.expected_oauth_client_id = os.environ.get("YCA_CHATGPT_OAUTH_CLIENT_ID", "").strip()
         self.issuer = (
             os.environ.get("YCA_TOKEN_ISSUER_URL", "").strip()
             or os.environ.get("YCA_WEB_OIDC_ISSUER_URL", "").strip()
@@ -57,24 +70,30 @@ class IntrospectionTokenVerifier(TokenVerifier):
         data = self._introspect(token)
         if not data.get("active"):
             return None
+
         subject = str(data.get("sub", "")).strip()
         if not subject:
             return None
+
+        token_client_id = str(data.get("client_id") or data.get("azp") or "").strip()
+        if self.expected_oauth_client_id and token_client_id != self.expected_oauth_client_id:
+            return None
+
         scope_value = data.get("scope", "")
         scopes = scope_value.split() if isinstance(scope_value, str) else list(scope_value or [])
         expires_at = int(data.get("exp", 0) or 0) or None
         if expires_at and expires_at < int(time.time()):
             return None
-        aud = data.get("aud")
-        audiences = [aud] if isinstance(aud, str) else list(aud or [])
-        if audiences and self.resource not in audiences:
-            return None
+
         return AccessToken(
             token=token,
-            client_id=str(data.get("client_id", "chatgpt")),
+            client_id=token_client_id or "chatgpt",
             scopes=scopes,
             expires_at=expires_at,
             resource=self.resource,
             subject=subject,
-            claims={"tenant_id": tenant_id_from_subject(self.issuer, subject)},
+            claims={
+                "tenant_id": tenant_id_from_subject(self.issuer, subject),
+                "aud": data.get("aud"),
+            },
         )
