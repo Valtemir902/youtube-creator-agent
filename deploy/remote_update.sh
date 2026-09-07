@@ -25,6 +25,7 @@ ROLLBACK_NEEDED=1
 
 rollback() {
   local code=$?
+  trap - ERR
   if [[ "$ROLLBACK_NEEDED" == "1" ]]; then
     echo "Deploy failed with exit code $code. Rolling back to $PREVIOUS_SHA" >&2
     git reset --hard "$PREVIOUS_SHA" || true
@@ -82,9 +83,10 @@ docker compose -f "$COMPOSE_FILE" exec -T onboarding \
 # current realm theme directly. Only attempt a mutation when the configured theme
 # actually differs from the desired value.
 theme_updated=0
-current_theme="$(docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc \
-  'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT COALESCE(login_theme, '\''\'') FROM realm WHERE name='\''yca'\'';"' \
-  | tr -d '\r' | tail -n 1)"
+current_theme="$({ docker compose -f "$COMPOSE_FILE" exec -T keycloak-db sh -lc 'set -eu; psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+SELECT COALESCE(login_theme, '') FROM realm WHERE name='yca';
+SQL
+} | tr -d '\r' | tail -n 1)"
 
 if [[ "$current_theme" == "$DESIRED_LOGIN_THEME" ]]; then
   echo "keycloak login theme already configured: $DESIRED_LOGIN_THEME"
