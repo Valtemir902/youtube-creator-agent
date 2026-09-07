@@ -6,45 +6,35 @@ from mcp.types import ToolAnnotations
 
 from . import cloud_mcp_server as base
 from . import cloud_mcp_server_advanced as advanced
-from .dashboard_ai import youtube_transcript
+from .video_transcript import get_video_transcript_data
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _owned_video_details(service, video_id: str) -> dict[str, Any]:
     video_id = str(video_id or "").strip()
     if not video_id:
-        raise ValueError("video_id é obrigatório.")
+        raise base.tool_error("invalid_request", "video_id is required.")
 
-    youtube = service._youtube()
-    channel_response = youtube.channels().list(part="snippet", mine=True).execute()
-    channel_items = channel_response.get("items", [])
-    if not channel_items:
-        raise RuntimeError("Nenhum canal ativo foi encontrado para a conta conectada.")
-    channel_id = str(channel_items[0].get("id", ""))
-
-    response = youtube.videos().list(
-        part="snippet,contentDetails,statistics,status",
-        id=video_id,
-    ).execute()
-    items = response.get("items", [])
-    if not items:
-        raise ValueError("Vídeo não encontrado.")
-    item = items[0]
-    snippet = item.get("snippet", {})
-    if str(snippet.get("channelId", "")) != channel_id:
-        raise PermissionError("O vídeo não pertence ao canal conectado.")
-
-    thumbnails = snippet.get("thumbnails", {}) or {}
-    thumbnail = (
-        thumbnails.get("maxres")
-        or thumbnails.get("standard")
-        or thumbnails.get("high")
-        or thumbnails.get("medium")
-        or thumbnails.get("default")
-        or {}
-    ).get("url")
+    item = service._owned_video_item(
+        video_id,
+        part="snippet,contentDetails,statistics,status,player,recordingDetails,topicDetails",
+    )
+    snippet = item.get("snippet", {}) or {}
     statistics = item.get("statistics", {}) or {}
     status = item.get("status", {}) or {}
     content = item.get("contentDetails", {}) or {}
+    player = item.get("player", {}) or {}
+    recording = item.get("recordingDetails", {}) or {}
+    topics = item.get("topicDetails", {}) or {}
+    thumbnails = dict(snippet.get("thumbnails", {}) or {})
+    channel_id = str(snippet.get("channelId", ""))
+
     return {
         "video_id": video_id,
         "channel_id": channel_id,
@@ -55,15 +45,33 @@ def _owned_video_details(service, video_id: str) -> dict[str, Any]:
         "default_language": snippet.get("defaultLanguage"),
         "default_audio_language": snippet.get("defaultAudioLanguage"),
         "published_at": snippet.get("publishedAt"),
-        "thumbnail": thumbnail,
+        "live_broadcast_content": snippet.get("liveBroadcastContent"),
+        "thumbnails": thumbnails,
         "duration": content.get("duration"),
+        "dimension": content.get("dimension"),
         "definition": content.get("definition"),
         "caption": content.get("caption"),
+        "licensed_content": content.get("licensedContent"),
+        "projection": content.get("projection"),
         "privacy_status": status.get("privacyStatus"),
+        "upload_status": status.get("uploadStatus"),
+        "embeddable": status.get("embeddable"),
+        "public_stats_viewable": status.get("publicStatsViewable"),
         "made_for_kids": status.get("madeForKids"),
-        "views": int(statistics.get("viewCount", 0) or 0),
-        "likes": int(statistics.get("likeCount", 0) or 0),
-        "comments": int(statistics.get("commentCount", 0) or 0),
+        "self_declared_made_for_kids": status.get("selfDeclaredMadeForKids"),
+        "view_count": _int_or_zero(statistics.get("viewCount")),
+        "like_count": _int_or_zero(statistics.get("likeCount")),
+        "comment_count": _int_or_zero(statistics.get("commentCount")),
+        # Compatibility aliases retained for existing plugin clients.
+        "views": _int_or_zero(statistics.get("viewCount")),
+        "likes": _int_or_zero(statistics.get("likeCount")),
+        "comments": _int_or_zero(statistics.get("commentCount")),
+        "embed_html": player.get("embedHtml"),
+        "embed_width": player.get("embedWidth"),
+        "embed_height": player.get("embedHeight"),
+        "recording_date": recording.get("recordingDate"),
+        "recording_location": recording.get("location"),
+        "topic_categories": list(topics.get("topicCategories", []) or []),
     }
 
 
@@ -80,13 +88,16 @@ def create_server():
         ),
     )
     def get_video_details(video_id: str) -> dict[str, Any]:
-        """Leitura: retorna metadados, status e estatísticas de um vídeo pertencente ao canal conectado."""
-        base._require_scope(base.READ_SCOPE)
-        base._limit("video_details", limit=120)
-        return _owned_video_details(advanced._service(), video_id)
+        """Leitura segura de metadados/status/estatísticas de um vídeo pertencente ao canal autenticado."""
+        def action() -> dict[str, Any]:
+            base._require_scope(base.READ_SCOPE)
+            base._limit("video_details", limit=120)
+            return base.success_response(_owned_video_details(advanced._service(), video_id))
+
+        return base._structured("get_video_details", action)
 
     @server.tool(
-        title="Obter transcrição de um vídeo do canal",
+        title="Obter transcrição completa de um vídeo do canal",
         annotations=ToolAnnotations(
             read_only_hint=True,
             open_world_hint=False,
@@ -94,15 +105,30 @@ def create_server():
             idempotent_hint=True,
         ),
     )
-    def get_video_transcript(video_id: str, max_chars: int = 28000) -> dict[str, Any]:
-        """Leitura: baixa uma legenda autorizada do vídeo e devolve texto limpo; não modifica o YouTube."""
-        base._require_scope(base.READ_SCOPE)
-        base._limit("video_transcript", limit=60)
-        service = advanced._service()
-        details = _owned_video_details(service, video_id)
-        limit = max(1000, min(100000, int(max_chars)))
-        result = youtube_transcript(service._youtube(), details["video_id"], max_chars=limit)
-        return {"video_id": details["video_id"], "title": details["title"], **result}
+    def get_video_transcript(
+        video_id: str,
+        language: str | None = None,
+        include_segments: bool = True,
+        segment_offset: int = 0,
+        segment_limit: int = 500,
+    ) -> dict[str, Any]:
+        """Leitura: legenda oficial/ASR autorizada; fallback Whisper apenas para mídia local pertencente ao tenant."""
+        def action() -> dict[str, Any]:
+            base._require_scope(base.READ_SCOPE)
+            base._limit("video_transcript", limit=60)
+            service = advanced._service()
+            details = _owned_video_details(service, video_id)
+            transcript = get_video_transcript_data(
+                service,
+                details["video_id"],
+                language=language,
+                include_segments=include_segments,
+                segment_offset=segment_offset,
+                segment_limit=segment_limit,
+            )
+            return base.success_response({"title": details["title"], **transcript})
+
+        return base._structured("get_video_transcript", action)
 
     return server
 
