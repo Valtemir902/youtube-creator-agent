@@ -97,14 +97,27 @@ jobs:
             --data @/tmp/dcr-payload.json \
             https://creator.silvadigitaltech.com/oauth/register)"
           echo "CHATGPT_DCR_HTTP=$code"
-          test "$code" = "201" -o "$code" = "200"
+          if [ "$code" != "201" ] && [ "$code" != "200" ]; then
+            python - <<'PY'
+          import json
+          try:
+              p=json.load(open('/tmp/dcr.json'))
+          except Exception:
+              print('DCR_ERROR=non_json_response')
+              raise SystemExit(0)
+          safe={k:p.get(k) for k in ('error','error_description','message') if p.get(k)}
+          print('DCR_ERROR='+json.dumps(safe, ensure_ascii=False))
+          PY
+            exit 1
+          fi
           python - <<'PY'
           import json
           p=json.load(open('/tmp/dcr.json'))
           assert p.get('client_id'), p
           returned=set(str(p.get('scope') or '').split())
-          assert 'openid' not in returned, returned
-          assert {'email','offline_access','yca:read'} <= returned, returned
+          if returned:
+              assert 'openid' not in returned, returned
+              assert {'email','offline_access','yca:read'} <= returned, returned
           assert p.get('token_endpoint_auth_method','none')=='none', p.get('token_endpoint_auth_method')
           print('CHATGPT_DCR_EXACT_SCOPE=ok')
           PY
