@@ -40,9 +40,15 @@ def test_backend_has_async_analysis_and_polling_contract():
     assert '"status": "failed"' in code
 
 
-def test_mcp_exposes_channel_context_tools_for_gpt():
+def test_mcp_exposes_safe_idempotent_channel_context_tools_for_gpt():
     code = Path("src/creator_service/cloud_mcp_server.py").read_text(encoding="utf-8")
+    accounts = Path("src/creator_service/channel_accounts.py").read_text(encoding="utf-8")
     assert "def list_connected_channels" in code
     assert "def activate_connected_channel" in code
     assert "user_confirmed is not True" in code
-    assert "activate_channel(_resolver().db, _tenant_id(), channel_id)" in code
+    assert "channel_account_state" in code
+    assert 'state["already_active"]' in code
+    assert 'success_response(' in code
+    assert '"channel_not_found"' in code
+    assert "def channel_account_state" in accounts
+    assert '"already_active"' in accounts
