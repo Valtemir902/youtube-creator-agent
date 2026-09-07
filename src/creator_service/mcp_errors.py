@@ -27,6 +27,7 @@ class CreatorToolError(Exception):
 
 
 ERROR_MESSAGES: dict[str, str] = {
+    "authentication_required": "An authenticated session is required.",
     "confirmation_required": "Explicit user confirmation is required.",
     "write_scope_missing": "The authenticated session does not have yca:write permission.",
     "read_scope_missing": "The authenticated session does not have yca:read permission.",
@@ -68,6 +69,8 @@ def classify_exception(exc: BaseException) -> CreatorToolError:
     if HttpError and isinstance(exc, HttpError):  # type: ignore[arg-type]
         return tool_error("youtube_api_error")
 
+    if "não autentic" in text or "unauthenticated" in text or "without tenant identity" in text:
+        return tool_error("authentication_required")
     if "confirmation" in text or "confirmação explícita" in text:
         return tool_error("confirmation_required")
     if "escopo obrigatório ausente: yca:write" in text or "yca:write" in text and "ausente" in text:
@@ -100,6 +103,8 @@ def classify_exception(exc: BaseException) -> CreatorToolError:
         return tool_error("unsupported_ai_model")
     if "limite temporário" in text or "rate limit" in text:
         return tool_error("rate_limited")
+    if isinstance(exc, PermissionError):
+        return tool_error("authentication_required")
     if isinstance(exc, (ValueError, TypeError)):
         return tool_error("invalid_request", str(exc)[:500] or ERROR_MESSAGES["invalid_request"])
     return tool_error("internal_error")
