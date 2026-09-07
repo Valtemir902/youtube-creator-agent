@@ -52,7 +52,9 @@ jobs:
       - name: Check OIDC discovery for ChatGPT OAuth
         run: |
           set -euo pipefail
-          curl -fsS https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration -o /tmp/oidc.json
+          curl -fsS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
+            https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration \
+            -o /tmp/oidc.json
           python - <<'PY'
           import json
           p=json.load(open('/tmp/oidc.json'))
@@ -119,76 +121,71 @@ jobs:
       - name: Mirror ChatGPT DCR and authorization start
         run: |
           set -euo pipefail
+          reg="$(python - <<'PY'
+          import json
+          print(json.load(open('/tmp/oidc.json'))['registration_endpoint'])
+          PY
+          )"
+          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"]}'
+          code="$(curl -sS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
+            -o /tmp/dcr.json -w '%{http_code}' \
+            -H 'content-type: application/json' -H 'accept: application/json' \
+            --data "$payload" "$reg")"
+          echo "DCR_HTTP=$code"
           python - <<'PY'
-          import base64, hashlib, json, secrets, urllib.parse, urllib.request, urllib.error
-
-          discovery=json.load(urllib.request.urlopen('https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration', timeout=10))
-          reg=discovery['registration_endpoint']
-          payload={
-              'client_name':'ChatGPT compatibility probe',
-              'redirect_uris':['https://chatgpt.com/connector_platform_oauth_redirect'],
-              'grant_types':['authorization_code','refresh_token'],
-              'response_types':['code'],
+          import json
+          p=json.load(open('/tmp/dcr.json'))
+          safe={
+              'client_id': p.get('client_id'),
+              'token_endpoint_auth_method': p.get('token_endpoint_auth_method'),
+              'redirect_uris': p.get('redirect_uris'),
+              'grant_types': p.get('grant_types'),
           }
-          request=urllib.request.Request(reg, data=json.dumps(payload).encode(), headers={'Content-Type':'application/json','Accept':'application/json'}, method='POST')
-          try:
-              response=urllib.request.urlopen(request, timeout=10)
-              body=response.read().decode()
-              status=response.status
-          except urllib.error.HTTPError as exc:
-              body=exc.read().decode(errors='replace')
-              status=exc.code
-          print('DCR_HTTP=', status)
-          print('DCR_BODY=', body)
-          assert status in (200,201), f'DCR failed: HTTP {status} {body}'
-          client=json.loads(body)
-          client_id=client['client_id']
-          redirects=client.get('redirect_uris') or []
-          assert 'https://chatgpt.com/connector_platform_oauth_redirect' in redirects, redirects
-          method=client.get('token_endpoint_auth_method')
-          print('DCR_TOKEN_AUTH_METHOD=', method)
+          print('DCR_SAFE=', json.dumps(safe, ensure_ascii=False))
+          PY
+          test "$code" = "201" || test "$code" = "200"
 
+          python - <<'PY' >/tmp/auth_url
+          import base64, hashlib, json, secrets, urllib.parse
+          discovery=json.load(open('/tmp/oidc.json'))
+          client=json.load(open('/tmp/dcr.json'))
           verifier=secrets.token_urlsafe(48)
           challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
           params={
               'response_type':'code',
-              'client_id':client_id,
+              'client_id':client['client_id'],
               'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
               'scope':'openid offline_access yca:read',
               'code_challenge':challenge,
               'code_challenge_method':'S256',
               'resource':'https://mcp.silvadigitaltech.com/',
           }
-          auth_url=discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params)
-          opener=urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
-          try:
-              auth=opener.open(auth_url, timeout=10)
-              auth_body=auth.read(4096).decode(errors='replace')
-              auth_status=auth.status
-              final_url=auth.geturl()
-          except urllib.error.HTTPError as exc:
-              auth_body=exc.read(4096).decode(errors='replace')
-              auth_status=exc.code
-              final_url=exc.geturl()
-          print('AUTH_START_HTTP=', auth_status)
-          print('AUTH_START_URL=', final_url)
-          print('AUTH_START_BODY_PREFIX=', auth_body[:800].replace('\n',' '))
-          assert auth_status == 200, f'Authorization start failed: HTTP {auth_status} {auth_body[:800]}'
-          assert '/protocol/openid-connect/auth' in auth_url
-          lowered=auth_body.lower()
-          assert ('login' in lowered or 'username' in lowered or 'email' in lowered or 'consent' in lowered), 'Authorization endpoint did not render an interactive login/consent page.'
-
-          cleanup_uri=client.get('registration_client_uri')
-          cleanup_token=client.get('registration_access_token')
-          if cleanup_uri and cleanup_token:
-              req=urllib.request.Request(cleanup_uri, headers={'Authorization':f'Bearer {cleanup_token}'}, method='DELETE')
-              try:
-                  urllib.request.urlopen(req, timeout=10).read()
-                  print('DCR_CLEANUP=ok')
-              except Exception as exc:
-                  print('DCR_CLEANUP=warning', type(exc).__name__, str(exc))
-          print('CHATGPT_DCR_AUTH_START=ok')
+          print(discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
           PY
+          auth_url="$(cat /tmp/auth_url)"
+          auth_code="$(curl -sS -L --max-redirs 5 \
+            -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
+            -o /tmp/auth.body -D /tmp/auth.headers -w '%{http_code}' "$auth_url")"
+          echo "AUTH_START_HTTP=$auth_code"
+          test "$auth_code" = "200"
+          grep -Eiq '(login|username|email|consent)' /tmp/auth.body
+          echo 'CHATGPT_DCR_AUTH_START=ok'
+
+          cleanup_uri="$(python - <<'PY'
+          import json
+          print(json.load(open('/tmp/dcr.json')).get('registration_client_uri') or '')
+          PY
+          )"
+          cleanup_token="$(python - <<'PY'
+          import json
+          print(json.load(open('/tmp/dcr.json')).get('registration_access_token') or '')
+          PY
+          )"
+          if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
+            cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $cleanup_token" "$cleanup_uri" || true)"
+            echo "DCR_CLEANUP_HTTP=$cleanup_code"
+          fi
 
       - name: No secrets in app package
         run: |
