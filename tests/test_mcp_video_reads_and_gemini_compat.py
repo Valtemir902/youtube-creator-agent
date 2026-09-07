@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 from mcp import Client
@@ -103,6 +105,13 @@ def _mcp_env(monkeypatch):
     monkeypatch.setenv("YCA_AUTH_INTROSPECTION_CLIENT_SECRET", "secret")
 
 
+def _payload(result):
+    assert result.content
+    text = getattr(result.content[0], "text", None)
+    assert text, result
+    return json.loads(text)
+
+
 def test_video_details_restricts_reads_to_connected_channel():
     details = _owned_video_details(_Service(_Youtube()), "video-1")
     assert details["video_id"] == "video-1"
@@ -134,11 +143,24 @@ def test_production_mcp_surface_contains_write_tools_and_video_readers(monkeypat
     assert required <= tool_names
 
 
-def test_write_tools_are_invokable_but_confirmation_guard_blocks_mutation(monkeypatch):
+def test_write_tools_are_invokable_and_confirmation_errors_are_structured(monkeypatch):
     _mcp_env(monkeypatch)
     monkeypatch.setattr(base_mcp, "_require_scope", lambda _scope: None)
     monkeypatch.setattr(base_mcp, "_limit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(base_mcp, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base_mcp, "_tenant_id", lambda: "test-tenant")
+    monkeypatch.setattr(base_mcp, "_resolver", lambda: SimpleNamespace(db=object()))
+    monkeypatch.setattr(base_mcp, "list_channel_accounts", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        base_mcp,
+        "channel_account_state",
+        lambda *_args, **_kwargs: {
+            "channel_id": "channel-2",
+            "exists": True,
+            "already_active": False,
+            "channel": {"id": "channel-2", "active": False},
+        },
+    )
     monkeypatch.setattr(advanced_mcp, "_service", lambda: _WriteProbeService())
 
     async def probe():
@@ -148,11 +170,12 @@ def test_write_tools_are_invokable_but_confirmation_guard_blocks_mutation(monkey
                 {"video_id": "video-1"},
             )
             assert not preview.is_error
+            assert _payload(preview)["success"] is True
 
             for name, args in (
                 (
                     "activate_connected_channel",
-                    {"channel_id": "channel-1", "user_confirmed": False},
+                    {"channel_id": "channel-2", "user_confirmed": False},
                 ),
                 (
                     "apply_video_metadata_update",
@@ -172,7 +195,75 @@ def test_write_tools_are_invokable_but_confirmation_guard_blocks_mutation(monkey
                 ),
             ):
                 result = await client.call_tool(name, args)
-                assert result.is_error, f"{name} should be denied before any mutation"
+                assert not result.is_error
+                payload = _payload(result)
+                assert payload["success"] is False
+                assert payload["error"]["code"] == "confirmation_required"
+
+    asyncio.run(probe())
+
+
+def test_activate_connected_channel_is_idempotent_without_confirmation(monkeypatch):
+    _mcp_env(monkeypatch)
+    monkeypatch.setattr(base_mcp, "_require_scope", lambda _scope: None)
+    monkeypatch.setattr(base_mcp, "_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base_mcp, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base_mcp, "_tenant_id", lambda: "test-tenant")
+    monkeypatch.setattr(base_mcp, "_resolver", lambda: SimpleNamespace(db=object()))
+    monkeypatch.setattr(base_mcp, "list_channel_accounts", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        base_mcp,
+        "channel_account_state",
+        lambda *_args, **_kwargs: {
+            "channel_id": "channel-1",
+            "exists": True,
+            "already_active": True,
+            "channel": {"id": "channel-1", "active": True},
+        },
+    )
+
+    async def probe():
+        async with Client(create_server(), raise_exceptions=True) as client:
+            result = await client.call_tool(
+                "activate_connected_channel",
+                {"channel_id": "channel-1", "user_confirmed": False},
+            )
+            payload = _payload(result)
+            assert payload["success"] is True
+            assert payload["already_active"] is True
+            assert payload["channel_id"] == "channel-1"
+
+    asyncio.run(probe())
+
+
+def test_activate_connected_channel_missing_is_typed(monkeypatch):
+    _mcp_env(monkeypatch)
+    monkeypatch.setattr(base_mcp, "_require_scope", lambda _scope: None)
+    monkeypatch.setattr(base_mcp, "_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base_mcp, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base_mcp, "_tenant_id", lambda: "test-tenant")
+    monkeypatch.setattr(base_mcp, "_resolver", lambda: SimpleNamespace(db=object()))
+    monkeypatch.setattr(base_mcp, "list_channel_accounts", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        base_mcp,
+        "channel_account_state",
+        lambda *_args, **_kwargs: {
+            "channel_id": "missing",
+            "exists": False,
+            "already_active": False,
+            "channel": None,
+        },
+    )
+
+    async def probe():
+        async with Client(create_server(), raise_exceptions=True) as client:
+            result = await client.call_tool(
+                "activate_connected_channel",
+                {"channel_id": "missing", "user_confirmed": True},
+            )
+            payload = _payload(result)
+            assert payload["success"] is False
+            assert payload["error"]["code"] == "channel_not_found"
 
     asyncio.run(probe())
 
