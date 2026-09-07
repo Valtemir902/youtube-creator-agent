@@ -21,7 +21,9 @@ class PublicationStore:
     """Small production-support store sharing the tenant SQLite database file.
 
     It contains only operational counters and sanitized audit metadata. Secrets,
-    OAuth tokens and raw prompts must never be written here.
+    OAuth tokens and raw prompts must never be written here. Signed write tokens
+    are stored only as SHA-256 digests so one-time consumption survives restarts
+    without persisting bearer-equivalent material.
     """
 
     def __init__(self, path: str | Path):
@@ -56,6 +58,16 @@ class PublicationStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_events_tenant_time
                     ON audit_events(tenant_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS consumed_write_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    consumed_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_consumed_write_tokens_expiry
+                    ON consumed_write_tokens(expires_at);
                 """
             )
 
@@ -99,6 +111,47 @@ class PublicationStore:
             remaining=max(0, limit - hits),
             reset_after_seconds=reset_after,
         )
+
+    def consume_write_token(
+        self,
+        token: str,
+        *,
+        tenant_id: str,
+        action: str,
+        subject: str,
+        expires_at: int,
+        now: int | None = None,
+    ) -> bool:
+        """Atomically mark a verified signed write token as used once.
+
+        The caller must validate the HMAC token before invoking this method.
+        False means the exact token digest was already consumed, including by a
+        concurrent request. Expired rows are periodically purged.
+        """
+        timestamp = int(time.time() if now is None else now)
+        token_hash = self._hash_key(str(token))
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM consumed_write_tokens WHERE expires_at < ?",
+                (timestamp - 3600,),
+            )
+            try:
+                conn.execute(
+                    "INSERT INTO consumed_write_tokens(token_hash,tenant_id,action,subject,expires_at,consumed_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        token_hash,
+                        str(tenant_id)[:160],
+                        str(action)[:80],
+                        str(subject)[:160],
+                        int(expires_at),
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
 
     def record_event(
         self,
