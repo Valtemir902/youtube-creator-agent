@@ -159,14 +159,16 @@ class CreatorService:
         return PublicadorYouTube(str(self.context.token_file)).obter_cliente_youtube()
 
     def _authorized_channel_id(self) -> str:
-        if self._authorized_channel_cache:
-            return self._authorized_channel_cache
+        cached = getattr(self, "_authorized_channel_cache", None)
+        if cached:
+            return str(cached)
         response = self._youtube().channels().list(part="id", mine=True).execute()
         items = response.get("items", [])
         if not items or not str(items[0].get("id", "")).strip():
             raise tool_error("channel_not_found", "No YouTube channel is available for the authenticated tenant.")
-        self._authorized_channel_cache = str(items[0]["id"]).strip()
-        return self._authorized_channel_cache
+        channel_id = str(items[0]["id"]).strip()
+        self._authorized_channel_cache = channel_id
+        return channel_id
 
     def _owned_video_item(self, video_id: str, *, part: str = "snippet") -> dict[str, Any]:
         video_id = str(video_id or "").strip()
@@ -283,7 +285,10 @@ class CreatorService:
         current = self._current_video_snippet(video_id)
         baseline_digest = str(approval_payload.get("baseline_digest", ""))
         if not baseline_digest or baseline_digest != signer_from_env().payload_digest(current):
-            raise tool_error("external_change_detected")
+            raise tool_error(
+                "external_change_detected",
+                "O vídeo mudou desde a prévia. Gere uma nova prévia antes de aplicar.",
+            )
         normalized = self._normalize_metadata_payload(
             video_id=video_id,
             title=str(proposed.get("title", "")),
