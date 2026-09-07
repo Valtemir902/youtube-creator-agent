@@ -3,8 +3,7 @@ name: OAuth Edge Diagnostic
 on:
   push:
     branches: ["feat/web-dashboard-v1"]
-    paths:
-      - ".github/workflows/oauth-edge-diagnostic.yml"
+    paths: [".github/workflows/oauth-edge-diagnostic.yml"]
   workflow_dispatch:
 
 permissions:
@@ -22,29 +21,6 @@ jobs:
       VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
     steps:
-      - name: Register and probe scope matrix
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -sS --max-time 20 -o /tmp/dcr.json -H 'content-type: application/json' -H 'accept: application/json' \
-            --data '{"client_name":"ChatGPT scope diagnostic","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}' \
-            https://creator.silvadigitaltech.com/oauth/register
-          python - <<'PY'
-          import base64,hashlib,json,secrets,subprocess,urllib.parse
-          client=json.load(open('/tmp/dcr.json'))['client_id']
-          endpoint='https://auth.silvadigitaltech.com/realms/yca/protocol/openid-connect/auth'
-          for scope in ['openid','openid email','openid email offline_access','openid email yca:read','openid email yca:write','openid email offline_access yca:read yca:write']:
-              v=secrets.token_urlsafe(48); ch=base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).rstrip(b'=').decode()
-              q={'response_type':'code','client_id':client,'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect','scope':scope,'state':'diagnostic','code_challenge':ch,'code_challenge_method':'S256'}
-              cp=subprocess.run(['curl','-sS','--max-redirs','0','--max-time','20','-D','-','-o','/dev/null','-w','\nHTTP=%{http_code}\n',endpoint+'?'+urllib.parse.urlencode(q)],capture_output=True,text=True)
-              loc=next((x.split(':',1)[1].strip() for x in cp.stdout.splitlines() if x.lower().startswith('location:')),'')
-              code=next((x.split('=',1)[1] for x in cp.stdout.splitlines() if x.startswith('HTTP=')),'')
-              err=''; host=''
-              if loc:
-                  u=urllib.parse.urlsplit(loc); host=u.netloc; err=(urllib.parse.parse_qs(u.query).get('error') or [''])[0]
-              print('SCOPE='+scope.replace(' ','|')+' HTTP='+code+' HOST='+host+' ERROR='+err)
-          PY
-
       - name: Configure SSH
         shell: bash
         run: |
@@ -53,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
 
-      - name: Inspect Keycloak scope and client state by counts
+      - name: Inspect Keycloak schema and OAuth records
         shell: bash
         run: |
           set -euo pipefail
@@ -64,20 +40,26 @@ jobs:
           chatgpt_client="$(docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding sh -lc 'printf %s "$YCA_CHATGPT_OAUTH_CLIENT_ID"')"
           introspection_client="$(docker compose -f deploy/docker-compose.oracle.yml exec -T mcp sh -lc 'printf %s "$YCA_AUTH_INTROSPECTION_CLIENT_ID"')"
           test -n "$chatgpt_client" && test -n "$introspection_client"
-          echo "CONFIG_CLIENT_IDS_PRESENT=1"
-          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<SQL
-          SELECT 'CHATGPT_CLIENT_COUNT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}';
-          SELECT 'INTROSPECTION_CLIENT_COUNT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';
-          SELECT 'YCA_READ_SCOPE_COUNT=' || COUNT(*) FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:read';
-          SELECT 'YCA_WRITE_SCOPE_COUNT=' || COUNT(*) FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:write';
-          SELECT 'CHATGPT_YCA_READ_ASSIGNMENT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}' AND cs.name='yca:read';
-          SELECT 'CHATGPT_YCA_WRITE_ASSIGNMENT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}' AND cs.name='yca:write';
-          SELECT 'INTROSPECTION_SECRET_PRESENT=' || CASE WHEN COUNT(*)=1 AND MAX(CASE WHEN COALESCE(c.secret,'')<>'' THEN 1 ELSE 0 END)=1 THEN '1' ELSE '0' END FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';
-          SELECT 'INTROSPECTION_ENABLED=' || CASE WHEN COUNT(*)=1 AND BOOL_AND(c.enabled) THEN '1' ELSE '0' END FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';
-          SQL
+          psql_cmd='psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+          run_sql() { printf '%s\n' "$1" | docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc "$psql_cmd"; }
+          echo '=== COUNTS ==='
+          run_sql "SELECT 'CHATGPT_CLIENT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}';"
+          run_sql "SELECT 'INTROSPECTION_CLIENT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';"
+          run_sql "SELECT 'YCA_READ_SCOPE=' || COUNT(*) FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:read';"
+          run_sql "SELECT 'YCA_WRITE_SCOPE=' || COUNT(*) FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:write';"
+          run_sql "SELECT 'READ_ASSIGNED=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}' AND cs.name='yca:read';"
+          run_sql "SELECT 'WRITE_ASSIGNED=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}' AND cs.name='yca:write';"
+          echo '=== CLIENT_SCOPE_COLUMNS ==='
+          run_sql "SELECT column_name || ':' || data_type || ':nullable=' || is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='client_scope' ORDER BY ordinal_position;"
+          echo '=== CLIENT_SCOPE_CLIENT_COLUMNS ==='
+          run_sql "SELECT column_name || ':' || data_type || ':nullable=' || is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='client_scope_client' ORDER BY ordinal_position;"
+          echo '=== CHATGPT CLIENT FLAGS ==='
+          run_sql "SELECT 'enabled=' || c.enabled || '|bearer_only=' || c.bearer_only || '|public_client=' || c.public_client || '|standard_flow=' || c.standard_flow_enabled || '|direct_grants=' || c.direct_access_grants_enabled FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}';"
+          echo '=== INTROSPECTION CLIENT FLAGS ==='
+          run_sql "SELECT 'enabled=' || c.enabled || '|bearer_only=' || c.bearer_only || '|public_client=' || c.public_client || '|service_accounts=' || c.service_accounts_enabled || '|secret_present=' || (COALESCE(c.secret,'')<>'') FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';"
           REMOTE
 
-      - name: Compare configured and internal introspection endpoints
+      - name: Compare introspection edge and internal backchannel
         shell: bash
         run: |
           set -euo pipefail
@@ -88,17 +70,14 @@ jobs:
           docker compose -f deploy/docker-compose.oracle.yml exec -T mcp python - <<'PY'
           import base64,json,os,urllib.parse,urllib.request,urllib.error
           cid=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_ID']; sec=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_SECRET']
-          configured=os.environ['YCA_AUTH_INTROSPECTION_URL']
-          internal='http://keycloak:8080/realms/yca/protocol/openid-connect/token/introspect'
-          for label,ep in [('CONFIGURED',configured),('INTERNAL',internal)]:
+          for label,ep in [('CONFIGURED',os.environ['YCA_AUTH_INTROSPECTION_URL']),('INTERNAL','http://keycloak:8080/realms/yca/protocol/openid-connect/token/introspect')]:
               body=urllib.parse.urlencode({'token':'deliberately-invalid-token'}).encode()
               req=urllib.request.Request(ep,data=body,method='POST',headers={'Authorization':'Basic '+base64.b64encode(f'{cid}:{sec}'.encode()).decode(),'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'})
               try:
                   with urllib.request.urlopen(req,timeout=10) as r:
-                      raw=r.read().decode('utf-8','replace'); data=json.loads(raw)
-                      print(label+'_HTTP='+str(r.status)); print(label+'_ACTIVE='+str(bool(data.get('active'))).lower())
+                      d=json.loads(r.read()); print(label+'_HTTP='+str(r.status)+' ACTIVE='+str(bool(d.get('active'))).lower())
               except urllib.error.HTTPError as e:
-                  raw=e.read().decode('utf-8','replace')[:300].replace('\n',' ')
-                  print(label+'_HTTP='+str(e.code)); print(label+'_SERVER='+str(e.headers.get('server',''))); print(label+'_BODY_PREFIX='+raw)
+                  raw=e.read().decode('utf-8','replace')[:220].replace('\n',' ')
+                  print(label+'_HTTP='+str(e.code)+' SERVER='+str(e.headers.get('server',''))+' BODY='+raw)
           PY
           REMOTE
