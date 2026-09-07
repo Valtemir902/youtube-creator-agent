@@ -8,6 +8,8 @@ from mcp import Client
 from ai.base import AIProviderError
 from ai.gemini import GeminiProvider
 from ai.types import AIProviderConfig
+from creator_service import cloud_mcp_server as base_mcp
+from creator_service import cloud_mcp_server_advanced as advanced_mcp
 from creator_service.cloud_mcp_server_video import _owned_video_details, create_server
 
 
@@ -75,6 +77,26 @@ class _Service:
         return self.youtube
 
 
+class _WriteProbeService:
+    def preview_video_metadata_update(self, **kwargs):
+        return {
+            "video_id": kwargs["video_id"],
+            "changed": {},
+            "approval_payload": {"proposed": {"video_id": kwargs["video_id"]}},
+            "approval_token": "test-only",
+            "requires_explicit_user_confirmation": True,
+        }
+
+
+def _mcp_env(monkeypatch):
+    monkeypatch.setenv("YCA_AUTH_ISSUER_URL", "https://auth.example.test")
+    monkeypatch.setenv("YCA_CHATGPT_OAUTH_ISSUER_URL", "https://creator.example.test")
+    monkeypatch.setenv("YCA_MCP_PUBLIC_URL", "https://mcp.example.test/mcp")
+    monkeypatch.setenv("YCA_AUTH_INTROSPECTION_URL", "https://auth.example.test/introspect")
+    monkeypatch.setenv("YCA_AUTH_INTROSPECTION_CLIENT_ID", "client")
+    monkeypatch.setenv("YCA_AUTH_INTROSPECTION_CLIENT_SECRET", "secret")
+
+
 def test_video_details_restricts_reads_to_connected_channel():
     details = _owned_video_details(_Service(_Youtube()), "video-1")
     assert details["video_id"] == "video-1"
@@ -87,12 +109,7 @@ def test_video_details_restricts_reads_to_connected_channel():
 
 
 def test_production_mcp_surface_contains_write_tools_and_video_readers(monkeypatch):
-    monkeypatch.setenv("YCA_AUTH_ISSUER_URL", "https://auth.example.test")
-    monkeypatch.setenv("YCA_CHATGPT_OAUTH_ISSUER_URL", "https://creator.example.test")
-    monkeypatch.setenv("YCA_MCP_PUBLIC_URL", "https://mcp.example.test/mcp")
-    monkeypatch.setenv("YCA_AUTH_INTROSPECTION_URL", "https://auth.example.test/introspect")
-    monkeypatch.setenv("YCA_AUTH_INTROSPECTION_CLIENT_ID", "client")
-    monkeypatch.setenv("YCA_AUTH_INTROSPECTION_CLIENT_SECRET", "secret")
+    _mcp_env(monkeypatch)
 
     async def names():
         async with Client(create_server(), raise_exceptions=True) as client:
@@ -109,6 +126,49 @@ def test_production_mcp_surface_contains_write_tools_and_video_readers(monkeypat
         "get_video_transcript",
     }
     assert required <= tool_names
+
+
+def test_write_tools_are_invokable_but_confirmation_guard_blocks_mutation(monkeypatch):
+    _mcp_env(monkeypatch)
+    monkeypatch.setattr(base_mcp, "_require_scope", lambda _scope: None)
+    monkeypatch.setattr(base_mcp, "_limit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(base_mcp, "_audit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(advanced_mcp, "_service", lambda: _WriteProbeService())
+
+    async def probe():
+        async with Client(create_server(), raise_exceptions=True) as client:
+            preview = await client.call_tool(
+                "preview_video_metadata_update",
+                {"video_id": "video-1"},
+            )
+            assert not preview.is_error
+
+            for name, args in (
+                (
+                    "activate_connected_channel",
+                    {"channel_id": "channel-1", "user_confirmed": False},
+                ),
+                (
+                    "apply_video_metadata_update",
+                    {
+                        "approval_payload": {},
+                        "approval_token": "invalid-test-token",
+                        "user_confirmed": False,
+                    },
+                ),
+                (
+                    "apply_video_metadata_rollback",
+                    {
+                        "rollback_payload": {},
+                        "rollback_token": "invalid-test-token",
+                        "user_confirmed": False,
+                    },
+                ),
+            ):
+                with pytest.raises(Exception, match="Confirmação explícita"):
+                    await client.call_tool(name, args)
+
+    asyncio.run(probe())
 
 
 class _Response:
