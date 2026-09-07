@@ -35,7 +35,9 @@ class _Videos:
     def __init__(self, channel_id="channel-1"):
         self.channel_id = channel_id
 
-    def list(self, **_kwargs):
+    def list(self, **kwargs):
+        if kwargs.get("id") == "missing":
+            return _Execute({"items": []})
         return _Execute(
             {
                 "items": [
@@ -48,11 +50,25 @@ class _Videos:
                             "tags": ["one", "two"],
                             "categoryId": "10",
                             "publishedAt": "2026-01-01T00:00:00Z",
+                            "defaultLanguage": "en",
+                            "defaultAudioLanguage": "en",
                             "thumbnails": {"high": {"url": "https://example.test/thumb.jpg"}},
                         },
-                        "contentDetails": {"duration": "PT3M", "definition": "hd", "caption": "true"},
+                        "contentDetails": {
+                            "duration": "PT3M",
+                            "definition": "hd",
+                            "dimension": "2d",
+                            "caption": "true",
+                            "licensedContent": False,
+                            "projection": "rectangular",
+                        },
                         "statistics": {"viewCount": "42", "likeCount": "7", "commentCount": "2"},
-                        "status": {"privacyStatus": "public", "madeForKids": False},
+                        "status": {
+                            "privacyStatus": "public",
+                            "madeForKids": False,
+                            "embeddable": True,
+                            "publicStatsViewable": True,
+                        },
                     }
                 ]
             }
@@ -77,6 +93,17 @@ class _Service:
 
     def _youtube(self):
         return self.youtube
+
+    def _owned_video_item(self, video_id: str, *, part: str):
+        response = self.youtube.videos().list(part=part, id=video_id).execute()
+        items = response.get("items", [])
+        if not items:
+            raise ValueError("Vídeo não encontrado.")
+        item = items[0]
+        channel = self.youtube.channels().list(part="id", mine=True).execute().get("items", [])[0]["id"]
+        if item.get("snippet", {}).get("channelId") != channel:
+            raise PermissionError("O vídeo não pertence ao canal conectado.")
+        return item
 
 
 class _WriteProbeService:
@@ -115,12 +142,20 @@ def _payload(result):
 def test_video_details_restricts_reads_to_connected_channel():
     details = _owned_video_details(_Service(_Youtube()), "video-1")
     assert details["video_id"] == "video-1"
+    assert details["channel_id"] == "channel-1"
     assert details["title"] == "Video title"
+    assert details["view_count"] == 42
     assert details["views"] == 42
     assert details["privacy_status"] == "public"
+    assert details["embeddable"] is True
+    assert details["default_audio_language"] == "en"
+    assert details["thumbnails"]["high"]["url"].endswith("thumb.jpg")
 
     with pytest.raises(PermissionError, match="não pertence"):
         _owned_video_details(_Service(_Youtube(video_channel_id="another-channel")), "video-1")
+
+    with pytest.raises(ValueError, match="não encontrado"):
+        _owned_video_details(_Service(_Youtube()), "missing")
 
 
 def test_production_mcp_surface_contains_write_tools_and_video_readers(monkeypatch):
