@@ -17,6 +17,7 @@ from .channel_accounts import activate_channel, list_channel_accounts
 
 READ_SCOPE = "yca:read"
 WRITE_SCOPE = "yca:write"
+OFFLINE_ACCESS_SCOPE = "offline_access"
 
 
 def _access_token():
@@ -100,7 +101,7 @@ def create_server() -> MCPServer:
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(issuer),
             resource_server_url=AnyHttpUrl(resource),
-            required_scopes=[READ_SCOPE],
+            required_scopes=[READ_SCOPE, OFFLINE_ACCESS_SCOPE],
             validate_token_resource=True,
         ),
     )
