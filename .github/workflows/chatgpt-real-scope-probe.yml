@@ -31,6 +31,43 @@ jobs:
           PY
           )"
 
+          probe_scope() {
+            label="$1"
+            scope="$2"
+            payload="$(python - "$scope" "$label" <<'PY'
+          import json,sys
+          scope,label=sys.argv[1],sys.argv[2]
+          print(json.dumps({
+            'client_name':f'ChatGPT scope probe {label}',
+            'redirect_uris':['https://chatgpt.com/connector_platform_oauth_redirect'],
+            'grant_types':['authorization_code','refresh_token'],
+            'response_types':['code'],
+            'scope':scope,
+            'token_endpoint_auth_method':'none',
+          }))
+          PY
+            )"
+            code="$(curl -sS \
+              -A 'Mozilla/5.0 ChatGPT-Exact-Scope-Probe/1.0' \
+              -H 'content-type: application/json' \
+              -H 'accept: application/json' \
+              -o "/tmp/dcr-${label}.json" -w '%{http_code}' \
+              --data "$payload" "$reg")"
+            echo "PROBE_${label}_HTTP=$code scope=$scope"
+            python - "$label" <<'PY'
+          from pathlib import Path
+          import sys
+          label=sys.argv[1]
+          print(Path(f'/tmp/dcr-{label}.json').read_text(errors='replace')[:2000])
+          PY
+          }
+
+          # Isolate which scope/policy combination is rejected by Keycloak DCR.
+          probe_scope base 'openid yca:read'
+          probe_scope email 'openid email yca:read'
+          probe_scope offline 'openid offline_access yca:read'
+          probe_scope profile 'openid profile yca:read'
+
           payload='{"client_name":"ChatGPT exact scope probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"openid email offline_access yca:read","token_endpoint_auth_method":"none"}'
           dcr_code="$(curl -sS \
             -A 'Mozilla/5.0 ChatGPT-Exact-Scope-Probe/1.0' \
