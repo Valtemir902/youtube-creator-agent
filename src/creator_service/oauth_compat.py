@@ -18,7 +18,7 @@ ALLOWED_DCR_SCOPES = frozenset({
     "yca:read",
     "yca:write",
 })
-DEFAULT_DCR_SCOPE = "yca:read"
+DEFAULT_DCR_SCOPES = ("yca:read", "yca:write")
 DEFAULT_ALLOWED_REDIRECT_HOSTS = frozenset({"chatgpt.com"})
 # Public OIDC client dedicated to ChatGPT. A public client id is not a secret.
 DEFAULT_CHATGPT_PUBLIC_CLIENT_ID = "82da41e4-4d89-4ccf-b134-c6a8b01f8453"
@@ -129,8 +129,14 @@ def _normalize_scope(scope_value: Any) -> str:
             filtered.append(scope)
             seen.add(scope)
 
-    if DEFAULT_DCR_SCOPE not in seen:
-        filtered.append(DEFAULT_DCR_SCOPE)
+    # The connector needs read access to discover tools and write access for the
+    # explicitly confirmed YouTube management actions. Discovery itself only
+    # requires yca:read at the resource server, so a missing write scope can no
+    # longer make tools/list fail before ChatGPT even loads the app.
+    for scope in DEFAULT_DCR_SCOPES:
+        if scope not in seen:
+            filtered.append(scope)
+            seen.add(scope)
     return " ".join(filtered)
 
 
