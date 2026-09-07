@@ -26,7 +26,7 @@ class PublicationMetadata:
     privacy_url: str
     terms_url: str
     support_url: str
-    version: str = "13.0.0"
+    version: str = "14.0.0"
 
     def public_dict(self) -> dict:
         return asdict(self)
@@ -64,6 +64,10 @@ def publication_metadata_from_env() -> PublicationMetadata:
 
 def publication_readiness(metadata: PublicationMetadata | None = None) -> ReadinessReport:
     metadata = metadata or publication_metadata_from_env()
+    web_issuer = _env("YCA_WEB_OIDC_ISSUER_URL") or _env("YCA_AUTH_ISSUER_URL")
+    web_redirect = _env("YCA_WEB_OIDC_REDIRECT_URI")
+    if not web_redirect and _is_https_url(metadata.onboarding_url):
+        web_redirect = metadata.onboarding_url.rstrip("/") + "/auth/callback"
     checks = {
         "app_public_url_https": _is_https_url(metadata.public_url),
         "mcp_public_url_https": _is_https_url(metadata.mcp_url),
@@ -79,6 +83,16 @@ def publication_readiness(metadata: PublicationMetadata | None = None) -> Readin
             _env("GOOGLE_OAUTH_CLIENT_ID")
             and _env("GOOGLE_OAUTH_CLIENT_SECRET")
             and _is_https_url(_env("GOOGLE_OAUTH_REDIRECT_URI"))
+        ),
+        "web_oidc_configured": bool(
+            _is_https_url(web_issuer)
+            and _env("YCA_WEB_OIDC_CLIENT_ID")
+            and _is_https_url(web_redirect)
+        ),
+        "turnstile_configured": bool(
+            _env("YCA_TURNSTILE_SITE_KEY")
+            and _env("YCA_TURNSTILE_SECRET_KEY")
+            and _env("YCA_TURNSTILE_BYPASS", "0") != "1"
         ),
     }
     missing = tuple(name for name, ok in checks.items() if not ok)

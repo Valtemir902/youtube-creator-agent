@@ -12,6 +12,7 @@ from mcp.server.auth.settings import AuthSettings
 from mcp.types import ToolAnnotations
 
 from .cloud_auth import IntrospectionTokenVerifier
+from .channel_accounts import activate_channel, list_channel_accounts
 
 
 READ_SCOPE = "yca:read"
@@ -121,6 +122,28 @@ def create_server() -> MCPServer:
         _require_scope(READ_SCOPE)
         _limit("read", limit=180)
         return _service().chatgpt_capabilities()
+
+    @server.tool(
+        title="Listar canais conectados",
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False, destructive_hint=False, idempotent_hint=True),
+    )
+    def list_connected_channels() -> dict[str, Any]:
+        _require_scope(READ_SCOPE)
+        _limit("read", limit=180)
+        return list_channel_accounts(_resolver().db, _tenant_id())
+
+    @server.tool(
+        title="Ativar canal conectado",
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=False, destructive_hint=False, idempotent_hint=True),
+    )
+    def activate_connected_channel(channel_id: str, user_confirmed: bool) -> dict[str, Any]:
+        _require_scope(WRITE_SCOPE)
+        _limit("channel_switch", limit=30)
+        if user_confirmed is not True:
+            raise ValueError("Confirmação explícita do usuário é obrigatória para trocar o canal ativo.")
+        channel = activate_channel(_resolver().db, _tenant_id(), channel_id)
+        _audit("mcp_channel_activated", "success", {"channel_id": channel_id})
+        return {"ok": True, "active_channel": channel}
 
     @server.tool(
         title="Criar link seguro de conexão",

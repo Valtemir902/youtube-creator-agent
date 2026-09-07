@@ -85,6 +85,8 @@ class ChannelProfile:
     topic_terms: tuple[str, ...]
     shorts_share_of_recent_views: float
     long_share_of_recent_views: float
+    country: str = "GLOBAL"
+    default_language: str = "und"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -194,7 +196,7 @@ class ChannelLearningEngine:
         start = (now - timedelta(days=period_days)).strftime("%Y-%m-%d")
         end = now.strftime("%Y-%m-%d")
 
-        channel_resp = yt.channels().list(part="snippet,statistics,contentDetails", mine=True).execute()
+        channel_resp = yt.channels().list(part="snippet,statistics,contentDetails,brandingSettings", mine=True).execute()
         items = channel_resp.get("items", [])
         if not items:
             raise RuntimeError("Nenhum canal associado à conta conectada.")
@@ -202,6 +204,9 @@ class ChannelLearningEngine:
         channel_id = channel["id"]
         snippet = channel.get("snippet", {})
         stats = channel.get("statistics", {})
+        branding = channel.get("brandingSettings", {}).get("channel", {})
+        country = str(snippet.get("country") or branding.get("country") or "").upper()
+        default_language = str(snippet.get("defaultLanguage") or branding.get("defaultLanguage") or "").strip()
         uploads = channel.get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
         if not uploads:
             raise RuntimeError("Não foi possível localizar a playlist de uploads do canal.")
@@ -350,6 +355,8 @@ class ChannelLearningEngine:
             measured_at=now.isoformat(),
             channel_id=channel_id,
             channel_title=str(snippet.get("title", "Canal")),
+            country=country or "GLOBAL",
+            default_language=default_language or "und",
             subscribers=int(stats.get("subscriberCount", 0) or 0),
             total_views=int(stats.get("viewCount", 0) or 0),
             video_count=int(stats.get("videoCount", 0) or 0),

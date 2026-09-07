@@ -61,7 +61,45 @@ def test_health_is_public():
     response = client().get("/health")
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert response.json()["version"] == 13
+    assert response.json()["version"] == 14
+
+
+def test_root_sends_anonymous_browser_to_login():
+    response = client().get("/", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+
+
+def test_login_page_is_public_mobile_ready_and_has_no_precaptcha_gate():
+    response = client().get("/login")
+    assert response.status_code == 200
+    assert "Criar conta" in response.text
+    assert "Esqueci minha senha" in response.text
+    assert "challenges.cloudflare.com" not in response.text
+    assert "turnstile" not in response.text.lower()
+    assert "viewport" in response.text.lower()
+
+
+def test_auth_config_reports_identity_provider_ready_state_without_captcha_secret(monkeypatch):
+    monkeypatch.setenv("YCA_TURNSTILE_SITE_KEY", "legacy-site-key")
+    monkeypatch.setenv("YCA_TURNSTILE_SECRET_KEY", "legacy-secret")
+    response = client().get("/api/auth/config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["turnstile_required"] is False
+    assert body["turnstile_ready"] is True
+    assert body["turnstile_bypass"] is True
+    assert body["turnstile_site_key"] == ""
+    assert "legacy-secret" not in response.text
+
+
+def test_auth_begin_fails_closed_when_server_storage_is_unavailable():
+    response = client().post(
+        "/api/auth/begin",
+        json={"mode": "login", "next": "/dashboard", "turnstile_token": ""},
+    )
+    assert response.status_code == 503
+    assert "armazenamento" in response.json()["detail"].lower()
 
 
 def test_me_requires_authentication():
