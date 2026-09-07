@@ -26,16 +26,23 @@ def test_dcr_strips_only_openid_and_preserves_required_scopes(monkeypatch):
     result = normalize_dynamic_client_registration(
         _payload("openid email offline_access yca:read")
     )
-    assert result["scope"] == "email offline_access yca:read"
+    assert result["scope"] == "email offline_access yca:read yca:write"
     assert "openid" not in result["scope"].split()
     assert result["token_endpoint_auth_method"] == "none"
 
 
-def test_dcr_adds_read_scope_when_client_omits_scope(monkeypatch):
+def test_dcr_adds_read_and_write_scopes_when_client_omits_scope(monkeypatch):
     monkeypatch.delenv("YCA_DCR_ALLOWED_REDIRECT_HOSTS", raising=False)
     payload = _payload("")
     result = normalize_dynamic_client_registration(payload)
-    assert result["scope"] == "yca:read"
+    assert result["scope"] == "yca:read yca:write"
+
+
+def test_dcr_does_not_duplicate_management_scopes(monkeypatch):
+    monkeypatch.delenv("YCA_DCR_ALLOWED_REDIRECT_HOSTS", raising=False)
+    result = normalize_dynamic_client_registration(_payload("yca:write yca:read"))
+    assert result["scope"].split().count("yca:read") == 1
+    assert result["scope"].split().count("yca:write") == 1
 
 
 def test_dcr_rejects_unknown_scope(monkeypatch):
@@ -60,7 +67,7 @@ def test_dcr_facade_returns_approved_public_client_without_secret(monkeypatch):
     result = register_dynamic_client(_payload("openid email offline_access yca:read"))
     assert result.status_code == 201
     assert result.payload["client_id"] == "approved-chatgpt-public-client"
-    assert result.payload["scope"] == "email offline_access yca:read"
+    assert result.payload["scope"] == "email offline_access yca:read yca:write"
     assert result.payload["token_endpoint_auth_method"] == "none"
     assert "client_secret" not in result.payload
     assert "registration_access_token" not in result.payload
@@ -77,4 +84,5 @@ def test_oauth_metadata_routes_registration_through_creator_and_keeps_openid(mon
     assert "openid" in metadata["scopes_supported"]
     assert "offline_access" in metadata["scopes_supported"]
     assert "yca:read" in metadata["scopes_supported"]
+    assert "yca:write" in metadata["scopes_supported"]
     assert "S256" in metadata["code_challenge_methods_supported"]
