@@ -46,85 +46,86 @@ jobs:
           cd ~/apps/youtube-creator-agent
           compose='docker compose -f deploy/docker-compose.oracle.yml'
 
+          cat >/tmp/yca-audience-repair.sql <<'SQL'
+          WITH target_scope AS (
+            SELECT cs.id
+            FROM client_scope cs
+            JOIN realm r ON r.id=cs.realm_id
+            WHERE r.name='yca' AND cs.name='yca:read'
+          ), existing AS (
+            SELECT pm.id
+            FROM protocol_mapper pm
+            JOIN target_scope ts ON ts.id=pm.client_scope_id
+            LEFT JOIN protocol_mapper_config cfg
+              ON cfg.protocol_mapper_id=pm.id
+             AND cfg.name='included.client.audience'
+            WHERE pm.protocol='openid-connect'
+              AND pm.protocol_mapper_name='oidc-audience-mapper'
+              AND cfg.value='yca-chatgpt'
+            LIMIT 1
+          ), inserted AS (
+            INSERT INTO protocol_mapper (id, name, protocol, protocol_mapper_name, client_id, client_scope_id)
+            SELECT md5(random()::text || clock_timestamp()::text),
+                   'YouTube Creator Agent MCP audience',
+                   'openid-connect',
+                   'oidc-audience-mapper',
+                   NULL,
+                   ts.id
+            FROM target_scope ts
+            WHERE NOT EXISTS (SELECT 1 FROM existing)
+            RETURNING id
+          ), mapper AS (
+            SELECT id FROM existing
+            UNION ALL
+            SELECT id FROM inserted
+            LIMIT 1
+          ), cfg_aud AS (
+            INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+            SELECT id, 'included.client.audience', 'yca-chatgpt' FROM mapper
+            ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+            RETURNING 1
+          ), cfg_access AS (
+            INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+            SELECT id, 'access.token.claim', 'true' FROM mapper
+            ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+            RETURNING 1
+          ), cfg_intro AS (
+            INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+            SELECT id, 'introspection.token.claim', 'true' FROM mapper
+            ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+            RETURNING 1
+          ), cfg_id AS (
+            INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+            SELECT id, 'id.token.claim', 'false' FROM mapper
+            ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+            RETURNING 1
+          )
+          SELECT
+            (SELECT count(*) FROM target_scope) || '|' ||
+            (SELECT count(*) FROM inserted) || '|' ||
+            (SELECT count(*) FROM mapper) || '|' ||
+            ((SELECT count(*) FROM cfg_aud)+(SELECT count(*) FROM cfg_access)+(SELECT count(*) FROM cfg_intro)+(SELECT count(*) FROM cfg_id));
+          SQL
+
           echo '[audience] applying idempotent Keycloak mapper repair'
-          result="$($compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL' | tail -n1
-WITH target_scope AS (
-  SELECT cs.id
-  FROM client_scope cs
-  JOIN realm r ON r.id=cs.realm_id
-  WHERE r.name='yca' AND cs.name='yca:read'
-), existing AS (
-  SELECT pm.id
-  FROM protocol_mapper pm
-  JOIN target_scope ts ON ts.id=pm.client_scope_id
-  LEFT JOIN protocol_mapper_config cfg
-    ON cfg.protocol_mapper_id=pm.id
-   AND cfg.name='included.client.audience'
-  WHERE pm.protocol='openid-connect'
-    AND pm.protocol_mapper_name='oidc-audience-mapper'
-    AND cfg.value='yca-chatgpt'
-  LIMIT 1
-), inserted AS (
-  INSERT INTO protocol_mapper (id, name, protocol, protocol_mapper_name, client_id, client_scope_id)
-  SELECT md5(random()::text || clock_timestamp()::text),
-         'YouTube Creator Agent MCP audience',
-         'openid-connect',
-         'oidc-audience-mapper',
-         NULL,
-         ts.id
-  FROM target_scope ts
-  WHERE NOT EXISTS (SELECT 1 FROM existing)
-  RETURNING id
-), mapper AS (
-  SELECT id FROM existing
-  UNION ALL
-  SELECT id FROM inserted
-  LIMIT 1
-), cfg_aud AS (
-  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
-  SELECT id, 'included.client.audience', 'yca-chatgpt' FROM mapper
-  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
-  RETURNING 1
-), cfg_access AS (
-  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
-  SELECT id, 'access.token.claim', 'true' FROM mapper
-  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
-  RETURNING 1
-), cfg_intro AS (
-  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
-  SELECT id, 'introspection.token.claim', 'true' FROM mapper
-  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
-  RETURNING 1
-), cfg_id AS (
-  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
-  SELECT id, 'id.token.claim', 'false' FROM mapper
-  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
-  RETURNING 1
-)
-SELECT
-  (SELECT count(*) FROM target_scope) || '|' ||
-  (SELECT count(*) FROM inserted) || '|' ||
-  (SELECT count(*) FROM mapper) || '|' ||
-  ((SELECT count(*) FROM cfg_aud)+(SELECT count(*) FROM cfg_access)+(SELECT count(*) FROM cfg_intro)+(SELECT count(*) FROM cfg_id));
-SQL
-          )"
+          result="$($compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' </tmp/yca-audience-repair.sql | tail -n1)"
           echo "[audience] migration result=$result"
           [[ "$result" =~ ^1\|[01]\|1\|4$ ]]
 
-          echo '[audience] verifying mapper configuration'
-          verify="$($compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL' | tail -n1
-SELECT count(*)
-FROM protocol_mapper pm
-JOIN client_scope cs ON cs.id=pm.client_scope_id
-JOIN realm r ON r.id=cs.realm_id
-JOIN protocol_mapper_config aud ON aud.protocol_mapper_id=pm.id AND aud.name='included.client.audience' AND aud.value='yca-chatgpt'
-JOIN protocol_mapper_config atk ON atk.protocol_mapper_id=pm.id AND atk.name='access.token.claim' AND atk.value='true'
-WHERE r.name='yca'
-  AND cs.name='yca:read'
-  AND pm.protocol='openid-connect'
-  AND pm.protocol_mapper_name='oidc-audience-mapper';
-SQL
-          )"
+          cat >/tmp/yca-audience-verify.sql <<'SQL'
+          SELECT count(*)
+          FROM protocol_mapper pm
+          JOIN client_scope cs ON cs.id=pm.client_scope_id
+          JOIN realm r ON r.id=cs.realm_id
+          JOIN protocol_mapper_config aud ON aud.protocol_mapper_id=pm.id AND aud.name='included.client.audience' AND aud.value='yca-chatgpt'
+          JOIN protocol_mapper_config atk ON atk.protocol_mapper_id=pm.id AND atk.name='access.token.claim' AND atk.value='true'
+          WHERE r.name='yca'
+            AND cs.name='yca:read'
+            AND pm.protocol='openid-connect'
+            AND pm.protocol_mapper_name='oidc-audience-mapper';
+          SQL
+          verify="$($compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' </tmp/yca-audience-verify.sql | tail -n1)"
+          echo "[audience] verified mapper count=$verify"
           test "$verify" = '1'
 
           echo '[audience] restarting Keycloak to clear cached client-scope metadata'
@@ -141,6 +142,5 @@ SQL
             fi
             sleep 2
           done
-
-          echo '[audience] repair complete; new ChatGPT tokens should include yca-chatgpt in aud'
+          echo '[audience] repair complete'
           REMOTE
