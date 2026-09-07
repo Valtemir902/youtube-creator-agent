@@ -1,0 +1,112 @@
+name: ChatGPT Offline OAuth Probe
+
+on:
+  push:
+    branches: ["feat/**"]
+    paths:
+      - ".github/workflows/chatgpt-offline-scope-probe.yml"
+  workflow_dispatch:
+
+jobs:
+  offline-oauth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check discovery and register ChatGPT client with offline scope
+        run: |
+          set -euo pipefail
+          curl -fsS \
+            -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
+            https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration \
+            -o /tmp/oidc.json
+
+          reg="$(python - <<'PY'
+          import json
+          p=json.load(open('/tmp/oidc.json'))
+          required={'openid','offline_access','yca:read'}
+          scopes=set(p.get('scopes_supported') or [])
+          missing=sorted(required-scopes)
+          assert not missing, f'missing discovery scopes: {missing}'
+          assert 'S256' in set(p.get('code_challenge_methods_supported') or [])
+          print(p['registration_endpoint'])
+          PY
+          )"
+
+          payload='{"client_name":"ChatGPT offline compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"openid offline_access yca:read"}'
+          dcr_code="$(curl -sS \
+            -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json' \
+            -o /tmp/dcr.json -w '%{http_code}' \
+            --data "$payload" "$reg")"
+          echo "DCR_HTTP=$dcr_code"
+          if [ "$dcr_code" != "201" ] && [ "$dcr_code" != "200" ]; then
+            python - <<'PY'
+          from pathlib import Path
+          print('DCR_ERROR_PREFIX=', Path('/tmp/dcr.json').read_text(errors='replace')[:1200])
+          PY
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/dcr.json'))
+          granted=set(str(p.get('scope') or '').split())
+          print('DCR_CLIENT_ID=', p.get('client_id'))
+          print('DCR_TOKEN_AUTH_METHOD=', p.get('token_endpoint_auth_method'))
+          print('DCR_SCOPE=', p.get('scope'))
+          required={'offline_access','yca:read'}
+          missing=sorted(required-granted)
+          assert not missing, f'DCR did not retain required scopes: {missing}; got={sorted(granted)}'
+          assert 'https://chatgpt.com/connector_platform_oauth_redirect' in (p.get('redirect_uris') or [])
+          assert 'authorization_code' in (p.get('grant_types') or [])
+          assert 'refresh_token' in (p.get('grant_types') or [])
+          PY
+
+          auth_url="$(python - <<'PY'
+          import base64, hashlib, json, secrets, urllib.parse
+          discovery=json.load(open('/tmp/oidc.json'))
+          client=json.load(open('/tmp/dcr.json'))
+          verifier=secrets.token_urlsafe(48)
+          challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+          params={
+              'response_type':'code',
+              'client_id':client['client_id'],
+              'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
+              'scope':'openid offline_access yca:read',
+              'code_challenge':challenge,
+              'code_challenge_method':'S256',
+          }
+          print(discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
+          PY
+          )"
+
+          auth_code="$(curl -sS --max-redirs 0 \
+            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+            -o /tmp/auth.body -D /tmp/auth.headers \
+            -w '%{http_code}' "$auth_url" || true)"
+          echo "AUTH_HTTP=$auth_code"
+          grep -Ei '^(server|content-type|location):' /tmp/auth.headers | tail -n 8 || true
+          if grep -qi 'invalid_scope' /tmp/auth.headers /tmp/auth.body; then
+            echo 'OFFLINE_SCOPE_RESULT=invalid_scope'
+            exit 1
+          fi
+          test "$auth_code" = "200"
+          grep -Eiq '(login|username|email|password)' /tmp/auth.body
+          echo 'CHATGPT_OFFLINE_AUTH_START=ok'
+
+          cleanup_uri="$(python - <<'PY'
+          import json
+          print(json.load(open('/tmp/dcr.json')).get('registration_client_uri') or '')
+          PY
+          )"
+          cleanup_token="$(python - <<'PY'
+          import json
+          print(json.load(open('/tmp/dcr.json')).get('registration_access_token') or '')
+          PY
+          )"
+          if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
+            cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $cleanup_token" "$cleanup_uri" || true)"
+            echo "DCR_CLEANUP_HTTP=$cleanup_code"
+          fi
