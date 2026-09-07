@@ -7,6 +7,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from .cloud_runtime import GOOGLE_SCOPES, GOOGLE_SECRET_NAME
+from .mcp_errors import tool_error
 
 CHANNEL_REGISTRY_SECRET = "google:channels_registry"
 ACTIVE_CHANNEL_SECRET = "google:active_channel_id"
@@ -16,7 +17,7 @@ CHANNEL_CREDENTIAL_PREFIX = "google:channel:"
 def _credential_name(channel_id: str) -> str:
     value = "".join(ch for ch in str(channel_id or "").strip() if ch.isalnum() or ch in "_-.")
     if not value:
-        raise RuntimeError("ID de canal inválido.")
+        raise tool_error("invalid_request", "A valid channel_id is required.")
     return f"{CHANNEL_CREDENTIAL_PREFIX}{value}:authorized_user_json"
 
 
@@ -102,15 +103,44 @@ def list_channel_accounts(db, tenant_id: str) -> dict[str, Any]:
     return {"active_channel_id": active, "channels": rows}
 
 
-def activate_channel(db, tenant_id: str, channel_id: str) -> dict[str, Any]:
+def channel_account_state(db, tenant_id: str, channel_id: str) -> dict[str, Any]:
     channel_id = str(channel_id or "").strip()
+    if not channel_id:
+        raise tool_error("invalid_request", "A valid channel_id is required.")
+    active = str(db.get_secret(tenant_id, ACTIVE_CHANNEL_SECRET) or "")
+    registry = _load_registry(db, tenant_id)
+    credential = db.get_secret(tenant_id, _credential_name(channel_id))
+    data = dict(registry.get(channel_id) or {})
+    exists = bool(credential or data)
+    return {
+        "channel_id": channel_id,
+        "exists": exists,
+        "already_active": exists and active == channel_id,
+        "channel": {**data, "id": channel_id, "active": active == channel_id} if exists else None,
+    }
+
+
+def activate_channel(db, tenant_id: str, channel_id: str) -> dict[str, Any]:
+    state = channel_account_state(db, tenant_id, channel_id)
+    channel_id = state["channel_id"]
+    if not state["exists"]:
+        raise tool_error("channel_not_found")
+    if state["already_active"]:
+        return {
+            "id": channel_id,
+            **dict(state.get("channel") or {}),
+            "active": True,
+            "already_active": True,
+        }
+
     raw = db.get_secret(tenant_id, _credential_name(channel_id))
     if not raw:
-        raise RuntimeError("Este canal não está conectado a esta conta do Creator Agent.")
+        raise tool_error("channel_not_found")
     db.put_secret(tenant_id, GOOGLE_SECRET_NAME, raw)
     db.put_secret(tenant_id, ACTIVE_CHANNEL_SECRET, channel_id)
     registry = _load_registry(db, tenant_id)
     data = dict(registry.get(channel_id) or {})
     data["id"] = channel_id
     data["active"] = True
+    data["already_active"] = False
     return data
