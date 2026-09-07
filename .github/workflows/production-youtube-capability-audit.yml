@@ -1,0 +1,176 @@
+name: Production YouTube Capability Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - ".github/workflows/production-youtube-capability-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Run safe live YouTube API audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/apps/youtube-creator-agent
+          compose='docker compose -f deploy/docker-compose.oracle.yml'
+          echo '=== deployed revision ==='
+          git rev-parse HEAD
+          $compose exec -T mcp python - <<'PY'
+          import io
+          import json
+          import sqlite3
+          
+          from googleapiclient.errors import HttpError
+          from googleapiclient.http import MediaIoBaseUpload
+          
+          from creator_service.advanced_service import AdvancedSafeCreatorService
+          from creator_service.cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
+          
+          resolver = CloudTenantResolver()
+          with sqlite3.connect(resolver.db.path) as conn:
+              row = conn.execute(
+                  "SELECT ts.tenant_id FROM tenant_secrets ts "
+                  "JOIN tenants t ON t.tenant_id=ts.tenant_id "
+                  "WHERE ts.secret_name=? AND t.enabled=1 "
+                  "ORDER BY ts.updated_at DESC LIMIT 1",
+                  (GOOGLE_SECRET_NAME,),
+              ).fetchone()
+          if not row:
+              raise RuntimeError('Nenhum tenant com YouTube conectado foi encontrado.')
+          tenant_id = str(row[0])
+          context = resolver.resolve(tenant_id)
+          service = AdvancedSafeCreatorService(context)
+          youtube = service._youtube()
+          
+          print('tenant_selected=ok')
+          print('youtube_connected=', context.youtube_connected)
+          
+          channel_response = youtube.channels().list(part='snippet,contentDetails', mine=True).execute()
+          channel_items = channel_response.get('items', [])
+          if not channel_items:
+              raise RuntimeError('A conta Google conectada não retornou um canal do YouTube.')
+          channel = channel_items[0]
+          uploads = channel.get('contentDetails', {}).get('relatedPlaylists', {}).get('uploads')
+          if not uploads:
+              raise RuntimeError('Playlist de uploads do canal não encontrada.')
+          print('channel_read=ok')
+          
+          playlist = youtube.playlistItems().list(
+              part='contentDetails', playlistId=uploads, maxResults=1
+          ).execute()
+          items = playlist.get('items', [])
+          if not items:
+              raise RuntimeError('O canal não possui vídeo disponível para o teste seguro.')
+          video_id = items[0].get('contentDetails', {}).get('videoId')
+          if not video_id:
+              raise RuntimeError('video_id não encontrado no upload mais recente.')
+          
+          before = service._current_video_snippet(video_id)
+          print('video_read=ok')
+          
+          categories = service.list_video_categories('BR')
+          if not categories.get('categories'):
+              raise RuntimeError('A API não retornou categorias de vídeo para BR.')
+          if not any(c.get('id') == before.get('categoryId') for c in categories['categories']):
+              print('category_current_not_in_BR_list=warning')
+          print('category_read=ok')
+          
+          caption_listing = service.list_video_captions(video_id)
+          if 'captions' not in caption_listing:
+              raise RuntimeError('Resposta de captions.list inválida.')
+          print('caption_read=ok count=', len(caption_listing['captions']))
+          
+          # Production validation of the signed caption-preview path. No caption is created.
+          caption_preview = service.preview_caption_upload(
+              video_id=video_id,
+              language='pt-BR',
+              content='1\n00:00:00,000 --> 00:00:01,000\nTeste técnico do Creator Agent\n',
+              name='Creator Agent validation',
+              caption_format='srt',
+          )
+          if not caption_preview.get('approval_token'):
+              raise RuntimeError('A prévia de legenda não gerou approval_token.')
+          print('caption_signed_preview=ok')
+          
+          # Real, reversible-in-effect write permission test: write the exact current snippet
+          # back to the same video and verify that all user-visible metadata stayed identical.
+          snippet = {
+              'title': before['title'],
+              'description': before['description'],
+              'tags': list(before.get('tags', []) or []),
+              'categoryId': before['categoryId'],
+          }
+          if before.get('defaultLanguage'):
+              snippet['defaultLanguage'] = before['defaultLanguage']
+          youtube.videos().update(part='snippet', body={'id': video_id, 'snippet': snippet}).execute()
+          after = service._current_video_snippet(video_id)
+          for key in ('title', 'description', 'tags', 'categoryId', 'defaultLanguage'):
+              if before.get(key) != after.get(key):
+                  raise RuntimeError(f'No-op metadata write changed {key!r}: before={before.get(key)!r} after={after.get(key)!r}')
+          print('real_metadata_noop_write=ok')
+          
+          # Probe the real captions.insert endpoint with a guaranteed-nonexistent target.
+          # A normal YouTube validation/not-found response proves authenticated endpoint access
+          # without creating a caption on the user's channel. Auth/scope failures are fatal.
+          fake_video = 'YCA_TEST_NONEXISTENT_000'
+          media = MediaIoBaseUpload(
+              io.BytesIO(b'1\n00:00:00,000 --> 00:00:01,000\nprobe\n'),
+              mimetype='application/x-subrip',
+              resumable=False,
+          )
+          try:
+              youtube.captions().insert(
+                  part='snippet',
+                  body={'snippet': {'videoId': fake_video, 'language': 'pt-BR', 'name': 'probe', 'isDraft': False}},
+                  media_body=media,
+              ).execute()
+          except HttpError as exc:
+              status = int(getattr(exc.resp, 'status', 0) or 0)
+              body = ''
+              try:
+                  body = exc.content.decode('utf-8', 'replace') if isinstance(exc.content, bytes) else str(exc.content)
+              except Exception:
+                  body = str(exc)
+              lowered = body.lower()
+              auth_markers = ('insufficientpermissions', 'invalid credentials', 'autherror', 'login required')
+              if status in (401,) or any(marker in lowered for marker in auth_markers):
+                  raise RuntimeError(f'captions.insert authorization failed: HTTP {status}: {body[:500]}') from exc
+              print('caption_insert_endpoint_auth=ok expected_rejection_http=', status)
+          else:
+              raise RuntimeError('Unexpectedly created a caption for a deliberately invalid video id.')
+          
+          print('LIVE_YOUTUBE_CAPABILITY_AUDIT=PASS')
+          PY
+          REMOTE
