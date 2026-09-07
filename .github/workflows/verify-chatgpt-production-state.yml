@@ -1,0 +1,81 @@
+name: Verify ChatGPT Production State
+
+on:
+  push:
+    branches: ["fix/chatgpt-write-scope-default"]
+    paths:
+      - ".github/workflows/verify-chatgpt-production-state.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST" && test -n "$VPS_USER" && test -n "$VPS_SSH_PRIVATE_KEY" && test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify OAuth defaults and unified MCP catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          cd "$HOME/apps/youtube-creator-agent"
+          compose="deploy/docker-compose.oracle.yml"
+          client_id="$(sed -n 's/^YCA_CHATGPT_OAUTH_CLIENT_ID=//p' config/server.env | tail -n1 | tr -d '\r')"
+          test -n "$client_id"
+
+          verify_sql="SELECT cs.name || '=' || x.default_scope FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id' AND cs.name IN ('yca:read','yca:write') ORDER BY cs.name;"
+          scope_state="$(docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID" -c "$1"' sh "$verify_sql" | tr -d '\r')"
+          printf '%s\n' "$scope_state"
+          grep -qx 'yca:read=t' <<<"$scope_state"
+          grep -qx 'yca:write=t' <<<"$scope_state"
+          echo "OAUTH_DEFAULT_SCOPES=ok"
+
+          docker compose -f "$compose" exec -T mcp python - <<'PY'
+          import asyncio
+          from mcp import Client
+          from creator_service.cloud_mcp_server_management import create_server
+
+          REQUIRED = {
+              'get_video_details', 'get_video_transcript', 'list_channel_videos',
+              'preview_video_metadata_update', 'apply_video_metadata_update',
+              'list_playlists', 'get_playlist_details', 'preview_caption_upload',
+          }
+
+          async def main():
+              async with Client(create_server(), raise_exceptions=True) as client:
+                  result = await client.list_tools()
+                  names = sorted(tool.name for tool in result.tools)
+                  missing = REQUIRED - set(names)
+                  assert not missing, sorted(missing)
+                  assert len(names) >= 33, len(names)
+                  print('MCP_TOOL_COUNT=' + str(len(names)))
+                  print('MCP_REQUIRED_TOOLS=ok')
+                  print('MCP_TOOLS=' + ','.join(names))
+
+          asyncio.run(main())
+          PY
+          echo "PRODUCTION_SHA=$(git rev-parse HEAD)"
+          REMOTE
