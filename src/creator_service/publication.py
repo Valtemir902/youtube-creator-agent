@@ -16,6 +16,28 @@ def _is_https_url(value: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
+def _is_safe_introspection_url(value: str) -> bool:
+    """Accept public HTTPS or the private Keycloak Docker backchannel.
+
+    OAuth token introspection is server-to-server traffic. In production it must
+    not hairpin through the public Cloudflare edge, because edge bot filtering can
+    reject the Python resource server. Plain HTTP is acceptable only for the
+    isolated Docker-network hostname `keycloak`; every other host still requires
+    HTTPS.
+    """
+    if not value:
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and bool(parsed.netloc):
+        return True
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname == "keycloak"
+        and parsed.port in (None, 8080)
+        and parsed.path.endswith("/protocol/openid-connect/token/introspect")
+    )
+
+
 @dataclass(frozen=True)
 class PublicationMetadata:
     name: str
@@ -78,7 +100,7 @@ def publication_readiness(metadata: PublicationMetadata | None = None) -> Readin
         "approval_secret_configured": len(_env("YCA_APPROVAL_SECRET")) >= 24,
         "data_encryption_key_configured": bool(_env("YCA_DATA_ENCRYPTION_KEY")),
         "auth_issuer_configured": _is_https_url(_env("YCA_AUTH_ISSUER_URL")),
-        "auth_introspection_configured": _is_https_url(_env("YCA_AUTH_INTROSPECTION_URL")),
+        "auth_introspection_configured": _is_safe_introspection_url(_env("YCA_AUTH_INTROSPECTION_URL")),
         "google_oauth_client_configured": bool(
             _env("GOOGLE_OAUTH_CLIENT_ID")
             and _env("GOOGLE_OAUTH_CLIENT_SECRET")
