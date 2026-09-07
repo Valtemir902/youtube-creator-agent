@@ -2,10 +2,6 @@ name: Production YouTube Capability Audit
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["feat/web-dashboard-v1"]
-    paths:
-      - ".github/workflows/production-youtube-capability-audit.yml"
 
 permissions:
   contents: read
