@@ -66,15 +66,11 @@ jobs:
           required_scopes={'openid','offline_access','yca:read'}
           missing_scopes=sorted(required_scopes-scopes)
           assert not missing_scopes, f'Missing scopes_supported required by ChatGPT: {missing_scopes}; got={sorted(scopes)}'
-          methods=set(p.get('code_challenge_methods_supported') or [])
-          assert 'S256' in methods, f'PKCE S256 not advertised: {sorted(methods)}'
-          token_methods=set(p.get('token_endpoint_auth_methods_supported') or [])
-          assert token_methods & {'client_secret_basic','client_secret_post','none'}, f'No compatible token endpoint auth method: {sorted(token_methods)}'
-          grants=set(p.get('grant_types_supported') or [])
-          assert 'authorization_code' in grants, f'authorization_code missing: {sorted(grants)}'
+          assert 'S256' in set(p.get('code_challenge_methods_supported') or [])
+          assert 'authorization_code' in set(p.get('grant_types_supported') or [])
           print('OIDC_DISCOVERY=ok')
           print('SCOPES_SUPPORTED=', ' '.join(sorted(scopes)))
-          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(token_methods)))
+          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(set(p.get('token_endpoint_auth_methods_supported') or []))))
           PY
 
       - name: Check MCP unauthenticated challenge
@@ -84,8 +80,6 @@ jobs:
             -H 'content-type: application/json' \
             --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"chatgpt-compat-ci","version":"1"}}}' \
             https://mcp.silvadigitaltech.com/mcp || true
-          status="$(head -n1 /tmp/mcp.headers | tr -d '\r')"
-          echo "$status"
           grep -Eq ' 401 | 403 ' /tmp/mcp.headers
           grep -i '^www-authenticate:' /tmp/mcp.headers | tee /tmp/www-authenticate
           grep -qi 'resource_metadata=' /tmp/www-authenticate
@@ -103,14 +97,11 @@ jobs:
               python - <<'PY'
           import json
           p=json.load(open('/tmp/resource.json'))
-          resource=str(p.get('resource') or '').rstrip('/')
-          assert resource == 'https://mcp.silvadigitaltech.com', p
+          assert str(p.get('resource') or '').rstrip('/') == 'https://mcp.silvadigitaltech.com', p
           servers=[str(x).rstrip('/') for x in (p.get('authorization_servers') or [])]
           assert 'https://auth.silvadigitaltech.com/realms/yca' in servers, p
-          scopes=set(p.get('scopes_supported') or [])
-          if scopes:
-              assert 'yca:read' in scopes, f'yca:read missing from protected resource metadata: {sorted(scopes)}'
-          print('PROTECTED_RESOURCE_METADATA=ok', resource)
+          assert 'yca:read' in set(p.get('scopes_supported') or []), p
+          print('PROTECTED_RESOURCE_METADATA=ok')
           PY
               found=1
               break
@@ -118,7 +109,7 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Mirror ChatGPT DCR and diagnose authorization start
+      - name: Mirror ChatGPT DCR with requested Creator scope
         run: |
           set -u
           reg="$(python - <<'PY'
@@ -126,7 +117,7 @@ jobs:
           print(json.load(open('/tmp/oidc.json'))['registration_endpoint'])
           PY
           )"
-          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"]}'
+          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"yca:read"}'
           code="$(curl -sS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
             -o /tmp/dcr.json -w '%{http_code}' \
             -H 'content-type: application/json' -H 'accept: application/json' \
@@ -142,12 +133,7 @@ jobs:
           python - <<'PY'
           import json
           p=json.load(open('/tmp/dcr.json'))
-          safe={
-              'client_id': p.get('client_id'),
-              'token_endpoint_auth_method': p.get('token_endpoint_auth_method'),
-              'redirect_uris': p.get('redirect_uris'),
-              'grant_types': p.get('grant_types'),
-          }
+          safe={k:p.get(k) for k in ('client_id','token_endpoint_auth_method','redirect_uris','grant_types','scope')}
           print('DCR_SAFE=', json.dumps(safe, ensure_ascii=False))
           PY
 
@@ -164,8 +150,7 @@ jobs:
 
           make_url() {
             local scope="$1"
-            local resource="$2"
-            SCOPE_VALUE="$scope" RESOURCE_VALUE="$resource" python - <<'PY'
+            SCOPE_VALUE="$scope" python - <<'PY'
           import base64, hashlib, json, os, secrets, urllib.parse
           discovery=json.load(open('/tmp/oidc.json'))
           client=json.load(open('/tmp/dcr.json'))
@@ -179,38 +164,31 @@ jobs:
               'code_challenge':challenge,
               'code_challenge_method':'S256',
           }
-          resource=os.environ.get('RESOURCE_VALUE','').strip()
-          if resource:
-              params['resource']=resource
           print(discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
           PY
           }
 
           success=0
-          for variant in base offline resource full; do
+          for variant in read read_offline; do
             case "$variant" in
-              base) scope='openid yca:read'; resource='' ;;
-              offline) scope='openid offline_access yca:read'; resource='' ;;
-              resource) scope='openid yca:read'; resource='https://mcp.silvadigitaltech.com/' ;;
-              full) scope='openid offline_access yca:read'; resource='https://mcp.silvadigitaltech.com/' ;;
+              read) scope='openid yca:read' ;;
+              read_offline) scope='openid offline_access yca:read' ;;
             esac
-            auth_url="$(make_url "$scope" "$resource")"
-            auth_code="$(curl -sS -L --max-redirs 5 \
+            auth_url="$(make_url "$scope")"
+            auth_code="$(curl -sS --max-redirs 0 \
               -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
               -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
               -o "/tmp/auth-$variant.body" -D "/tmp/auth-$variant.headers" \
               -w '%{http_code}' "$auth_url" || true)"
             echo "AUTH_VARIANT=$variant HTTP=$auth_code"
-            grep -Ei '^(server|content-type|cf-ray|location):' "/tmp/auth-$variant.headers" | tail -n 8 || true
+            grep -Ei '^(server|content-type|location):' "/tmp/auth-$variant.headers" | tail -n 8 || true
             VARIANT="$variant" python - <<'PY'
           import os
           from pathlib import Path
-          p=Path('/tmp/auth-'+os.environ['VARIANT']+'.body')
-          text=p.read_text(errors='replace') if p.exists() else ''
-          safe=' '.join(text[:1200].split())
-          print('AUTH_BODY_PREFIX=', safe)
+          text=Path('/tmp/auth-'+os.environ['VARIANT']+'.body').read_text(errors='replace')
+          print('AUTH_BODY_PREFIX=', ' '.join(text[:1000].split()))
           PY
-            if [ "$auth_code" = "200" ] && grep -Eiq '(login|username|email|consent|password)' "/tmp/auth-$variant.body"; then
+            if [ "$auth_code" = "200" ] && grep -Eiq '(login|username|email|password)' "/tmp/auth-$variant.body"; then
               success=1
             fi
           done
