@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import traceback
 from dataclasses import dataclass
@@ -11,14 +13,12 @@ try:
 except Exception:  # pragma: no cover - dependency is present in cloud runtime
     HttpError = ()  # type: ignore[assignment]
 
-from .observability import configure_json_logging
-
 
 T = TypeVar("T")
 
 
 @dataclass(frozen=True)
-class CreatorToolError(Exception):
+class CreatorToolError(RuntimeError):
     code: str
     message: str
 
@@ -123,6 +123,20 @@ def success_response(payload: dict[str, Any] | None = None, **extra: Any) -> dic
     return result
 
 
+def _logger() -> logging.Logger:
+    """Minimal logger with no FastAPI/web dependency for MCP-only runtimes and CI."""
+    logger = logging.getLogger("youtube_creator_agent")
+    if logger.handlers:
+        return logger
+    level_name = os.environ.get("YCA_LOG_LEVEL", "INFO").upper().strip()
+    logger.setLevel(getattr(logging, level_name, logging.INFO))
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
 def log_tool_exception(operation: str, exc: BaseException, *, tenant_id: str | None = None) -> None:
     """Log stack frames without serializing request payloads, tokens or credentials."""
     mapped = classify_exception(exc)
@@ -130,8 +144,7 @@ def log_tool_exception(operation: str, exc: BaseException, *, tenant_id: str | N
         {"file": frame.filename, "line": frame.lineno, "function": frame.name}
         for frame in traceback.extract_tb(exc.__traceback__)
     ]
-    logger = configure_json_logging()
-    logger.error(
+    _logger().error(
         json.dumps(
             {
                 "event": "mcp_tool_exception",
