@@ -52,6 +52,8 @@ jobs:
           echo
           echo '=== recent audience/introspection failures ==='
           $compose logs --since 30m --no-color keycloak 2>&1 | grep -Ei 'INTROSPECT_TOKEN_ERROR|invalid_token|audience' | tail -n 100 || true
+          echo '=== recent MCP requests ==='
+          $compose logs --since 30m --no-color mcp 2>&1 | tail -n 300
           echo '=== Keycloak audience mappers ==='
           $compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
           SELECT pm.id, pm.name, pm.protocol_mapper_name, pm.client_id, pm.client_scope_id
