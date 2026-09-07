@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from .cloud_runtime import CloudTenantResolver
 from .dashboard_store import DashboardActionStore
 from .handoff import HandoffError, canonical_digest, open_handoff
+from .handoff_store import HandoffExecutionStore
 from .onboarding_api import COOKIE_NAME
 from .onboarding_sessions import OnboardingSessionStore
 from .publication_store import PublicationStore
@@ -221,6 +223,7 @@ def install_handoff_routes(app: FastAPI) -> None:
     if db_path is None:
         raise RuntimeError("YCA HandOff exige armazenamento persistente do tenant.")
     publication_store = PublicationStore(db_path)
+    execution_store = HandoffExecutionStore(db_path)
     action_store = DashboardActionStore(db_path)
     public_origin = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
 
@@ -248,6 +251,61 @@ def install_handoff_routes(app: FastAPI) -> None:
             outcome=outcome,
             tenant_id=tenant_id,
             metadata=metadata or {},
+        )
+
+    def reconcile_interrupted_handoff(
+        *,
+        ticket: str,
+        package,
+        service: ResponsibleCreatorService,
+    ) -> dict[str, Any]:
+        current = service._current_video_snippet(package.video_id)
+        playlist_result = None
+        playlist_ok = True
+        if package.playlist_id:
+            membership = _playlist_membership(service, package.playlist_id)
+            matches = [row for row in membership if row["video_id"] == package.video_id]
+            playlist_ok = bool(matches)
+            if matches:
+                playlist_result = {
+                    "playlist_id": package.playlist_id,
+                    "video_id": package.video_id,
+                    "playlist_item_id": matches[0]["playlist_item_id"],
+                    "already_present": True,
+                    "persisted_verified": True,
+                    "recovered_from_interrupted_response": True,
+                }
+
+        if not service._mismatches(current, package.proposed) and playlist_ok:
+            result = {
+                "ok": True,
+                "video_id": package.video_id,
+                "channel_id": package.channel_id,
+                "changed_fields": list(package.changed_fields),
+                "persisted_verified": True,
+                "current": current,
+                "playlist": playlist_result,
+                "rollback_available": False,
+                "recovered_from_interrupted_response": True,
+            }
+            execution_store.mark_success(ticket, result)
+            audit("handoff_reconciled", "success", package.tenant_id, {"video_id": package.video_id})
+            return result
+
+        if signer_from_env().payload_digest(current) == package.baseline_digest and not playlist_ok:
+            message = (
+                "Uma execução anterior foi interrompida antes de uma alteração verificável. "
+                "O ticket foi encerrado por segurança; gere uma nova proposta."
+            )
+            execution_store.mark_failed(ticket, message)
+            raise HTTPException(status_code=409, detail=message)
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Uma execução anterior foi interrompida e o estado atual não permite provar com segurança se a operação terminou. "
+                "Nenhuma nova gravação será tentada com este ticket."
+            ),
         )
 
     @app.get("/handoff/v1", response_class=FileResponse)
@@ -292,7 +350,6 @@ def install_handoff_routes(app: FastAPI) -> None:
 
         service = service_for(identity.tenant_id)
         service.context.validate_youtube()
-        service.memory.assert_not_recently_edited(package.video_id)
         channel_id = service._authorized_channel_id()
         if channel_id != package.channel_id:
             audit("handoff_rejected", "denied", identity.tenant_id, {"reason": "channel_mismatch"})
@@ -301,6 +358,25 @@ def install_handoff_routes(app: FastAPI) -> None:
                 detail="O canal ativo mudou desde a análise. Nenhuma alteração foi aplicada.",
             )
 
+        existing = execution_store.get(
+            payload.ticket,
+            tenant_id=identity.tenant_id,
+            video_id=package.video_id,
+        )
+        if existing is not None:
+            if existing.status == "success" and existing.result:
+                return {**existing.result, "idempotent_replay": True}
+            if existing.status == "failed":
+                raise HTTPException(status_code=409, detail=existing.error or "Este handoff já foi encerrado com falha segura.")
+            if existing.status == "processing":
+                # A concurrent request can legitimately be in progress for a few
+                # seconds. Only reconcile stale processing records; otherwise do
+                # not race a second write against the first one.
+                if int(time.time()) - existing.updated_at < 45:
+                    raise HTTPException(status_code=409, detail="Este handoff já está sendo processado.")
+                return reconcile_interrupted_handoff(ticket=payload.ticket, package=package, service=service)
+
+        service.memory.assert_not_recently_edited(package.video_id)
         current = service._current_video_snippet(package.video_id)
         if signer_from_env().payload_digest(current) != package.baseline_digest:
             audit("handoff_rejected", "denied", identity.tenant_id, {"reason": "baseline_changed", "video_id": package.video_id})
@@ -320,7 +396,6 @@ def install_handoff_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=409, detail="O conteúdo proposto não corresponde ao handoff assinado.")
 
         metadata_changed = _metadata_changed(service, current, normalized)
-        playlist_before: list[dict[str, str]] = []
         playlist_needed = False
         if package.playlist_id:
             playlist_before = _playlist_membership(service, package.playlist_id)
@@ -339,6 +414,17 @@ def install_handoff_routes(app: FastAPI) -> None:
                 detail="O conjunto de alterações não corresponde mais ao estado analisado. Gere um novo handoff.",
             )
 
+        state, prior = execution_store.begin(
+            payload.ticket,
+            tenant_id=identity.tenant_id,
+            video_id=package.video_id,
+            expires_at=package.expires_at,
+        )
+        if state == "success" and prior and prior.result:
+            return {**prior.result, "idempotent_replay": True}
+        if state != "new":
+            raise HTTPException(status_code=409, detail="Este handoff já possui uma execução registrada.")
+
         if not publication_store.consume_write_token(
             payload.ticket,
             tenant_id=identity.tenant_id,
@@ -346,8 +432,10 @@ def install_handoff_routes(app: FastAPI) -> None:
             subject=package.video_id,
             expires_at=package.expires_at,
         ):
+            message = "Este handoff já foi utilizado e não será executado novamente."
+            execution_store.mark_failed(payload.ticket, message)
             audit("handoff_rejected", "denied", identity.tenant_id, {"reason": "replay", "video_id": package.video_id})
-            raise HTTPException(status_code=409, detail="Este handoff já foi utilizado.")
+            raise HTTPException(status_code=409, detail=message)
 
         metadata_result: dict[str, Any] | None = None
         try:
@@ -373,9 +461,11 @@ def install_handoff_routes(app: FastAPI) -> None:
             verified = service._current_video_snippet(package.video_id)
             if metadata_changed and service._mismatches(verified, normalized):
                 raise RuntimeError("A releitura final do vídeo divergiu da alteração aprovada.")
-        except HTTPException:
+        except HTTPException as exc:
+            execution_store.mark_failed(payload.ticket, str(exc.detail))
             raise
         except Exception as exc:
+            execution_store.mark_failed(payload.ticket, str(exc))
             audit(
                 "handoff_apply",
                 "failed",
@@ -384,13 +474,7 @@ def install_handoff_routes(app: FastAPI) -> None:
             )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-        audit(
-            "handoff_apply",
-            "success",
-            identity.tenant_id,
-            {"video_id": package.video_id, "changed_fields": computed_fields, "source": package.source},
-        )
-        return {
+        result = {
             "ok": True,
             "video_id": package.video_id,
             "channel_id": package.channel_id,
@@ -400,6 +484,14 @@ def install_handoff_routes(app: FastAPI) -> None:
             "playlist": playlist_result,
             "rollback_available": bool(metadata_result and metadata_result.get("rollback_preview")),
         }
+        execution_store.mark_success(payload.ticket, result)
+        audit(
+            "handoff_apply",
+            "success",
+            identity.tenant_id,
+            {"video_id": package.video_id, "changed_fields": computed_fields, "source": package.source},
+        )
+        return result
 
     # The old dashboard AI endpoint performed videos.update directly. Replace it
     # with the same ResponsibleCreatorService used by ChatGPT handoff so Gemini,
