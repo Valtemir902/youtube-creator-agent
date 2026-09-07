@@ -36,7 +36,7 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Inspect recent MCP and auth logs safely
+      - name: Inspect MCP auth and Keycloak mapper schema safely
         shell: bash
         run: |
           set -euo pipefail
@@ -50,27 +50,26 @@ jobs:
           echo '=== service status ==='
           $compose ps
           echo '=== MCP logs last 30 minutes ==='
-          $compose logs --since 30m --no-color mcp 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~-]+/\1[REDACTED]/g' | tail -n 500
-          echo '=== onboarding logs last 30 minutes ==='
-          $compose logs --since 30m --no-color onboarding 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~-]+/\1[REDACTED]/g' | tail -n 300
+          $compose logs --since 30m --no-color mcp 2>&1 | tail -n 500
           echo '=== keycloak logs last 30 minutes, filtered ==='
-          $compose logs --since 30m --no-color keycloak 2>&1 | grep -Ei 'error|warn|invalid|scope|token|client|auth|login' | tail -n 300 || true
-          echo '=== unauthenticated MCP challenge ==='
-          curl -sS -D - -o /tmp/mcp-body -X POST https://mcp.silvadigitaltech.com/mcp \
-            -H 'content-type: application/json' \
-            -H 'accept: application/json, text/event-stream' \
-            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"prod-log-diag","version":"1"}}}' | sed -E 's/(set-cookie:).*/\1 [REDACTED]/I'
-          echo '--- body ---'
-          head -c 4000 /tmp/mcp-body || true
-          echo
+          $compose logs --since 30m --no-color keycloak 2>&1 | grep -Ei 'INTROSPECT_TOKEN_ERROR|CODE_TO_TOKEN_ERROR|CLIENT_REGISTER_ERROR|LOGIN_ERROR|invalid_token|audience' | tail -n 300 || true
           echo '=== protected resource metadata ==='
-          for u in \
-            'https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource' \
-            'https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource/mcp' \
-            'https://mcp.silvadigitaltech.com/mcp/.well-known/oauth-protected-resource'; do
-            echo "--- $u"
-            curl -sS -D - "$u" -o /tmp/meta-body | head -n 30
-            head -c 3000 /tmp/meta-body || true
-            echo
-          done
+          curl -sS https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource
+          echo
+          echo '=== Keycloak protocol mapper schema ==='
+          $compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+          \d protocol_mapper
+          \d protocol_mapper_config
+          SELECT pm.id, pm.name, pm.protocol_mapper, pm.client_id, pm.client_scope_id
+          FROM protocol_mapper pm
+          WHERE pm.protocol_mapper ILIKE '%audience%' OR pm.name ILIKE '%audience%'
+          ORDER BY pm.name
+          LIMIT 30;
+          SELECT pm.name, pm.protocol_mapper, pm.client_id, pm.client_scope_id, pmc.name AS config_name, pmc.value
+          FROM protocol_mapper pm
+          LEFT JOIN protocol_mapper_config pmc ON pmc.protocol_mapper_id=pm.id
+          WHERE pm.protocol_mapper ILIKE '%audience%' OR pm.name ILIKE '%audience%'
+          ORDER BY pm.name, pmc.name
+          LIMIT 100;
+          SQL
           REMOTE
