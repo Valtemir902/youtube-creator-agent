@@ -1,0 +1,81 @@
+name: ChatGPT Real OAuth Scope Probe
+
+on:
+  push:
+    branches: ["feat/**"]
+    paths:
+      - ".github/workflows/chatgpt-real-scope-probe.yml"
+      - "src/creator_service/cloud_mcp_server.py"
+  workflow_dispatch:
+
+jobs:
+  real-scope-oauth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reproduce exact ChatGPT OAuth scope request
+        run: |
+          set -euo pipefail
+
+          discovery='https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration'
+          curl -fsS -A 'Mozilla/5.0 ChatGPT-Exact-Scope-Probe/1.0' "$discovery" -o /tmp/oidc.json
+
+          reg="$(python - <<'PY'
+          import json
+          p=json.load(open('/tmp/oidc.json'))
+          required={'openid','email','offline_access','yca:read'}
+          scopes=set(p.get('scopes_supported') or [])
+          missing=sorted(required-scopes)
+          assert not missing, f'discovery missing exact ChatGPT scopes: {missing}; got={sorted(scopes)}'
+          assert 'S256' in set(p.get('code_challenge_methods_supported') or [])
+          print(p['registration_endpoint'])
+          PY
+          )"
+
+          payload='{"client_name":"ChatGPT exact scope probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"openid email offline_access yca:read","token_endpoint_auth_method":"none"}'
+          dcr_code="$(curl -sS \
+            -A 'Mozilla/5.0 ChatGPT-Exact-Scope-Probe/1.0' \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json' \
+            -o /tmp/dcr.json -w '%{http_code}' \
+            --data "$payload" "$reg")"
+          echo "DCR_HTTP=$dcr_code"
+          cat /tmp/dcr.json | python -c "import json,sys; p=json.load(sys.stdin); print({k:p.get(k) for k in ('client_id','token_endpoint_auth_method','scope','redirect_uris','grant_types')})" || true
+          test "$dcr_code" = "201" -o "$dcr_code" = "200"
+
+          auth_url="$(python - <<'PY'
+          import base64, hashlib, json, secrets, urllib.parse
+          d=json.load(open('/tmp/oidc.json'))
+          c=json.load(open('/tmp/dcr.json'))
+          verifier=secrets.token_urlsafe(64)
+          challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+          params={
+            'response_type':'code',
+            'client_id':c['client_id'],
+            'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
+            'scope':'openid email offline_access yca:read',
+            'code_challenge':challenge,
+            'code_challenge_method':'S256',
+            'resource':'https://mcp.silvadigitaltech.com/',
+          }
+          print(d['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
+          PY
+          )"
+
+          auth_code="$(curl -sS --max-redirs 0 \
+            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+            -o /tmp/auth.body -D /tmp/auth.headers \
+            -w '%{http_code}' "$auth_url" || true)"
+          echo "AUTH_HTTP=$auth_code"
+          grep -Ei '^(server|content-type|location):' /tmp/auth.headers || true
+          if grep -qi 'invalid_scope' /tmp/auth.headers /tmp/auth.body; then
+            echo 'EXACT_CHATGPT_SCOPE_RESULT=invalid_scope'
+            python - <<'PY'
+          from pathlib import Path
+          print('AUTH_BODY_PREFIX=', ' '.join(Path('/tmp/auth.body').read_text(errors='replace')[:1500].split()))
+          PY
+            exit 1
+          fi
+          test "$auth_code" = "200"
+          grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.body
+          echo 'EXACT_CHATGPT_SCOPE_RESULT=ok'
