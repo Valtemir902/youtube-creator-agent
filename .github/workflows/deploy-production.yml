@@ -18,7 +18,7 @@ jobs:
   deploy:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     environment: production
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
@@ -109,6 +109,62 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
+      - name: Backup persistent production state
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          app="$HOME/apps/youtube-creator-agent"
+          compose="$app/deploy/docker-compose.oracle.yml"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$HOME/backups/youtube-creator-agent/$stamp"
+          mkdir -p "$backup/config" "$backup/yca-data"
+          chmod 700 "$HOME/backups" "$HOME/backups/youtube-creator-agent" "$backup" 2>/dev/null || true
+          cd "$app"
+
+          for file in config/server.env config/keycloak.env config/tunnel.env; do
+            if [[ -f "$file" ]]; then
+              cp -p "$file" "$backup/config/"
+            fi
+          done
+          chmod -R go-rwx "$backup/config" || true
+
+          echo "[backup] exporting Keycloak PostgreSQL database"
+          docker compose -f "$compose" exec -T keycloak-db sh -lc \
+            'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
+            > "$backup/keycloak.dump"
+          test -s "$backup/keycloak.dump"
+          chmod 600 "$backup/keycloak.dump"
+
+          echo "[backup] freezing application writers for a consistent yca_data snapshot"
+          mcp_id="$(docker compose -f "$compose" ps -q mcp)"
+          test -n "$mcp_id"
+          paused=0
+          cleanup() {
+            if [[ "$paused" == "1" ]]; then
+              docker compose -f "$compose" unpause mcp onboarding >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          docker compose -f "$compose" pause mcp onboarding >/dev/null
+          paused=1
+          docker cp "$mcp_id:/app/data/." "$backup/yca-data/"
+          docker compose -f "$compose" unpause mcp onboarding >/dev/null
+          paused=0
+          trap - EXIT
+
+          test -f "$backup/yca-data/tenants.sqlite3"
+          find "$backup/yca-data" -type f -exec chmod go-rwx {} + || true
+          printf '%s\n' "$stamp" > "$backup/BACKUP_ID"
+          printf '%s\n' "$(git rev-parse HEAD)" > "$backup/PRE_DEPLOY_SHA"
+          echo "Production backup verified: $backup"
+          REMOTE
+
       - name: Deploy application to VPS
         if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
         shell: bash
@@ -135,6 +191,45 @@ jobs:
           code="$(curl --show-error --silent --output /dev/null --write-out '%{http_code}' https://creator.silvadigitaltech.com/login)"
           test "$code" = "200"
           echo "Login page HTTP $code"
+
+      - name: Verify deployed MCP runtime and tool discovery on VPS
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/apps/youtube-creator-agent"
+          docker compose -f deploy/docker-compose.oracle.yml exec -T mcp python - <<'PY'
+          import asyncio
+          from mcp import Client
+          from creator_service.cloud_mcp_server_management import create_server
+
+          required = {
+              'creator_status', 'list_connected_channels', 'activate_connected_channel',
+              'get_channel_profile', 'get_strategy_evidence', 'validate_keyword_candidates',
+              'list_channel_videos', 'get_video_details', 'get_video_transcript',
+              'preview_video_metadata_update', 'apply_video_metadata_update', 'apply_video_metadata_rollback',
+              'preview_caption_upload', 'apply_caption_upload',
+              'list_playlists', 'get_playlist_details',
+              'preview_playlist_metadata_update', 'apply_playlist_metadata_update',
+              'preview_playlist_item_add', 'apply_playlist_item_add',
+              'preview_playlist_item_remove', 'apply_playlist_item_remove',
+          }
+
+          async def main():
+              async with Client(create_server(), raise_exceptions=True) as client:
+                  result = await client.list_tools()
+                  names = {tool.name for tool in result.tools}
+                  missing = required - names
+                  assert not missing, sorted(missing)
+                  print(f'production_mcp_tool_discovery=ok count={len(names)}')
+          asyncio.run(main())
+          PY
+          REMOTE
 
       - name: Checkout deployed revision for browser audit
         if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'

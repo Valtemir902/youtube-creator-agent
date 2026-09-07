@@ -17,6 +17,16 @@ class _Request:
         return self._fn()
 
 
+class _Channels:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def list(self, *, part: str, mine: bool):
+        assert part == "id"
+        assert mine is True
+        return _Request(lambda: {"items": [{"id": self.owner.channel_id}]})
+
+
 class _Videos:
     def __init__(self, owner):
         self.owner = owner
@@ -24,7 +34,9 @@ class _Videos:
     def list(self, *, part: str, id: str):
         assert part == "snippet"
         assert id == self.owner.video_id
-        return _Request(lambda: {"items": [{"snippet": dict(self.owner.snippet)}]})
+        snippet = dict(self.owner.snippet)
+        snippet["channelId"] = self.owner.channel_id
+        return _Request(lambda: {"items": [{"snippet": snippet}]})
 
     def update(self, *, part: str, body: dict):
         assert part == "snippet"
@@ -94,6 +106,7 @@ class _Captions:
 class _FakeYouTube:
     def __init__(self):
         self.video_id = "abc123"
+        self.channel_id = "channel-1"
         self.snippet = {
             "title": "Titulo atual",
             "description": "Descricao atual",
@@ -105,9 +118,13 @@ class _FakeYouTube:
         self.caption_insert_calls = 0
         self.caption_delete_calls = 0
         self.caption_items = []
+        self._channels = _Channels(self)
         self._videos = _Videos(self)
         self._categories = _VideoCategories()
         self._captions = _Captions(self)
+
+    def channels(self):
+        return self._channels
 
     def videos(self):
         return self._videos

@@ -13,11 +13,19 @@ class MediaTranscriptionError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class MediaTranscriptionSegment:
+    start: float
+    duration: float
+    text: str
+
+
+@dataclass(frozen=True)
 class MediaTranscriptionResult:
     text: str
     engine: str
     language: str
     chars: int
+    segments: tuple[MediaTranscriptionSegment, ...] = ()
 
 
 @lru_cache(maxsize=2)
@@ -33,8 +41,25 @@ def _model(model_name: str, threads: int):
     )
 
 
+def _segment_seconds(segment) -> tuple[float, float]:
+    """Normalize pywhispercpp timing across versions.
+
+    whisper.cpp exposes t0/t1 in 10 ms ticks. Some wrappers also expose
+    start/end directly in seconds, so prefer those when available.
+    """
+    if hasattr(segment, "start") or hasattr(segment, "end"):
+        start = float(getattr(segment, "start", 0.0) or 0.0)
+        end = float(getattr(segment, "end", start) or start)
+        return max(0.0, start), max(start, end)
+    t0_raw = float(getattr(segment, "t0", 0.0) or 0.0)
+    t1_raw = float(getattr(segment, "t1", t0_raw) or t0_raw)
+    start = t0_raw / 100.0
+    end = t1_raw / 100.0
+    return max(0.0, start), max(start, end)
+
+
 class WhisperCppTranscriber:
-    """Server-side transcription for desktop and mobile browser uploads.
+    """Server-side transcription for authorized local media files.
 
     ffmpeg comes from the imageio-ffmpeg wheel and whisper.cpp from the
     pywhispercpp wheel, avoiding OS package-manager dependencies on the VPS.
@@ -107,15 +132,24 @@ class WhisperCppTranscriber:
             try:
                 model = _model(self.model_name, self.threads)
                 options = {} if lang == "auto" else {"language": lang}
-                segments = model.transcribe(str(wav), **options)
+                raw_segments = list(model.transcribe(str(wav), **options))
             except Exception as exc:
                 raise MediaTranscriptionError(f"Falha no reconhecimento de fala: {exc}") from exc
 
-            text = " ".join(
-                str(getattr(segment, "text", "")).strip()
-                for segment in segments
-                if str(getattr(segment, "text", "")).strip()
-            ).strip()
+            segments: list[MediaTranscriptionSegment] = []
+            for segment in raw_segments:
+                text = str(getattr(segment, "text", "")).strip()
+                if not text:
+                    continue
+                start, end = _segment_seconds(segment)
+                segments.append(
+                    MediaTranscriptionSegment(
+                        start=round(start, 3),
+                        duration=round(max(0.0, end - start), 3),
+                        text=text,
+                    )
+                )
+            text = " ".join(segment.text for segment in segments).strip()
             if not text:
                 raise MediaTranscriptionError("Nenhuma fala compreensível foi encontrada no vídeo.")
             return MediaTranscriptionResult(
@@ -123,4 +157,5 @@ class WhisperCppTranscriber:
                 engine=f"pywhispercpp/{self.model_name}",
                 language=lang,
                 chars=len(text),
+                segments=tuple(segments),
             )
