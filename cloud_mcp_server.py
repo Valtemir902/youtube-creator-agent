@@ -22,7 +22,7 @@ if keycloak_issuer and compat_issuer:
     os.environ.setdefault("YCA_TOKEN_ISSUER_URL", keycloak_issuer)
     os.environ["YCA_AUTH_ISSUER_URL"] = compat_issuer.rstrip("/")
 
-from creator_service.cloud_mcp_server_advanced import run
+from creator_service.cloud_mcp_server_video import run
 
 
 if __name__ == "__main__":
