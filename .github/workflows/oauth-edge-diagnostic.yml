@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
 
-      - name: Probe Keycloak admin API and OAuth state
+      - name: Inspect Keycloak DB schema safely
         shell: bash
         run: |
           set -euo pipefail
@@ -37,52 +37,16 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd ~/apps/youtube-creator-agent
-          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak sh -s <<'INNER'
-          set -eu
-          admin_user="${KC_BOOTSTRAP_ADMIN_USERNAME:-}"
-          admin_pass="${KC_BOOTSTRAP_ADMIN_PASSWORD:-}"
-          test -n "$admin_user" && test -n "$admin_pass"
-          cfg=/tmp/kcadm-yca-probe.config
-          rm -f "$cfg"
-          if ! /opt/keycloak/bin/kcadm.sh config credentials --config "$cfg" --server http://127.0.0.1:8080 --realm master --user "$admin_user" --password "$admin_pass" >/dev/null 2>&1; then
-            echo KCADM_LOGIN=failed
-            exit 10
-          fi
-          echo KCADM_LOGIN=ok
-          /opt/keycloak/bin/kcadm.sh get realms/yca/client-scopes --config "$cfg" --fields name > /tmp/scopes.json
-          python3 - <<'PY'
-          import json
-          scopes={x.get('name') for x in json.load(open('/tmp/scopes.json'))}
-          for n in ['email','profile','offline_access','yca:read','yca:write']:
-              print(f'SCOPE_{n.upper().replace(":","_")}={int(n in scopes)}')
-          PY
-          chatgpt_client="${YCA_CHATGPT_OAUTH_CLIENT_ID:-}"
+          echo '=== CLIENT_SCOPE SCHEMA ==='
+          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -P pager=off -c "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_name='"'"'client_scope'"'"' ORDER BY ordinal_position;"'
+          echo '=== CLIENT_SCOPE_CLIENT SCHEMA ==='
+          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -P pager=off -c "SELECT column_name,data_type,is_nullable FROM information_schema.columns WHERE table_name='"'"'client_scope_client'"'"' ORDER BY ordinal_position;"'
+          echo '=== YCA SCOPES ==='
+          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -P pager=off -c "SELECT cs.name, cs.protocol FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='"'"'yca'"'"' AND cs.name IN ('"'"'yca:read'"'"','"'"'yca:write'"'"','"'"'email'"'"','"'"'profile'"'"','"'"'offline_access'"'"') ORDER BY cs.name;"'
+          echo '=== SAFE COUNTS ==='
+          chatgpt_client="$(docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding sh -lc 'printf %s "$YCA_CHATGPT_OAUTH_CLIENT_ID"')"
           test -n "$chatgpt_client"
-          /opt/keycloak/bin/kcadm.sh get clients -r yca --config "$cfg" -q clientId="$chatgpt_client" --fields id,clientId,enabled,publicClient,standardFlowEnabled > /tmp/client.json
-          python3 - <<'PY'
-          import json
-          p=json.load(open('/tmp/client.json'))
-          print('CHATGPT_CLIENT_FOUND='+str(int(len(p)==1)))
-          if p:
-              c=p[0]
-              print('CHATGPT_CLIENT_ENABLED='+str(int(bool(c.get('enabled')))))
-              print('CHATGPT_CLIENT_PUBLIC='+str(int(bool(c.get('publicClient')))))
-              print('CHATGPT_CLIENT_STANDARD_FLOW='+str(int(bool(c.get('standardFlowEnabled')))))
-              print(c.get('id',''))
-          PY
-          cid="$(python3 -c 'import json; p=json.load(open("/tmp/client.json")); print(p[0]["id"] if p else "")')"
-          test -n "$cid"
-          /opt/keycloak/bin/kcadm.sh get clients/$cid/default-client-scopes -r yca --config "$cfg" --fields name > /tmp/default.json
-          /opt/keycloak/bin/kcadm.sh get clients/$cid/optional-client-scopes -r yca --config "$cfg" --fields name > /tmp/optional.json
-          python3 - <<'PY'
-          import json
-          d={x.get('name') for x in json.load(open('/tmp/default.json'))}
-          o={x.get('name') for x in json.load(open('/tmp/optional.json'))}
-          for n in ['email','profile','offline_access','yca:read','yca:write']:
-              k=n.upper().replace(':','_')
-              print(f'DEFAULT_{k}={int(n in d)}')
-              print(f'OPTIONAL_{k}={int(n in o)}')
-          PY
-          rm -f "$cfg" /tmp/scopes.json /tmp/client.json /tmp/default.json /tmp/optional.json
-          INNER
+          export CHATGPT_CLIENT="$chatgpt_client"
+          docker compose -f deploy/docker-compose.oracle.yml exec -T -e CHATGPT_CLIENT="$chatgpt_client" keycloak-db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -P pager=off -c "SELECT COUNT(*) AS chatgpt_clients FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='"'"'yca'"'"' AND c.client_id='"'"'$CHATGPT_CLIENT'"'"';"'
+          docker compose -f deploy/docker-compose.oracle.yml exec -T -e CHATGPT_CLIENT="$chatgpt_client" keycloak-db sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -P pager=off -c "SELECT cs.name, x.default_scope FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='"'"'yca'"'"' AND c.client_id='"'"'$CHATGPT_CLIENT'"'"' AND cs.name IN ('"'"'yca:read'"'"','"'"'yca:write'"'"','"'"'email'"'"','"'"'profile'"'"','"'"'offline_access'"'"') ORDER BY cs.name;"'
           REMOTE
