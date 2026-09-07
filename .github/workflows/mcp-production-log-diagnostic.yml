@@ -36,7 +36,7 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Inspect MCP auth and Keycloak mapper schema safely
+      - name: Inspect MCP auth and Keycloak audience mappers safely
         shell: bash
         run: |
           set -euo pipefail
@@ -47,29 +47,25 @@ jobs:
           compose='docker compose -f deploy/docker-compose.oracle.yml'
           echo '=== deployed revision ==='
           git rev-parse HEAD
-          echo '=== service status ==='
-          $compose ps
-          echo '=== MCP logs last 30 minutes ==='
-          $compose logs --since 30m --no-color mcp 2>&1 | tail -n 500
-          echo '=== keycloak logs last 30 minutes, filtered ==='
-          $compose logs --since 30m --no-color keycloak 2>&1 | grep -Ei 'INTROSPECT_TOKEN_ERROR|CODE_TO_TOKEN_ERROR|CLIENT_REGISTER_ERROR|LOGIN_ERROR|invalid_token|audience' | tail -n 300 || true
           echo '=== protected resource metadata ==='
           curl -sS https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource
           echo
-          echo '=== Keycloak protocol mapper schema ==='
+          echo '=== recent audience/introspection failures ==='
+          $compose logs --since 30m --no-color keycloak 2>&1 | grep -Ei 'INTROSPECT_TOKEN_ERROR|invalid_token|audience' | tail -n 100 || true
+          echo '=== Keycloak audience mappers ==='
           $compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
-          \d protocol_mapper
-          \d protocol_mapper_config
-          SELECT pm.id, pm.name, pm.protocol_mapper, pm.client_id, pm.client_scope_id
+          SELECT pm.id, pm.name, pm.protocol_mapper_name, pm.client_id, pm.client_scope_id
           FROM protocol_mapper pm
-          WHERE pm.protocol_mapper ILIKE '%audience%' OR pm.name ILIKE '%audience%'
+          WHERE pm.protocol_mapper_name ILIKE '%audience%' OR pm.name ILIKE '%audience%'
           ORDER BY pm.name
           LIMIT 30;
-          SELECT pm.name, pm.protocol_mapper, pm.client_id, pm.client_scope_id, pmc.name AS config_name, pmc.value
+          SELECT pm.name, pm.protocol_mapper_name, pm.client_id, pm.client_scope_id, pmc.name AS config_name, pmc.value
           FROM protocol_mapper pm
           LEFT JOIN protocol_mapper_config pmc ON pmc.protocol_mapper_id=pm.id
-          WHERE pm.protocol_mapper ILIKE '%audience%' OR pm.name ILIKE '%audience%'
+          WHERE pm.protocol_mapper_name ILIKE '%audience%' OR pm.name ILIKE '%audience%'
           ORDER BY pm.name, pmc.name
           LIMIT 100;
+          SELECT c.id, c.client_id FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id IN ('yca-chatgpt','82da41e4-4d89-4ccf-b134-c6a8b01f8453');
+          SELECT cs.id, cs.name FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name IN ('yca:read','yca:write');
           SQL
           REMOTE
