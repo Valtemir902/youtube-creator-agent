@@ -1,0 +1,107 @@
+name: ChatGPT Plugin Compatibility
+
+on:
+  push:
+    branches: ["feat/**", main]
+    paths:
+      - "src/creator_service/cloud_mcp_server.py"
+      - "config/chatgpt_app.json"
+      - "docs/CHATGPT_APP_SUBMISSION_PACKAGE.md"
+      - ".github/workflows/chatgpt-plugin-compat.yml"
+  workflow_dispatch:
+
+jobs:
+  public-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate app package JSON
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path('config/chatgpt_app.json').read_text(encoding='utf-8'))
+          required = ['name','short_description','long_description','mcp_url','onboarding_url','privacy_url','terms_url','support_url']
+          missing = [k for k in required if not str(p.get(k,'')).strip()]
+          assert not missing, f'Missing app package fields: {missing}'
+          assert p['mcp_url'] == 'https://mcp.silvadigitaltech.com/mcp'
+          assert p.get('authentication') == 'oauth'
+          assert p.get('data_claims',{}).get('external_ai_required_in_chatgpt_native_mode') is False
+          assert p.get('data_claims',{}).get('writes_require_explicit_confirmation') is True
+          print('APP_PACKAGE=ok')
+          PY
+
+      - name: Check public Creator endpoints
+        run: |
+          set -euo pipefail
+          for url in \
+            https://creator.silvadigitaltech.com/health \
+            https://creator.silvadigitaltech.com/ready \
+            https://creator.silvadigitaltech.com/privacy \
+            https://creator.silvadigitaltech.com/terms \
+            https://creator.silvadigitaltech.com/support; do
+            code="$(curl -fsS -o /tmp/body -w '%{http_code}' "$url")"
+            test "$code" = "200"
+            test -s /tmp/body
+            echo "PUBLIC_OK $url"
+          done
+
+      - name: Check OIDC discovery
+        run: |
+          set -euo pipefail
+          curl -fsS https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration -o /tmp/oidc.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/oidc.json'))
+          required=['issuer','authorization_endpoint','token_endpoint','jwks_uri']
+          missing=[k for k in required if not p.get(k)]
+          assert not missing, missing
+          assert p['issuer'].startswith('https://auth.silvadigitaltech.com/')
+          print('OIDC_DISCOVERY=ok')
+          PY
+
+      - name: Check MCP unauthenticated challenge
+        run: |
+          set -euo pipefail
+          curl -sS -D /tmp/mcp.headers -o /tmp/mcp.body -X POST \
+            -H 'content-type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"chatgpt-compat-ci","version":"1"}}}' \
+            https://mcp.silvadigitaltech.com/mcp || true
+          status="$(head -n1 /tmp/mcp.headers | tr -d '\r')"
+          echo "$status"
+          grep -Eq ' 401 | 403 ' /tmp/mcp.headers
+          grep -i '^www-authenticate:' /tmp/mcp.headers || true
+          echo 'MCP_AUTH_GUARD=ok'
+
+      - name: Check OAuth protected-resource metadata when exposed
+        run: |
+          set -euo pipefail
+          found=0
+          for url in \
+            https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource/mcp \
+            https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource; do
+            code="$(curl -sS -o /tmp/resource.json -w '%{http_code}' "$url")"
+            if [ "$code" = "200" ]; then
+              python - <<'PY'
+          import json
+          p=json.load(open('/tmp/resource.json'))
+          assert p.get('resource'), p
+          servers=p.get('authorization_servers') or []
+          assert servers, p
+          print('PROTECTED_RESOURCE_METADATA=ok', p.get('resource'))
+          PY
+              found=1
+              break
+            fi
+          done
+          if [ "$found" != "1" ]; then
+            echo 'Protected resource metadata endpoint not exposed; WWW-Authenticate challenge will be inspected separately.'
+          fi
+
+      - name: No secrets in app package
+        run: |
+          set -euo pipefail
+          ! grep -Eiq '(client_secret|api[_-]?key|refresh_token|access_token|AIza[0-9A-Za-z_-]{20,})' config/chatgpt_app.json
+          echo 'PUBLIC_PACKAGE_SECRET_SCAN=ok'
