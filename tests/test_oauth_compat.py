@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from creator_service.oauth_compat import (
     OAuthCompatError,
     normalize_dynamic_client_registration,
     oauth_authorization_server_metadata,
+    register_dynamic_client,
 )
 
 
@@ -53,6 +52,18 @@ def test_dcr_rejects_non_chatgpt_redirect(monkeypatch):
     with pytest.raises(OAuthCompatError) as exc:
         normalize_dynamic_client_registration(payload)
     assert exc.value.error == "invalid_redirect_uri"
+
+
+def test_dcr_facade_returns_approved_public_client_without_secret(monkeypatch):
+    monkeypatch.delenv("YCA_DCR_ALLOWED_REDIRECT_HOSTS", raising=False)
+    monkeypatch.setenv("YCA_CHATGPT_OAUTH_CLIENT_ID", "approved-chatgpt-public-client")
+    result = register_dynamic_client(_payload("openid email offline_access yca:read"))
+    assert result.status_code == 201
+    assert result.payload["client_id"] == "approved-chatgpt-public-client"
+    assert result.payload["scope"] == "email offline_access yca:read"
+    assert result.payload["token_endpoint_auth_method"] == "none"
+    assert "client_secret" not in result.payload
+    assert "registration_access_token" not in result.payload
 
 
 def test_oauth_metadata_routes_registration_through_creator_and_keeps_openid(monkeypatch):
