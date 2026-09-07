@@ -68,9 +68,13 @@ jobs:
           assert not missing_scopes, f'Missing scopes_supported required by ChatGPT: {missing_scopes}; got={sorted(scopes)}'
           assert 'S256' in set(p.get('code_challenge_methods_supported') or [])
           assert 'authorization_code' in set(p.get('grant_types_supported') or [])
+          token_methods=set(p.get('token_endpoint_auth_methods_supported') or [])
+          # ChatGPT can use DCR + PKCE as a public OAuth client; make sure the
+          # authorization server advertises the RFC-compliant public-client method.
+          assert 'none' in token_methods, f"token_endpoint_auth_methods_supported lacks none: {sorted(token_methods)}"
           print('OIDC_DISCOVERY=ok')
           print('SCOPES_SUPPORTED=', ' '.join(sorted(scopes)))
-          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(set(p.get('token_endpoint_auth_methods_supported') or []))))
+          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(token_methods)))
           PY
 
       - name: Check MCP unauthenticated challenge
@@ -100,8 +104,10 @@ jobs:
           assert str(p.get('resource') or '').rstrip('/') == 'https://mcp.silvadigitaltech.com', p
           servers=[str(x).rstrip('/') for x in (p.get('authorization_servers') or [])]
           assert 'https://auth.silvadigitaltech.com/realms/yca' in servers, p
-          assert 'yca:read' in set(p.get('scopes_supported') or []), p
+          scopes=set(p.get('scopes_supported') or [])
+          assert 'yca:read' in scopes, p
           print('PROTECTED_RESOURCE_METADATA=ok')
+          print('RESOURCE_SCOPES=', ' '.join(sorted(scopes)))
           PY
               found=1
               break
@@ -109,15 +115,19 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Mirror ChatGPT DCR with requested Creator scope
+      - name: Mirror ChatGPT DCR public client and authorization start
         run: |
-          set -u
+          set -euo pipefail
           reg="$(python - <<'PY'
           import json
           print(json.load(open('/tmp/oidc.json'))['registration_endpoint'])
           PY
           )"
-          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"yca:read"}'
+
+          # Explicitly request the public-client shape used with Authorization Code
+          # + PKCE. This catches Keycloak registration-policy drift that the UI can
+          # otherwise hide behind ChatGPT's generic "problem connecting" banner.
+          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid offline_access yca:read"}'
           code="$(curl -sS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
             -o /tmp/dcr.json -w '%{http_code}' \
             -H 'content-type: application/json' -H 'accept: application/json' \
@@ -126,15 +136,18 @@ jobs:
           if [ "$code" != "201" ] && [ "$code" != "200" ]; then
             python - <<'PY'
           from pathlib import Path
-          print('DCR_ERROR_PREFIX=', Path('/tmp/dcr.json').read_text(errors='replace')[:1000])
+          print('DCR_ERROR_PREFIX=', Path('/tmp/dcr.json').read_text(errors='replace')[:1200])
           PY
             exit 1
           fi
+
           python - <<'PY'
           import json
           p=json.load(open('/tmp/dcr.json'))
           safe={k:p.get(k) for k in ('client_id','token_endpoint_auth_method','redirect_uris','grant_types','scope')}
           print('DCR_SAFE=', json.dumps(safe, ensure_ascii=False))
+          assert p.get('token_endpoint_auth_method') == 'none', safe
+          assert 'https://chatgpt.com/connector_platform_oauth_redirect' in (p.get('redirect_uris') or []), safe
           PY
 
           cleanup_uri="$(python - <<'PY'
@@ -148,10 +161,8 @@ jobs:
           PY
           )"
 
-          make_url() {
-            local scope="$1"
-            SCOPE_VALUE="$scope" python - <<'PY'
-          import base64, hashlib, json, os, secrets, urllib.parse
+          auth_url="$(python - <<'PY'
+          import base64, hashlib, json, secrets, urllib.parse
           discovery=json.load(open('/tmp/oidc.json'))
           client=json.load(open('/tmp/dcr.json'))
           verifier=secrets.token_urlsafe(48)
@@ -160,38 +171,32 @@ jobs:
               'response_type':'code',
               'client_id':client['client_id'],
               'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
-              'scope':os.environ['SCOPE_VALUE'],
+              'scope':'openid offline_access yca:read',
               'code_challenge':challenge,
               'code_challenge_method':'S256',
+              'resource':'https://mcp.silvadigitaltech.com/',
           }
           print(discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
           PY
-          }
+          )"
 
-          success=0
-          for variant in read read_offline; do
-            case "$variant" in
-              read) scope='openid yca:read' ;;
-              read_offline) scope='openid offline_access yca:read' ;;
-            esac
-            auth_url="$(make_url "$scope")"
-            auth_code="$(curl -sS --max-redirs 0 \
-              -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
-              -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
-              -o "/tmp/auth-$variant.body" -D "/tmp/auth-$variant.headers" \
-              -w '%{http_code}' "$auth_url" || true)"
-            echo "AUTH_VARIANT=$variant HTTP=$auth_code"
-            grep -Ei '^(server|content-type|location):' "/tmp/auth-$variant.headers" | tail -n 8 || true
-            VARIANT="$variant" python - <<'PY'
-          import os
+          auth_code="$(curl -sS --max-redirs 0 \
+            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+            -o /tmp/auth.body -D /tmp/auth.headers \
+            -w '%{http_code}' "$auth_url" || true)"
+          echo "AUTH_HTTP=$auth_code"
+          grep -Ei '^(server|content-type|location):' /tmp/auth.headers | tail -n 8 || true
+          python - <<'PY'
           from pathlib import Path
-          text=Path('/tmp/auth-'+os.environ['VARIANT']+'.body').read_text(errors='replace')
-          print('AUTH_BODY_PREFIX=', ' '.join(text[:1000].split()))
+          text=Path('/tmp/auth.body').read_text(errors='replace')
+          print('AUTH_BODY_PREFIX=', ' '.join(text[:1200].split()))
           PY
-            if [ "$auth_code" = "200" ] && grep -Eiq '(login|username|email|password)' "/tmp/auth-$variant.body"; then
-              success=1
-            fi
-          done
+
+          # A 200 login/consent page means ChatGPT can reach the actual user-facing
+          # authorization flow with the same redirect, scopes, PKCE and resource.
+          test "$auth_code" = "200"
+          grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.body
 
           if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
             cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
@@ -199,7 +204,6 @@ jobs:
             echo "DCR_CLEANUP_HTTP=$cleanup_code"
           fi
 
-          test "$success" = "1"
           echo 'CHATGPT_DCR_AUTH_START=ok'
 
       - name: No secrets in app package
