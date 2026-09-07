@@ -43,11 +43,12 @@ jobs:
           set -Eeuo pipefail
           cd "$HOME/apps/youtube-creator-agent"
           compose="deploy/docker-compose.oracle.yml"
+          expected_client_id="82da41e4-4d89-4ccf-b134-c6a8b01f8453"
           client_id="$(sed -n 's/^YCA_CHATGPT_OAUTH_CLIENT_ID=//p' config/server.env | tail -n1 | tr -d '\r')"
-          test -n "$client_id"
+          test "$client_id" = "$expected_client_id"
 
-          verify_sql="SELECT cs.name || '=' || x.default_scope FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id' AND cs.name IN ('yca:read','yca:write') ORDER BY cs.name;"
-          scope_state="$(docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID" -c "$1"' sh "$verify_sql" | tr -d '\r')"
+          verify_sql="SELECT cs.name || '=' || x.default_scope FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='$expected_client_id' AND cs.name IN ('yca:read','yca:write') ORDER BY cs.name;"
+          scope_state="$(docker compose -f "$compose" exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"' sh "$verify_sql" | tr -d '\r')"
           printf '%s\n' "$scope_state"
           grep -qx 'yca:read=t' <<<"$scope_state"
           grep -qx 'yca:write=t' <<<"$scope_state"
