@@ -1,0 +1,146 @@
+name: Repair Keycloak MCP Audience
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - ".github/workflows/repair-keycloak-mcp-audience.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Add yca-chatgpt as access-token audience for yca:read
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/apps/youtube-creator-agent
+          compose='docker compose -f deploy/docker-compose.oracle.yml'
+
+          echo '[audience] applying idempotent Keycloak mapper repair'
+          result="$($compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL' | tail -n1
+WITH target_scope AS (
+  SELECT cs.id
+  FROM client_scope cs
+  JOIN realm r ON r.id=cs.realm_id
+  WHERE r.name='yca' AND cs.name='yca:read'
+), existing AS (
+  SELECT pm.id
+  FROM protocol_mapper pm
+  JOIN target_scope ts ON ts.id=pm.client_scope_id
+  LEFT JOIN protocol_mapper_config cfg
+    ON cfg.protocol_mapper_id=pm.id
+   AND cfg.name='included.client.audience'
+  WHERE pm.protocol='openid-connect'
+    AND pm.protocol_mapper_name='oidc-audience-mapper'
+    AND cfg.value='yca-chatgpt'
+  LIMIT 1
+), inserted AS (
+  INSERT INTO protocol_mapper (id, name, protocol, protocol_mapper_name, client_id, client_scope_id)
+  SELECT md5(random()::text || clock_timestamp()::text),
+         'YouTube Creator Agent MCP audience',
+         'openid-connect',
+         'oidc-audience-mapper',
+         NULL,
+         ts.id
+  FROM target_scope ts
+  WHERE NOT EXISTS (SELECT 1 FROM existing)
+  RETURNING id
+), mapper AS (
+  SELECT id FROM existing
+  UNION ALL
+  SELECT id FROM inserted
+  LIMIT 1
+), cfg_aud AS (
+  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+  SELECT id, 'included.client.audience', 'yca-chatgpt' FROM mapper
+  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+  RETURNING 1
+), cfg_access AS (
+  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+  SELECT id, 'access.token.claim', 'true' FROM mapper
+  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+  RETURNING 1
+), cfg_intro AS (
+  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+  SELECT id, 'introspection.token.claim', 'true' FROM mapper
+  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+  RETURNING 1
+), cfg_id AS (
+  INSERT INTO protocol_mapper_config (protocol_mapper_id, name, value)
+  SELECT id, 'id.token.claim', 'false' FROM mapper
+  ON CONFLICT (protocol_mapper_id, name) DO UPDATE SET value=EXCLUDED.value
+  RETURNING 1
+)
+SELECT
+  (SELECT count(*) FROM target_scope) || '|' ||
+  (SELECT count(*) FROM inserted) || '|' ||
+  (SELECT count(*) FROM mapper) || '|' ||
+  ((SELECT count(*) FROM cfg_aud)+(SELECT count(*) FROM cfg_access)+(SELECT count(*) FROM cfg_intro)+(SELECT count(*) FROM cfg_id));
+SQL
+          )"
+          echo "[audience] migration result=$result"
+          [[ "$result" =~ ^1\|[01]\|1\|4$ ]]
+
+          echo '[audience] verifying mapper configuration'
+          verify="$($compose exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL' | tail -n1
+SELECT count(*)
+FROM protocol_mapper pm
+JOIN client_scope cs ON cs.id=pm.client_scope_id
+JOIN realm r ON r.id=cs.realm_id
+JOIN protocol_mapper_config aud ON aud.protocol_mapper_id=pm.id AND aud.name='included.client.audience' AND aud.value='yca-chatgpt'
+JOIN protocol_mapper_config atk ON atk.protocol_mapper_id=pm.id AND atk.name='access.token.claim' AND atk.value='true'
+WHERE r.name='yca'
+  AND cs.name='yca:read'
+  AND pm.protocol='openid-connect'
+  AND pm.protocol_mapper_name='oidc-audience-mapper';
+SQL
+          )"
+          test "$verify" = '1'
+
+          echo '[audience] restarting Keycloak to clear cached client-scope metadata'
+          $compose restart keycloak
+          for i in $(seq 1 45); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration || true)"
+            if [[ "$code" == '200' ]]; then
+              echo "[audience] Keycloak ready on attempt $i"
+              break
+            fi
+            if [[ "$i" == '45' ]]; then
+              echo '[audience] Keycloak did not become ready' >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo '[audience] repair complete; new ChatGPT tokens should include yca-chatgpt in aud'
+          REMOTE
