@@ -87,6 +87,12 @@ class _WriteProbeService:
             "requires_explicit_user_confirmation": True,
         }
 
+    def apply_video_metadata_update(self, **_kwargs):
+        raise AssertionError("apply service must not run without explicit confirmation")
+
+    def apply_video_metadata_rollback(self, **_kwargs):
+        raise AssertionError("rollback service must not run without explicit confirmation")
+
 
 def _mcp_env(monkeypatch):
     monkeypatch.setenv("YCA_AUTH_ISSUER_URL", "https://auth.example.test")
@@ -165,8 +171,8 @@ def test_write_tools_are_invokable_but_confirmation_guard_blocks_mutation(monkey
                     },
                 ),
             ):
-                with pytest.raises(Exception, match="Confirmação explícita"):
-                    await client.call_tool(name, args)
+                result = await client.call_tool(name, args)
+                assert result.is_error, f"{name} should be denied before any mutation"
 
     asyncio.run(probe())
 
