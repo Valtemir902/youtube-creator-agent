@@ -35,9 +35,7 @@ jobs:
       - name: Check Creator OAuth compatibility metadata
         run: |
           set -euo pipefail
-          curl -fsS --max-time 20 \
-            https://creator.silvadigitaltech.com/.well-known/oauth-authorization-server \
-            -o /tmp/oauth.json
+          curl -fsS --max-time 20 https://creator.silvadigitaltech.com/.well-known/oauth-authorization-server -o /tmp/oauth.json
           python - <<'PY'
           import json
           p=json.load(open('/tmp/oauth.json'))
@@ -53,7 +51,7 @@ jobs:
           print('CREATOR_OAUTH_METADATA=ok')
           PY
 
-      - name: Check MCP advertises Creator OAuth issuer
+      - name: Check MCP protected resource metadata
         run: |
           set -euo pipefail
           found=0
@@ -78,51 +76,30 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Reproduce exact ChatGPT DCR scope request
+      - name: Reproduce exact ChatGPT DCR request
         run: |
           set -euo pipefail
-          python - <<'PY' >/tmp/dcr-payload.json
-          import json
-          print(json.dumps({
-            'client_name':'ChatGPT exact compatibility probe',
-            'redirect_uris':['https://chatgpt.com/connector_platform_oauth_redirect'],
-            'grant_types':['authorization_code','refresh_token'],
-            'response_types':['code'],
-            'token_endpoint_auth_method':'none',
-            'scope':'openid email offline_access yca:read',
-          }))
-          PY
-          code="$(curl -sS --max-time 20 -o /tmp/dcr.json -w '%{http_code}' \
+          cat >/tmp/dcr-payload.json <<'JSON'
+          {"client_name":"ChatGPT exact compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}
+          JSON
+          code="$(curl -sS --max-time 20 -D /tmp/dcr.headers -o /tmp/dcr.json -w '%{http_code}' \
             -H 'content-type: application/json' -H 'accept: application/json' \
-            --data @/tmp/dcr-payload.json \
-            https://creator.silvadigitaltech.com/oauth/register)"
+            --data @/tmp/dcr-payload.json https://creator.silvadigitaltech.com/oauth/register)"
           echo "CHATGPT_DCR_HTTP=$code"
-          if [ "$code" != "201" ] && [ "$code" != "200" ]; then
-            python - <<'PY'
-          import json
-          try:
-              p=json.load(open('/tmp/dcr.json'))
-          except Exception:
-              print('DCR_ERROR=non_json_response')
-              raise SystemExit(0)
-          safe={k:p.get(k) for k in ('error','error_description','message') if p.get(k)}
-          print('DCR_ERROR='+json.dumps(safe, ensure_ascii=False))
-          PY
-            exit 1
-          fi
+          test "$code" = "201" -o "$code" = "200"
           python - <<'PY'
           import json
           p=json.load(open('/tmp/dcr.json'))
           assert p.get('client_id'), p
+          assert p.get('token_endpoint_auth_method','none')=='none', p
+          assert p.get('redirect_uris') == ['https://chatgpt.com/connector_platform_oauth_redirect'], p
           returned=set(str(p.get('scope') or '').split())
           if returned:
-              assert 'openid' not in returned, returned
               assert {'email','offline_access','yca:read'} <= returned, returned
-          assert p.get('token_endpoint_auth_method','none')=='none', p.get('token_endpoint_auth_method')
           print('CHATGPT_DCR_EXACT_SCOPE=ok')
           PY
 
-      - name: Verify registered client reaches Keycloak login with OIDC scope
+      - name: Verify registered client reaches Keycloak login with PKCE and resource
         run: |
           set -euo pipefail
           auth_url="$(python - <<'PY'
@@ -136,9 +113,10 @@ jobs:
             'client_id':client['client_id'],
             'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
             'scope':'openid email offline_access yca:read',
+            'state':secrets.token_urlsafe(24),
             'code_challenge':challenge,
             'code_challenge_method':'S256',
-            'resource':'https://mcp.silvadigitaltech.com/',
+            'resource':'https://mcp.silvadigitaltech.com/mcp',
           }
           print(meta['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
           PY
@@ -149,31 +127,63 @@ jobs:
             -o /tmp/auth.body -D /tmp/auth.headers -w '%{http_code}' "$auth_url" || true)"
           echo "CHATGPT_AUTH_HTTP=$code"
           test "$code" = "200"
+          if grep -Eqi '(invalid parameter|invalid redirect|client not found|invalid_client)' /tmp/auth.body; then
+            echo 'OAuth authorization endpoint rendered an error' >&2
+            exit 1
+          fi
           grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.body
           echo 'CHATGPT_AUTH_LOGIN=ok'
 
-      - name: Cleanup dynamic probe client
-        if: always()
+      - name: Verify public PKCE client reaches token endpoint
         run: |
+          set -euo pipefail
+          client_id="$(python -c "import json;print(json.load(open('/tmp/dcr.json'))['client_id'])")"
+          code="$(curl -sS --max-time 20 -o /tmp/token.json -w '%{http_code}' \
+            -H 'content-type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=authorization_code' \
+            --data-urlencode 'code=deliberately-invalid-code' \
+            --data-urlencode 'redirect_uri=https://chatgpt.com/connector_platform_oauth_redirect' \
+            --data-urlencode "client_id=$client_id" \
+            --data-urlencode 'code_verifier=deliberately-invalid-verifier-that-is-long-enough-for-a-probe' \
+            https://auth.silvadigitaltech.com/realms/yca/protocol/openid-connect/token || true)"
+          echo "TOKEN_PROBE_HTTP=$code"
+          test "$code" = "400"
           python - <<'PY'
-          import json, pathlib, urllib.request
-          p=pathlib.Path('/tmp/dcr.json')
-          if not p.exists():
-              raise SystemExit(0)
-          try:
-              d=json.loads(p.read_text())
-          except Exception:
-              raise SystemExit(0)
-          uri=d.get('registration_client_uri')
-          token=d.get('registration_access_token')
-          if not uri or not token:
-              raise SystemExit(0)
-          req=urllib.request.Request(uri, method='DELETE', headers={'Authorization':'Bearer '+token})
-          try:
-              with urllib.request.urlopen(req, timeout=15) as r:
-                  print('DCR_CLEANUP_HTTP='+str(r.status))
-          except Exception as exc:
-              print('DCR_CLEANUP_WARNING='+type(exc).__name__)
+          import json
+          p=json.load(open('/tmp/token.json'))
+          assert p.get('error') in {'invalid_grant','invalid_request'}, p
+          print('TOKEN_ENDPOINT=ok expected_error='+p.get('error',''))
+          PY
+
+      - name: Verify MCP unauthenticated OAuth challenge
+        run: |
+          set -euo pipefail
+          cat >/tmp/mcp-init.json <<'JSON'
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"oauth-smoke","version":"1"}}}
+          JSON
+          code="$(curl -sS --max-time 20 -D /tmp/mcp.headers -o /tmp/mcp.body -w '%{http_code}' \
+            -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+            --data @/tmp/mcp-init.json https://mcp.silvadigitaltech.com/mcp || true)"
+          echo "MCP_UNAUTH_HTTP=$code"
+          test "$code" = "401"
+          grep -Eiq '^www-authenticate:.*Bearer' /tmp/mcp.headers
+          grep -Eiq 'resource_metadata=' /tmp/mcp.headers
+          echo 'MCP_CHALLENGE=ok'
+
+      - name: Reject unsafe DCR redirect
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 20 -o /tmp/reject.json -w '%{http_code}' \
+            -H 'content-type: application/json' \
+            --data '{"redirect_uris":["https://evil.example/callback"],"token_endpoint_auth_method":"none"}' \
+            https://creator.silvadigitaltech.com/oauth/register || true)"
+          echo "UNSAFE_DCR_HTTP=$code"
+          test "$code" = "400"
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/reject.json'))
+          assert p.get('error') == 'invalid_redirect_uri', p
+          print('DCR_SECURITY=ok')
           PY
 
       - name: No secrets in app package
