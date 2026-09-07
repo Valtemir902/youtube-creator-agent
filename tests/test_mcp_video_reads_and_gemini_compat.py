@@ -11,8 +11,9 @@ from ai.base import AIProviderError
 from ai.gemini import GeminiProvider
 from ai.types import AIProviderConfig
 from creator_service import cloud_mcp_server as base_mcp
-from creator_service import cloud_mcp_server_advanced as advanced_mcp
-from creator_service.cloud_mcp_server_video import _owned_video_details, create_server
+from creator_service import cloud_mcp_server_management as management_mcp
+from creator_service.cloud_mcp_server_management import create_server
+from creator_service.cloud_mcp_server_video import _owned_video_details
 
 
 class _Execute:
@@ -158,7 +159,7 @@ def test_video_details_restricts_reads_to_connected_channel():
         _owned_video_details(_Service(_Youtube()), "missing")
 
 
-def test_production_mcp_surface_contains_write_tools_and_video_readers(monkeypatch):
+def test_production_mcp_surface_contains_full_management_tools(monkeypatch):
     _mcp_env(monkeypatch)
 
     async def names():
@@ -169,11 +170,24 @@ def test_production_mcp_surface_contains_write_tools_and_video_readers(monkeypat
     tool_names = asyncio.run(names())
     required = {
         "activate_connected_channel",
+        "list_channel_videos",
+        "get_video_details",
+        "get_video_transcript",
         "preview_video_metadata_update",
         "apply_video_metadata_update",
         "apply_video_metadata_rollback",
-        "get_video_details",
-        "get_video_transcript",
+        "preview_video_metadata_update_advanced",
+        "list_video_captions",
+        "preview_caption_upload",
+        "apply_caption_upload",
+        "list_playlists",
+        "get_playlist_details",
+        "preview_playlist_metadata_update",
+        "apply_playlist_metadata_update",
+        "preview_playlist_item_add",
+        "apply_playlist_item_add",
+        "preview_playlist_item_remove",
+        "apply_playlist_item_remove",
     }
     assert required <= tool_names
 
@@ -196,37 +210,23 @@ def test_write_tools_are_invokable_and_confirmation_errors_are_structured(monkey
             "channel": {"id": "channel-2", "active": False},
         },
     )
-    monkeypatch.setattr(advanced_mcp, "_service", lambda: _WriteProbeService())
+    monkeypatch.setattr(management_mcp, "_service", lambda: _WriteProbeService())
 
     async def probe():
         async with Client(create_server(), raise_exceptions=True) as client:
-            preview = await client.call_tool(
-                "preview_video_metadata_update",
-                {"video_id": "video-1"},
-            )
+            preview = await client.call_tool("preview_video_metadata_update", {"video_id": "video-1"})
             assert not preview.is_error
             assert _payload(preview)["success"] is True
 
             for name, args in (
-                (
-                    "activate_connected_channel",
-                    {"channel_id": "channel-2", "user_confirmed": False},
-                ),
+                ("activate_connected_channel", {"channel_id": "channel-2", "user_confirmed": False}),
                 (
                     "apply_video_metadata_update",
-                    {
-                        "approval_payload": {},
-                        "approval_token": "invalid-test-token",
-                        "user_confirmed": False,
-                    },
+                    {"approval_payload": {}, "approval_token": "invalid-test-token", "user_confirmed": False},
                 ),
                 (
                     "apply_video_metadata_rollback",
-                    {
-                        "rollback_payload": {},
-                        "rollback_token": "invalid-test-token",
-                        "user_confirmed": False,
-                    },
+                    {"rollback_payload": {}, "rollback_token": "invalid-test-token", "user_confirmed": False},
                 ),
             ):
                 result = await client.call_tool(name, args)
@@ -303,54 +303,97 @@ def test_activate_connected_channel_missing_is_typed(monkeypatch):
     asyncio.run(probe())
 
 
-class _Response:
-    def __init__(self, payload):
-        self.payload = payload
+class _FakeGeminiModels:
+    def __init__(self, *, compatible: bool = True, timeout: bool = False):
+        self.compatible = compatible
+        self.timeout = timeout
+        self.generated_models: list[str] = []
 
-    def json(self):
-        return self.payload
+    def list(self):
+        models = [
+            SimpleNamespace(
+                name="models/interactions-only",
+                display_name="Interactions only",
+                supported_actions=["interactions"],
+                input_token_limit=1000,
+                output_token_limit=100,
+                description="not generateContent",
+            )
+        ]
+        if self.compatible:
+            models.append(
+                SimpleNamespace(
+                    name="models/gemini-3.5-flash-lite",
+                    display_name="Gemini 3.5 Flash-Lite",
+                    supported_actions=["generateContent"],
+                    input_token_limit=1000000,
+                    output_token_limit=8192,
+                    description="compatible",
+                )
+            )
+        return models
+
+    def generate_content(self, *, model, contents, config):
+        self.generated_models.append(model)
+        if self.timeout:
+            raise TimeoutError("request timed out")
+        return _FakeGeminiResponse("OK")
 
 
-def test_gemini_recovers_from_incompatible_saved_model(monkeypatch):
+class _FakeGeminiResponse:
+    def __init__(self, text: str):
+        self.text = text
+        self.usage_metadata = SimpleNamespace(model_dump=lambda **_kwargs: {"prompt_token_count": 1})
+
+    def model_dump(self, **_kwargs):
+        return {"text": self.text}
+
+
+class _FakeGeminiClient:
+    def __init__(self, **kwargs):
+        self.models = _FakeGeminiModels(**kwargs)
+
+
+def _provider_with_client(client: _FakeGeminiClient) -> GeminiProvider:
     provider = GeminiProvider(
         AIProviderConfig(provider="gemini", api_key="test-key", base_url=None, timeout_seconds=1.0)
     )
-    calls = []
+    provider._client_instance = client
+    return provider
 
-    def fake_request(method, path, **_kwargs):
-        calls.append((method, path))
-        if path == "/models/bad-model:generateContent":
-            raise AIProviderError(
-                "Falha ao comunicar com Gemini. Resposta: model is not supported for generateContent"
-            )
-        if method == "GET" and path == "/models":
-            return _Response(
-                {
-                    "models": [
-                        {
-                            "name": "models/gemini-3.5-flash-lite",
-                            "displayName": "Gemini 3.5 Flash-Lite",
-                            "supportedGenerationMethods": ["generateContent"],
-                        },
-                        {
-                            "name": "models/embedding-model",
-                            "displayName": "Embedding",
-                            "supportedGenerationMethods": ["embedContent"],
-                        },
-                    ]
-                }
-            )
-        if path == "/models/gemini-3.5-flash-lite:generateContent":
-            return _Response(
-                {
-                    "candidates": [{"content": {"parts": [{"text": "OK"}]}}],
-                    "usageMetadata": {"promptTokenCount": 1},
-                }
-            )
-        raise AssertionError((method, path))
 
-    monkeypatch.setattr(provider, "_request", fake_request)
-    response = provider.generate("bad-model", [{"role": "user", "content": "teste"}])
+def test_gemini_valid_generate_content_model_works():
+    client = _FakeGeminiClient()
+    provider = _provider_with_client(client)
+    response = provider.generate(
+        "gemini-3.5-flash-lite",
+        [{"role": "user", "content": "teste"}],
+    )
     assert response.text == "OK"
     assert response.model == "gemini-3.5-flash-lite"
-    assert ("GET", "/models") in calls
+    assert client.models.generated_models == ["gemini-3.5-flash-lite"]
+
+
+def test_gemini_incompatible_saved_model_falls_back_only_to_generate_content_model():
+    client = _FakeGeminiClient()
+    provider = _provider_with_client(client)
+    response = provider.generate(
+        "interactions-only",
+        [{"role": "user", "content": "teste"}],
+    )
+    assert response.text == "OK"
+    assert response.model == "gemini-3.5-flash-lite"
+    assert client.models.generated_models == ["gemini-3.5-flash-lite"]
+    assert all(model.id != "interactions-only" for model in provider.list_models())
+
+
+def test_gemini_rejects_when_no_generate_content_model_exists():
+    provider = _provider_with_client(_FakeGeminiClient(compatible=False))
+    with pytest.raises(AIProviderError, match="Nenhum modelo Gemini compatível"):
+        provider.generate("interactions-only", [{"role": "user", "content": "teste"}])
+
+
+def test_gemini_timeout_is_useful_error():
+    provider = _provider_with_client(_FakeGeminiClient(timeout=True))
+    with pytest.raises(AIProviderError, match="Timeout"):
+        provider.generate("gemini-3.5-flash-lite", [{"role": "user", "content": "teste"}])
