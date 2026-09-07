@@ -31,7 +31,7 @@ jobs:
           PY
           )"
 
-          payload='{"client_name":"ChatGPT offline compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"openid offline_access yca:read"}'
+          payload='{"client_name":"ChatGPT offline compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"offline_access yca:read"}'
           dcr_code="$(curl -sS \
             -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
             -H 'content-type: application/json' \
