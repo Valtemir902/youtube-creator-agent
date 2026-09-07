@@ -6,7 +6,6 @@ import secrets
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 
 def _utc_now() -> str:
@@ -34,14 +33,15 @@ class APIKeyRecord:
     last_error_at: str = ""
     last_success_at: str = ""
     last_model: str = ""
+    preferred_model: str = ""
 
 
 class APIKeyPoolStore:
-    """Non-secret metadata for API key pools.
+    """Non-secret metadata for tenant-scoped API key pools.
 
-    Secrets remain in the injected CredentialStore/keyring. This JSON only keeps
-    opaque key ids, masked display fragments and health state so the UI can show
-    which credential failed without exposing the credential itself.
+    Secret values never live here. Cloud deployments keep each key encrypted in
+    TenantCredentialStore while this file stores only display-safe metadata,
+    health state, active selection and rotation preferences.
     """
 
     def __init__(self, path: str | Path):
@@ -49,18 +49,19 @@ class APIKeyPoolStore:
 
     def _load(self) -> dict:
         if not self.path.exists():
-            return {"version": 1, "providers": {}}
+            return {"version": 2, "providers": {}}
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {"version": 1, "providers": {}}
+            return {"version": 2, "providers": {}}
         if not isinstance(payload, dict):
-            return {"version": 1, "providers": {}}
-        payload.setdefault("version", 1)
+            return {"version": 2, "providers": {}}
+        payload.setdefault("version", 2)
         payload.setdefault("providers", {})
         return payload
 
     def _save(self, payload: dict) -> None:
+        payload["version"] = 2
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         temporary.write_text(
@@ -93,8 +94,12 @@ class APIKeyPoolStore:
         bucket = self._bucket(payload, provider)
         records: list[APIKeyRecord] = []
         for raw in bucket.get("keys", []):
+            if not isinstance(raw, dict):
+                continue
+            normalized = dict(raw)
+            normalized.setdefault("preferred_model", "")
             try:
-                records.append(APIKeyRecord(**raw))
+                records.append(APIKeyRecord(**normalized))
             except TypeError:
                 continue
         return records
@@ -157,15 +162,23 @@ class APIKeyPoolStore:
     def set_enabled(self, provider: str, key_id: str, enabled: bool) -> None:
         self._patch(provider, key_id, enabled=bool(enabled))
 
+    def set_label(self, provider: str, key_id: str, label: str) -> None:
+        clean = " ".join((label or "").split())[:80]
+        self._patch(provider, key_id, label=clean)
+
+    def set_preferred_model(self, provider: str, key_id: str, model: str) -> None:
+        self._patch(provider, key_id, preferred_model=" ".join((model or "").split())[:200])
+
     def mark_success(self, provider: str, key_id: str, model: str = "") -> None:
-        self._patch(
-            provider,
-            key_id,
-            status="ok",
-            last_error="",
-            last_success_at=_utc_now(),
-            last_model=(model or "")[:200],
-        )
+        changes = {
+            "status": "ok",
+            "last_error": "",
+            "last_success_at": _utc_now(),
+            "last_model": (model or "")[:200],
+        }
+        if model:
+            changes["preferred_model"] = (model or "")[:200]
+        self._patch(provider, key_id, **changes)
 
     def mark_failure(self, provider: str, key_id: str, error: str, *, warning: bool, model: str = "") -> None:
         self._patch(
