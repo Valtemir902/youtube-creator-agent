@@ -51,22 +51,11 @@ def _segment_seconds(segment) -> tuple[float, float]:
         start = float(getattr(segment, "start", 0.0) or 0.0)
         end = float(getattr(segment, "end", start) or start)
         return max(0.0, start), max(start, end)
-    t0 = float(getattr(segment, "t0", 0.0) or 0.0) / 100.0
-    t1 = float(getattr(segment, "t1", t0 * 100.0) or (t0 * 100.0)) / 100.0
-    return max(0.0, t0), max(t0, t1)
-
-
-@lru_cache(maxsize=2)
-def _model(model_name: str, threads: int):
-    from pywhispercpp.model import Model
-
-    return Model(
-        model_name,
-        n_threads=threads,
-        print_progress=False,
-        print_realtime=False,
-        print_timestamps=False,
-    )
+    t0_raw = float(getattr(segment, "t0", 0.0) or 0.0)
+    t1_raw = float(getattr(segment, "t1", t0_raw) or t0_raw)
+    start = t0_raw / 100.0
+    end = t1_raw / 100.0
+    return max(0.0, start), max(start, end)
 
 
 class WhisperCppTranscriber:
