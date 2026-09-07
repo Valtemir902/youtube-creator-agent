@@ -3,104 +3,135 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import requests
-
 from .base import AIProvider, AIProviderError
 from .types import AIModel, AIResponse, Messages
 
 
 class GeminiProvider(AIProvider):
+    """Gemini provider using Google's supported ``google-genai`` SDK.
+
+    The backend remains optional. ChatGPT-native Creator Agent flows never need
+    this provider; it is only instantiated for explicitly configured Gemini
+    operations in the standalone/dashboard surface.
+    """
+
     provider_name = "gemini"
-    DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+    DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com"
 
     def __init__(self, config):
         super().__init__(config)
-        self.base_url = (config.base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        self._client_instance = None
+        self._compatible_models: list[AIModel] | None = None
 
-    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+    def _client(self):
+        if self._client_instance is not None:
+            return self._client_instance
         if not self.config.api_key:
             raise AIProviderError("Chave API ausente para Gemini.")
-        params = dict(kwargs.pop("params", {}) or {})
-        params["key"] = self.config.api_key
-        try:
-            response = requests.request(
-                method,
-                f"{self.base_url}{path}",
-                params=params,
-                timeout=self.config.timeout_seconds,
-                **kwargs,
+        custom = str(self.config.base_url or "").strip().rstrip("/")
+        if custom and custom not in {
+            self.DEFAULT_BASE_URL,
+            f"{self.DEFAULT_BASE_URL}/v1beta",
+            f"{self.DEFAULT_BASE_URL}/v1",
+        }:
+            raise AIProviderError(
+                "Base URL personalizada do Gemini não é suportada neste modo. Use o endpoint oficial do Gemini API."
             )
-            response.raise_for_status()
-            return response
-        except requests.RequestException as exc:
-            detail = ""
-            if getattr(exc, "response", None) is not None:
-                detail = f" Resposta: {exc.response.text[:1000]}"
-            raise AIProviderError(f"Falha ao comunicar com Gemini.{detail}") from exc
+        try:
+            from google import genai
+            from google.genai import types
+
+            timeout_ms = max(1_000, min(300_000, int(float(self.config.timeout_seconds) * 1000)))
+            http_options = types.HttpOptions(
+                timeout=timeout_ms,
+                retry_options=types.HttpRetryOptions(
+                    attempts=3,
+                    initial_delay=0.5,
+                    max_delay=4.0,
+                    exp_base=2.0,
+                    jitter=0.2,
+                    http_status_codes=[429, 500, 502, 503, 504],
+                ),
+            )
+            self._client_instance = genai.Client(api_key=self.config.api_key, http_options=http_options)
+            return self._client_instance
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise AIProviderError(f"Falha ao inicializar o cliente oficial do Gemini: {exc}") from exc
+
+    @staticmethod
+    def _model_id(value: str) -> str:
+        return str(value or "").strip().removeprefix("models/")
 
     def list_models(self) -> list[AIModel]:
-        models: list[AIModel] = []
-        page_token = None
-        while True:
-            params = {"pageSize": 1000}
-            if page_token:
-                params["pageToken"] = page_token
-            payload = self._request("GET", "/models", params=params).json()
-            for item in payload.get("models", []):
-                raw_name = item.get("name", "")
-                model_id = raw_name.removeprefix("models/")
-                supported = tuple(item.get("supportedGenerationMethods") or ())
+        if self._compatible_models is not None:
+            return list(self._compatible_models)
+        try:
+            models: list[AIModel] = []
+            for item in self._client().models.list():
+                model_id = self._model_id(getattr(item, "name", ""))
+                supported = tuple(getattr(item, "supported_actions", None) or ())
                 if not model_id or "generateContent" not in supported:
                     continue
                 models.append(
                     AIModel(
                         id=model_id,
-                        name=item.get("displayName") or model_id,
+                        name=str(getattr(item, "display_name", None) or model_id),
                         provider=self.provider_name,
                         capabilities=supported,
-                        context_window=item.get("inputTokenLimit"),
+                        context_window=getattr(item, "input_token_limit", None),
                         metadata={
-                            "output_token_limit": item.get("outputTokenLimit"),
-                            "description": item.get("description"),
+                            "output_token_limit": getattr(item, "output_token_limit", None),
+                            "description": getattr(item, "description", None),
                         },
                     )
                 )
-            page_token = payload.get("nextPageToken")
-            if not page_token:
-                break
-        return sorted(models, key=lambda model: model.name.lower())
+            self._compatible_models = sorted(models, key=lambda model: model.name.casefold())
+            return list(self._compatible_models)
+        except AIProviderError:
+            raise
+        except Exception as exc:
+            raise self._provider_error("listar modelos", exc) from exc
 
     @staticmethod
-    def _convert_messages(messages: Messages) -> tuple[str | None, list[dict[str, Any]]]:
-        system_parts = []
+    def _convert_messages(messages: Messages):
+        try:
+            from google.genai import types
+        except Exception as exc:
+            raise AIProviderError("O pacote google-genai não está disponível no servidor.") from exc
+
+        system_parts: list[str] = []
         contents = []
         for message in messages:
-            role = message.get("role", "user")
-            text = message.get("content", "")
+            role = str(message.get("role", "user"))
+            text = str(message.get("content", ""))
             if role == "system":
-                system_parts.append(text)
+                if text.strip():
+                    system_parts.append(text)
                 continue
             contents.append(
-                {
-                    "role": "model" if role == "assistant" else "user",
-                    "parts": [{"text": text}],
-                }
+                types.Content(
+                    role="model" if role == "assistant" else "user",
+                    parts=[types.Part.from_text(text=text)],
+                )
             )
         return "\n\n".join(system_parts) or None, contents
 
     @staticmethod
     def _is_model_compatibility_error(exc: Exception) -> bool:
         text = " ".join(str(exc).lower().split())
-        signals = (
-            "not found for api version",
-            "not supported for generatecontent",
-            "method is not supported",
-            "unsupported model",
-            "only supports interactions api",
-            "does not support generatecontent",
-            "model is not supported",
+        return any(
+            signal in text
+            for signal in (
+                "only supports interactions api",
+                "not supported for generatecontent",
+                "does not support generatecontent",
+                "method is not supported",
+                "unsupported model",
+                "model is not supported",
+            )
         )
-        return any(signal in text for signal in signals)
 
     @staticmethod
     def _model_rank(model_id: str, requested: str) -> tuple[int, int, int, int, str]:
@@ -117,11 +148,41 @@ class GeminiProvider(AIProvider):
         minor = int(match.group(2) or 0) if match else 0
         return family, stable, major, minor, value
 
-    def _fallback_generate_content_model(self, requested: str) -> str | None:
-        candidates = [model.id for model in self.list_models() if model.id != requested]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda model_id: self._model_rank(model_id, requested))
+    def _resolve_generate_content_model(self, requested: str) -> str:
+        requested = self._model_id(requested)
+        if not requested:
+            raise AIProviderError("Modelo Gemini ausente.")
+        compatible = [model.id for model in self.list_models()]
+        if requested in compatible:
+            return requested
+        if not compatible:
+            raise AIProviderError("Nenhum modelo Gemini compatível com generateContent está disponível para esta chave.")
+        fallback = max(compatible, key=lambda model_id: self._model_rank(model_id, requested))
+        return fallback
+
+    @staticmethod
+    def _provider_error(operation: str, exc: Exception) -> AIProviderError:
+        text = " ".join(str(exc).strip().split())
+        lowered = text.casefold()
+        if "timeout" in lowered or "timed out" in lowered:
+            return AIProviderError(f"Timeout ao {operation} no Gemini.")
+        if GeminiProvider._is_model_compatibility_error(exc):
+            return AIProviderError(f"Modelo Gemini incompatível com generateContent durante {operation}.")
+        return AIProviderError(f"Falha ao {operation} no Gemini. {text[:800]}".strip())
+
+    @staticmethod
+    def _plain(value: Any) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        dump = getattr(value, "model_dump", None)
+        if callable(dump):
+            try:
+                return dict(dump(mode="json", exclude_none=True))
+            except TypeError:
+                return dict(dump(exclude_none=True))
+        return {}
 
     def generate(
         self,
@@ -133,58 +194,58 @@ class GeminiProvider(AIProvider):
         response_format: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AIResponse:
+        try:
+            from google.genai import types
+        except Exception as exc:
+            raise AIProviderError("O pacote google-genai não está disponível no servidor.") from exc
+
+        selected_model = self._resolve_generate_content_model(model)
         system_instruction, contents = self._convert_messages(messages)
-        generation_config: dict[str, Any] = {"temperature": temperature}
+        config_kwargs: dict[str, Any] = {"temperature": temperature}
         if max_output_tokens is not None:
-            generation_config["maxOutputTokens"] = max_output_tokens
+            config_kwargs["max_output_tokens"] = max_output_tokens
         if response_format == "json":
-            generation_config["responseMimeType"] = "application/json"
-
-        body: dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": generation_config,
-        }
+            config_kwargs["response_mime_type"] = "application/json"
         if system_instruction:
-            body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
-
-        selected_model = str(model or "").strip()
-        if not selected_model:
-            raise AIProviderError("Modelo Gemini ausente.")
+            config_kwargs["system_instruction"] = system_instruction
 
         try:
-            payload = self._request(
-                "POST",
-                f"/models/{selected_model}:generateContent",
-                json=body,
-                headers={"Content-Type": "application/json"},
-            ).json()
-        except AIProviderError as exc:
-            if not self._is_model_compatibility_error(exc):
-                raise
-            fallback = self._fallback_generate_content_model(selected_model)
-            if not fallback:
-                raise AIProviderError(
-                    f"O modelo Gemini '{selected_model}' é incompatível com generateContent e nenhuma alternativa compatível foi encontrada."
-                ) from exc
-            selected_model = fallback
-            payload = self._request(
-                "POST",
-                f"/models/{selected_model}:generateContent",
-                json=body,
-                headers={"Content-Type": "application/json"},
-            ).json()
+            response = self._client().models.generate_content(
+                model=selected_model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+        except Exception as exc:
+            # Model compatibility is resolved before inference. If Google still
+            # changes the model surface between list and generate, invalidate the
+            # cache once and retry with the best currently compatible model.
+            if self._is_model_compatibility_error(exc):
+                self._compatible_models = None
+                retry_model = self._resolve_generate_content_model(selected_model)
+                if retry_model != selected_model:
+                    try:
+                        response = self._client().models.generate_content(
+                            model=retry_model,
+                            contents=contents,
+                            config=types.GenerateContentConfig(**config_kwargs),
+                        )
+                        selected_model = retry_model
+                    except Exception as retry_exc:
+                        raise self._provider_error("gerar conteúdo", retry_exc) from retry_exc
+                else:
+                    raise self._provider_error("gerar conteúdo", exc) from exc
+            else:
+                raise self._provider_error("gerar conteúdo", exc) from exc
 
-        candidates = payload.get("candidates") or []
-        if not candidates:
-            raise AIProviderError("Gemini não retornou nenhum candidato de resposta.")
-        parts = ((candidates[0].get("content") or {}).get("parts") or [])
-        text = "\n".join(part.get("text", "") for part in parts if part.get("text"))
+        text = str(getattr(response, "text", "") or "").strip()
         if not text:
             raise AIProviderError("Gemini retornou uma resposta sem texto utilizável.")
+        usage = self._plain(getattr(response, "usage_metadata", None))
+        raw = self._plain(response)
         return AIResponse(
             text=text,
             model=selected_model,
             provider=self.provider_name,
-            usage=payload.get("usageMetadata") or {},
-            raw=payload,
+            usage=usage,
+            raw=raw,
         )
