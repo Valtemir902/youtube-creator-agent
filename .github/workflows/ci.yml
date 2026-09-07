@@ -52,6 +52,8 @@ jobs:
               Path("src/creator_service/web/login.html"),
               Path("src/creator_service/web/dashboard.html"),
               Path("src/creator_service/web/onboarding.html"),
+              Path("src/creator_service/web/handoff.html"),
+              Path("src/creator_service/web/handoff_widget.html"),
           ]
           out = Path(".ci-js")
           out.mkdir(exist_ok=True)
@@ -109,10 +111,10 @@ jobs:
           from pathlib import Path
           from mcp import Client
           import creator_service.mcp_server as local_server
-          from creator_service.cloud_mcp_server_management import create_server
+          from creator_service.cloud_mcp_server_responsible import HANDOFF_UI_URI, create_server
 
           root = Path("cloud_mcp_server.py").read_text(encoding="utf-8")
-          assert "creator_service.cloud_mcp_server_management import run" in root
+          assert "creator_service.cloud_mcp_server_responsible import run" in root
 
           LOCAL_EXPECTED = {
               "creator_status",
@@ -158,6 +160,7 @@ jobs:
               "preview_playlist_item_remove",
               "apply_playlist_item_remove",
               "apply_playlist_item_remove_rollback",
+              "render_video_metadata_handoff",
           }
 
           CLOUD_FORBIDDEN = {
@@ -169,6 +172,7 @@ jobs:
               "creator_status", "get_creator_capabilities", "list_connected_channels",
               "get_channel_profile", "get_strategy_evidence", "list_channel_videos",
               "get_video_details", "get_video_transcript", "list_playlists", "get_playlist_details",
+              "render_video_metadata_handoff",
           }
           READ_OPEN = {
               "validate_keyword_candidates", "list_video_categories", "list_video_captions",
@@ -197,22 +201,24 @@ jobs:
           async def names_for(server):
               async with Client(server, raise_exceptions=True) as client:
                   result = await client.list_tools()
+                  resources = await client.list_resources()
                   for tool in result.tools:
                       schema = tool.input_schema
                       assert schema.get("type") == "object"
-                  return result.tools, {tool.name for tool in result.tools}
+                  return result.tools, {tool.name for tool in result.tools}, resources.resources
 
           async def main():
-              _, local_names = await names_for(local_server.mcp)
+              _, local_names, _ = await names_for(local_server.mcp)
               assert LOCAL_EXPECTED <= local_names
 
-              cloud_tools, cloud_names = await names_for(create_server())
+              cloud_tools, cloud_names, resources = await names_for(create_server())
               missing = CLOUD_EXPECTED - cloud_names
               assert not missing, f"Production MCP missing tools: {sorted(missing)}"
               assert not (CLOUD_FORBIDDEN & cloud_names), (
                   "Cloud MCP must not expose tools that invoke backend LLM strategy: "
                   f"{sorted(CLOUD_FORBIDDEN & cloud_names)}"
               )
+              assert any(str(resource.uri) == HANDOFF_UI_URI for resource in resources), "Handoff UI resource missing"
               assert set(EXPECTED_HINTS) <= cloud_names
               for tool in cloud_tools:
                   assert "tenant_id" not in tool.input_schema.get("properties", {}), (
@@ -232,6 +238,10 @@ jobs:
                           hints["destructiveHint"],
                       )
                       assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
+                  if tool.name == "render_video_metadata_handoff":
+                      meta = tool.meta or {}
+                      assert (meta.get("ui") or {}).get("resourceUri") == HANDOFF_UI_URI
+                      assert meta.get("openai/outputTemplate") == HANDOFF_UI_URI
               print("Unified production ChatGPT-native MCP: OK", sorted(cloud_names))
 
           asyncio.run(main())
