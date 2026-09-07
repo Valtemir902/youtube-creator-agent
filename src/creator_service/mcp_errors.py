@@ -32,13 +32,17 @@ ERROR_MESSAGES: dict[str, str] = {
     "write_scope_missing": "The authenticated session does not have yca:write permission.",
     "read_scope_missing": "The authenticated session does not have yca:read permission.",
     "channel_not_found": "The requested channel is not connected to this account.",
+    "channel_already_active": "The requested channel is already active.",
     "video_not_found": "The requested video was not found.",
     "video_not_owned": "The requested video does not belong to the authorized channel.",
+    "playlist_not_found": "The requested playlist was not found.",
+    "playlist_not_owned": "The requested playlist does not belong to the authorized channel.",
+    "caption_not_owned": "The requested caption does not belong to the authorized video/channel.",
     "approval_expired": "The approval token has expired.",
     "approval_invalid": "The approval token is invalid.",
     "payload_mismatch": "The payload does not match the signed approval.",
     "approval_replayed": "This approval token has already been used.",
-    "external_change_detected": "The video changed after the preview; a new preview is required.",
+    "external_change_detected": "The protected YouTube resource changed after preview; a new preview is required.",
     "recent_edit_protected": "This video is protected against another recent edit.",
     "youtube_api_error": "YouTube rejected or could not complete the requested operation.",
     "caption_not_available": "No usable caption track is available for this video.",
@@ -89,6 +93,12 @@ def classify_exception(exc: BaseException) -> CreatorToolError:
         return tool_error("external_change_detected")
     if "proteção de memória ativa" in text or "recently edited" in text:
         return tool_error("recent_edit_protected")
+    if "playlist" in text and ("não pertence" in text or "does not belong" in text):
+        return tool_error("playlist_not_owned")
+    if "playlist" in text and ("não encontr" in text or "not found" in text):
+        return tool_error("playlist_not_found")
+    if "caption" in text and ("does not belong" in text or "não pertence" in text):
+        return tool_error("caption_not_owned")
     if "não pertence" in text or "does not belong" in text:
         return tool_error("video_not_owned")
     if "vídeo não encontrado" in text or "video not found" in text:
