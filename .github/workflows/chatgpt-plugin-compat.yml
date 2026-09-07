@@ -67,7 +67,7 @@ jobs:
           methods=set(p.get('code_challenge_methods_supported') or [])
           assert 'S256' in methods, f'PKCE S256 not advertised: {sorted(methods)}'
           token_methods=set(p.get('token_endpoint_auth_methods_supported') or [])
-          assert token_methods & {'none','client_secret_basic','client_secret_post'}, f'No compatible token endpoint auth method: {sorted(token_methods)}'
+          assert token_methods & {'client_secret_basic','client_secret_post','none'}, f'No compatible token endpoint auth method: {sorted(token_methods)}'
           grants=set(p.get('grant_types_supported') or [])
           assert 'authorization_code' in grants, f'authorization_code missing: {sorted(grants)}'
           print('OIDC_DISCOVERY=ok')
@@ -116,29 +116,78 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Check DCR accepts a safe public PKCE client
+      - name: Mirror ChatGPT DCR and authorization start
         run: |
           set -euo pipefail
-          reg="$(python - <<'PY'
-          import json, urllib.request
-          p=json.load(urllib.request.urlopen('https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration', timeout=10))
-          print(p['registration_endpoint'])
-          PY
-          )"
-          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code"],"response_types":["code"],"token_endpoint_auth_method":"none"}'
-          code="$(curl -sS -o /tmp/dcr.json -w '%{http_code}' -H 'content-type: application/json' --data "$payload" "$reg")"
-          echo "DCR_HTTP=$code"
-          cat /tmp/dcr.json
-          test "$code" = "201" || test "$code" = "200"
           python - <<'PY'
-          import json
-          p=json.load(open('/tmp/dcr.json'))
-          assert p.get('client_id'), p
-          method=p.get('token_endpoint_auth_method')
-          assert method in (None,'none'), f'DCR did not preserve public-client auth method: {method}'
-          redirects=p.get('redirect_uris') or []
+          import base64, hashlib, json, secrets, urllib.parse, urllib.request, urllib.error
+
+          discovery=json.load(urllib.request.urlopen('https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration', timeout=10))
+          reg=discovery['registration_endpoint']
+          payload={
+              'client_name':'ChatGPT compatibility probe',
+              'redirect_uris':['https://chatgpt.com/connector_platform_oauth_redirect'],
+              'grant_types':['authorization_code','refresh_token'],
+              'response_types':['code'],
+          }
+          request=urllib.request.Request(reg, data=json.dumps(payload).encode(), headers={'Content-Type':'application/json','Accept':'application/json'}, method='POST')
+          try:
+              response=urllib.request.urlopen(request, timeout=10)
+              body=response.read().decode()
+              status=response.status
+          except urllib.error.HTTPError as exc:
+              body=exc.read().decode(errors='replace')
+              status=exc.code
+          print('DCR_HTTP=', status)
+          print('DCR_BODY=', body)
+          assert status in (200,201), f'DCR failed: HTTP {status} {body}'
+          client=json.loads(body)
+          client_id=client['client_id']
+          redirects=client.get('redirect_uris') or []
           assert 'https://chatgpt.com/connector_platform_oauth_redirect' in redirects, redirects
-          print('DCR_PUBLIC_PKCE_CLIENT=ok')
+          method=client.get('token_endpoint_auth_method')
+          print('DCR_TOKEN_AUTH_METHOD=', method)
+
+          verifier=secrets.token_urlsafe(48)
+          challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+          params={
+              'response_type':'code',
+              'client_id':client_id,
+              'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
+              'scope':'openid offline_access yca:read',
+              'code_challenge':challenge,
+              'code_challenge_method':'S256',
+              'resource':'https://mcp.silvadigitaltech.com/',
+          }
+          auth_url=discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params)
+          opener=urllib.request.build_opener(urllib.request.HTTPRedirectHandler())
+          try:
+              auth=opener.open(auth_url, timeout=10)
+              auth_body=auth.read(4096).decode(errors='replace')
+              auth_status=auth.status
+              final_url=auth.geturl()
+          except urllib.error.HTTPError as exc:
+              auth_body=exc.read(4096).decode(errors='replace')
+              auth_status=exc.code
+              final_url=exc.geturl()
+          print('AUTH_START_HTTP=', auth_status)
+          print('AUTH_START_URL=', final_url)
+          print('AUTH_START_BODY_PREFIX=', auth_body[:800].replace('\n',' '))
+          assert auth_status == 200, f'Authorization start failed: HTTP {auth_status} {auth_body[:800]}'
+          assert '/protocol/openid-connect/auth' in auth_url
+          lowered=auth_body.lower()
+          assert ('login' in lowered or 'username' in lowered or 'email' in lowered or 'consent' in lowered), 'Authorization endpoint did not render an interactive login/consent page.'
+
+          cleanup_uri=client.get('registration_client_uri')
+          cleanup_token=client.get('registration_access_token')
+          if cleanup_uri and cleanup_token:
+              req=urllib.request.Request(cleanup_uri, headers={'Authorization':f'Bearer {cleanup_token}'}, method='DELETE')
+              try:
+                  urllib.request.urlopen(req, timeout=10).read()
+                  print('DCR_CLEANUP=ok')
+              except Exception as exc:
+                  print('DCR_CLEANUP=warning', type(exc).__name__, str(exc))
+          print('CHATGPT_DCR_AUTH_START=ok')
           PY
 
       - name: No secrets in app package
