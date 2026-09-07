@@ -1,0 +1,103 @@
+name: OAuth Edge Diagnostic
+
+on:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - ".github/workflows/oauth-edge-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Public DCR probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >/tmp/payload.json <<'JSON'
+          {"client_name":"ChatGPT edge diagnostic","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}
+          JSON
+          for ua in \
+            'curl/8.0' \
+            'Mozilla/5.0 ChatGPT-OAuth-Compatibility-Probe/1.0' \
+            'OpenAI-ChatGPT-Connector/1.0'; do
+            echo "=== UA: $ua"
+            code="$(curl -sS --max-time 20 -A "$ua" -D /tmp/h -o /tmp/b -w '%{http_code}' \
+              -H 'content-type: application/json' -H 'accept: application/json' \
+              --data @/tmp/payload.json https://creator.silvadigitaltech.com/oauth/register || true)"
+            echo "HTTP=$code"
+            grep -Eai '^(server|cf-ray|content-type|location|x-request-id):' /tmp/h || true
+            python - <<'PY'
+          from pathlib import Path
+          body=Path('/tmp/b').read_text(errors='replace') if Path('/tmp/b').exists() else ''
+          print('BODY_PREFIX='+body[:800].replace('\n',' '))
+          PY
+          done
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Probe app directly inside onboarding container
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/apps/youtube-creator-agent
+          docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding python - <<'PY'
+          import json, urllib.request, urllib.error
+          payload={
+            "client_name":"ChatGPT internal diagnostic",
+            "redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],
+            "grant_types":["authorization_code","refresh_token"],
+            "response_types":["code"],
+            "token_endpoint_auth_method":"none",
+            "scope":"openid email offline_access yca:read",
+          }
+          req=urllib.request.Request('http://127.0.0.1:8080/oauth/register', data=json.dumps(payload).encode(), headers={'content-type':'application/json','accept':'application/json'}, method='POST')
+          try:
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  body=r.read().decode('utf-8','replace')
+                  print('INTERNAL_HTTP='+str(r.status))
+                  print('INTERNAL_BODY_PREFIX='+body[:800].replace('\n',' '))
+          except urllib.error.HTTPError as e:
+              body=e.read().decode('utf-8','replace')
+              print('INTERNAL_HTTP='+str(e.code))
+              print('INTERNAL_BODY_PREFIX='+body[:800].replace('\n',' '))
+          PY
+          REMOTE
+
+      - name: Probe public endpoint from VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          payload='{"client_name":"ChatGPT VPS diagnostic","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}'
+          code="$(curl -sS --max-time 20 -D /tmp/h -o /tmp/b -w '%{http_code}' -H 'content-type: application/json' -H 'accept: application/json' --data "$payload" https://creator.silvadigitaltech.com/oauth/register || true)"
+          echo "VPS_PUBLIC_HTTP=$code"
+          grep -Eai '^(server|cf-ray|content-type|location|x-request-id):' /tmp/h || true
+          head -c 800 /tmp/b | tr '\n' ' '; echo
+          REMOTE
