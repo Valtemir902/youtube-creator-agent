@@ -68,12 +68,9 @@ jobs:
           assert not missing_scopes, f'Missing scopes_supported required by ChatGPT: {missing_scopes}; got={sorted(scopes)}'
           assert 'S256' in set(p.get('code_challenge_methods_supported') or [])
           assert 'authorization_code' in set(p.get('grant_types_supported') or [])
-          token_methods=set(p.get('token_endpoint_auth_methods_supported') or [])
           print('OIDC_DISCOVERY=ok')
           print('SCOPES_SUPPORTED=', ' '.join(sorted(scopes)))
-          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(token_methods)))
-          if 'none' not in token_methods:
-              print('OIDC_NOTE=discovery omits token_endpoint_auth_method none; probing DCR explicitly')
+          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(set(p.get('token_endpoint_auth_methods_supported') or []))))
           PY
 
       - name: Check MCP unauthenticated challenge
@@ -114,7 +111,7 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Mirror ChatGPT DCR public client and authorization start
+      - name: Mirror ChatGPT DCR then request offline access
         run: |
           set -euo pipefail
           reg="$(python - <<'PY'
@@ -123,7 +120,11 @@ jobs:
           PY
           )"
 
-          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid offline_access yca:read"}'
+          # Match the registration shape already proven to work with ChatGPT/Keycloak:
+          # register only the Creator read scope, then request OIDC + offline_access
+          # during authorization. This exposes whether the dynamically-created client
+          # received offline_access as an optional client scope.
+          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"yca:read"}'
           code="$(curl -sS -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
             -o /tmp/dcr.json -w '%{http_code}' \
             -H 'content-type: application/json' -H 'accept: application/json' \
@@ -142,7 +143,6 @@ jobs:
           p=json.load(open('/tmp/dcr.json'))
           safe={k:p.get(k) for k in ('client_id','token_endpoint_auth_method','redirect_uris','grant_types','scope')}
           print('DCR_SAFE=', json.dumps(safe, ensure_ascii=False))
-          assert p.get('token_endpoint_auth_method') == 'none', safe
           assert 'https://chatgpt.com/connector_platform_oauth_redirect' in (p.get('redirect_uris') or []), safe
           PY
 
@@ -189,16 +189,18 @@ jobs:
           print('AUTH_BODY_PREFIX=', ' '.join(text[:1200].split()))
           PY
 
-          test "$auth_code" = "200"
-          grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.body
-
           if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
             cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
               -H "Authorization: Bearer $cleanup_token" "$cleanup_uri" || true)"
             echo "DCR_CLEANUP_HTTP=$cleanup_code"
           fi
 
-          echo 'CHATGPT_DCR_AUTH_START=ok'
+          if [ "$auth_code" != "200" ]; then
+            echo 'CHATGPT_OFFLINE_AUTH=failed'
+            exit 1
+          fi
+          grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.body
+          echo 'CHATGPT_OFFLINE_AUTH=ok'
 
       - name: No secrets in app package
         run: |
