@@ -55,7 +55,7 @@ def test_dcr_rejects_non_chatgpt_redirect(monkeypatch):
     assert exc.value.error == "invalid_redirect_uri"
 
 
-def test_oauth_metadata_is_plain_oauth_and_uses_keycloak_endpoints(monkeypatch):
+def test_oauth_metadata_routes_registration_through_creator_and_keeps_openid(monkeypatch):
     monkeypatch.setenv("YCA_CHATGPT_OAUTH_ISSUER_URL", "https://creator.example")
     monkeypatch.setenv("YCA_WEB_OIDC_ISSUER_URL", "https://auth.example/realms/yca")
     metadata = oauth_authorization_server_metadata()
@@ -63,5 +63,7 @@ def test_oauth_metadata_is_plain_oauth_and_uses_keycloak_endpoints(monkeypatch):
     assert metadata["registration_endpoint"] == "https://creator.example/oauth/register"
     assert metadata["authorization_endpoint"] == "https://auth.example/realms/yca/protocol/openid-connect/auth"
     assert metadata["token_endpoint"] == "https://auth.example/realms/yca/protocol/openid-connect/token"
-    assert "openid" not in metadata["scopes_supported"]
+    assert "openid" in metadata["scopes_supported"]
+    assert "offline_access" in metadata["scopes_supported"]
+    assert "yca:read" in metadata["scopes_supported"]
     assert "S256" in metadata["code_challenge_methods_supported"]
