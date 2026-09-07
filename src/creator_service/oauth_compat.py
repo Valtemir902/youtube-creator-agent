@@ -8,6 +8,9 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
 
 ALLOWED_DCR_SCOPES = frozenset({
     "email",
@@ -37,6 +40,7 @@ class UpstreamResponse:
 def _keycloak_issuer() -> str:
     issuer = (
         os.environ.get("YCA_WEB_OIDC_ISSUER_URL", "").strip()
+        or os.environ.get("YCA_TOKEN_ISSUER_URL", "").strip()
         or os.environ.get("YCA_AUTH_ISSUER_URL", "").strip()
     ).rstrip("/")
     if not issuer:
@@ -105,9 +109,9 @@ def _normalize_scope(scope_value: Any) -> str:
     seen: set[str] = set()
     for scope in requested:
         if scope == "openid":
-            # ChatGPT can send OIDC's protocol scope in DCR. Keycloak's DCR policy
-            # validates only actual client-scope objects, so openid must not be
-            # forwarded as registered client metadata.
+            # O ChatGPT inclui openid no DCR. No Keycloak, openid é escopo de
+            # protocolo OIDC e não um objeto de client-scope aceito pela política
+            # Allowed Client Scopes. Removemos apenas no registro dinâmico.
             continue
         if scope not in ALLOWED_DCR_SCOPES:
             raise OAuthCompatError("invalid_scope", f"Escopo de registro não permitido: {scope}")
@@ -152,7 +156,9 @@ def normalize_dynamic_client_registration(payload: dict[str, Any]) -> dict[str, 
         "scope": _normalize_scope(payload.get("scope")),
     }
 
-    # Preserve a tiny, audited subset of optional RFC 7591 metadata only.
+    # Preserva somente metadados opcionais conhecidos. Não transformamos este
+    # endpoint em um proxy genérico de criação de clientes porque humanos já
+    # inventaram proxies genéricos demais para uma única civilização.
     for key in ("client_uri", "logo_uri", "tos_uri", "policy_uri", "contacts"):
         if key in payload:
             normalized[key] = payload[key]
@@ -186,3 +192,40 @@ def register_dynamic_client(payload: dict[str, Any]) -> UpstreamResponse:
             "O provedor de identidade está temporariamente indisponível.",
             status_code=503,
         ) from exc
+
+
+def install_oauth_compat_routes(app: FastAPI) -> None:
+    @app.get("/.well-known/oauth-authorization-server")
+    async def oauth_metadata() -> JSONResponse:
+        try:
+            payload = oauth_authorization_server_metadata()
+        except RuntimeError as exc:
+            return JSONResponse(
+                {"error": "server_error", "error_description": str(exc)},
+                status_code=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        return JSONResponse(payload, headers={"Cache-Control": "public, max-age=300"})
+
+    @app.post("/oauth/register")
+    async def oauth_register(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+            result = register_dynamic_client(payload)
+            return JSONResponse(
+                result.payload,
+                status_code=result.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
+        except OAuthCompatError as exc:
+            return JSONResponse(
+                {"error": exc.error, "error_description": exc.description},
+                status_code=exc.status_code,
+                headers={"Cache-Control": "no-store"},
+            )
+        except (ValueError, json.JSONDecodeError):
+            return JSONResponse(
+                {"error": "invalid_client_metadata", "error_description": "Corpo JSON inválido."},
+                status_code=400,
+                headers={"Cache-Control": "no-store"},
+            )
