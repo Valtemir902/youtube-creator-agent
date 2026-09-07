@@ -83,10 +83,17 @@ def _service():
 
 
 def create_server() -> MCPServer:
-    issuer = os.environ.get("YCA_AUTH_ISSUER_URL", "").strip()
+    token_issuer = os.environ.get("YCA_AUTH_ISSUER_URL", "").strip()
+    oauth_issuer = (
+        os.environ.get("YCA_CHATGPT_OAUTH_ISSUER_URL", "").strip()
+        or os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip()
+        or token_issuer
+    )
     resource = os.environ.get("YCA_MCP_PUBLIC_URL", "").strip()
-    if not issuer or not resource:
-        raise RuntimeError("YCA_AUTH_ISSUER_URL e YCA_MCP_PUBLIC_URL são obrigatórios no MCP cloud.")
+    if not token_issuer or not oauth_issuer or not resource:
+        raise RuntimeError(
+            "YCA_AUTH_ISSUER_URL, um issuer OAuth público e YCA_MCP_PUBLIC_URL são obrigatórios no MCP cloud."
+        )
 
     server = MCPServer(
         name="YouTube Creator Agent",
@@ -98,7 +105,7 @@ def create_server() -> MCPServer:
         ),
         token_verifier=IntrospectionTokenVerifier(),
         auth=AuthSettings(
-            issuer_url=AnyHttpUrl(issuer),
+            issuer_url=AnyHttpUrl(oauth_issuer),
             resource_server_url=AnyHttpUrl(resource),
             required_scopes=[READ_SCOPE],
             validate_token_resource=True,
