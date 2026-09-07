@@ -66,7 +66,7 @@ def oauth_authorization_server_metadata() -> dict[str, Any]:
         "authorization_endpoint": f"{keycloak}/protocol/openid-connect/auth",
         "token_endpoint": f"{keycloak}/protocol/openid-connect/token",
         "registration_endpoint": f"{issuer}/oauth/register",
-        "scopes_supported": ["email", "profile", "offline_access", "yca:read", "yca:write"],
+        "scopes_supported": ["openid", "email", "profile", "offline_access", "yca:read", "yca:write"],
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
@@ -109,9 +109,9 @@ def _normalize_scope(scope_value: Any) -> str:
     seen: set[str] = set()
     for scope in requested:
         if scope == "openid":
-            # O ChatGPT inclui openid no DCR. No Keycloak, openid é escopo de
-            # protocolo OIDC e não um objeto de client-scope aceito pela política
-            # Allowed Client Scopes. Removemos apenas no registro dinâmico.
+            # ChatGPT inclui o escopo de protocolo OIDC no DCR. O Keycloak
+            # espera apenas objetos de client-scope na política de DCR, então
+            # removemos openid apenas do registro e o mantemos na autorização.
             continue
         if scope not in ALLOWED_DCR_SCOPES:
             raise OAuthCompatError("invalid_scope", f"Escopo de registro não permitido: {scope}")
@@ -156,9 +156,6 @@ def normalize_dynamic_client_registration(payload: dict[str, Any]) -> dict[str, 
         "scope": _normalize_scope(payload.get("scope")),
     }
 
-    # Preserva somente metadados opcionais conhecidos. Não transformamos este
-    # endpoint em um proxy genérico de criação de clientes porque humanos já
-    # inventaram proxies genéricos demais para uma única civilização.
     for key in ("client_uri", "logo_uri", "tos_uri", "policy_uri", "contacts"):
         if key in payload:
             normalized[key] = payload[key]
