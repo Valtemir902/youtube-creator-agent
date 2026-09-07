@@ -17,6 +17,16 @@ class _Request:
         return self.fn()
 
 
+class _Channels:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def list(self, *, part: str, mine: bool):
+        assert part == "id"
+        assert mine is True
+        return _Request(lambda: {"items": [{"id": self.owner.channel_id}]})
+
+
 class _Videos:
     def __init__(self, owner):
         self.owner = owner
@@ -24,7 +34,9 @@ class _Videos:
     def list(self, *, part: str, id: str):
         assert part == "snippet"
         assert id == self.owner.video_id
-        return _Request(lambda: {"items": [{"snippet": dict(self.owner.snippet)}]})
+        snippet = dict(self.owner.snippet)
+        snippet["channelId"] = self.owner.channel_id
+        return _Request(lambda: {"items": [{"snippet": snippet}]})
 
     def update(self, *, part: str, body: dict):
         assert part == "snippet"
@@ -33,8 +45,8 @@ class _Videos:
         def apply():
             self.owner.update_calls += 1
             incoming = dict(body["snippet"])
-            # Simulate the real production anomaly discovered during the live
-            # audit: YouTube accepts the request but silently keeps old tags.
+            # Simulate the production anomaly: YouTube accepts the request but
+            # silently keeps old tags, forcing verified auto-restoration.
             if incoming.get("tags") == ["new-tag"]:
                 incoming["tags"] = list(self.owner.snippet.get("tags", []))
             self.owner.snippet = incoming
@@ -46,6 +58,7 @@ class _Videos:
 class _FakeYouTube:
     def __init__(self):
         self.video_id = "video-1"
+        self.channel_id = "channel-1"
         self.snippet = {
             "title": "Original",
             "description": "Descricao",
@@ -54,7 +67,11 @@ class _FakeYouTube:
             "defaultLanguage": "pt-BR",
         }
         self.update_calls = 0
+        self._channels = _Channels(self)
         self._videos = _Videos(self)
+
+    def channels(self):
+        return self._channels
 
     def videos(self):
         return self._videos
