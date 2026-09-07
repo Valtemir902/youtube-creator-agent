@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, "fix/**", "feat/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "feat/web-dashboard-v1"]
 
 jobs:
   quality:
@@ -34,7 +34,8 @@ jobs:
             "requests>=2.32,<3" \
             "google-api-python-client>=2.140,<3" \
             "google-auth>=2.34,<3" \
-            "google-auth-oauthlib>=1.2,<2"
+            "google-auth-oauthlib>=1.2,<2" \
+            "google-genai>=1.46,<2"
 
       - name: Compile Python sources
         run: |
@@ -90,9 +91,10 @@ jobs:
             "requests>=2.32,<3" \
             "google-api-python-client>=2.140,<3" \
             "google-auth>=2.34,<3" \
-            "google-auth-oauthlib>=1.2,<2"
+            "google-auth-oauthlib>=1.2,<2" \
+            "google-genai>=1.46,<2"
 
-      - name: Discover local and ChatGPT-native cloud MCP tools
+      - name: Discover exact production ChatGPT-native MCP surface
         env:
           PYTHONPATH: src
           YCA_AUTH_ISSUER_URL: https://auth.example.com
@@ -104,9 +106,13 @@ jobs:
         run: |
           python - <<'PY'
           import asyncio
+          from pathlib import Path
           from mcp import Client
           import creator_service.mcp_server as local_server
-          from creator_service.cloud_mcp_server import create_server
+          from creator_service.cloud_mcp_server_management import create_server
+
+          root = Path("cloud_mcp_server.py").read_text(encoding="utf-8")
+          assert "creator_service.cloud_mcp_server_management import run" in root
 
           LOCAL_EXPECTED = {
               "creator_status",
@@ -130,6 +136,28 @@ jobs:
               "preview_video_metadata_update",
               "apply_video_metadata_update",
               "apply_video_metadata_rollback",
+              "list_channel_videos",
+              "get_video_details",
+              "get_video_transcript",
+              "list_video_categories",
+              "preview_video_metadata_update_advanced",
+              "apply_video_metadata_update_advanced",
+              "apply_video_metadata_rollback_advanced",
+              "list_video_captions",
+              "preview_caption_upload",
+              "apply_caption_upload",
+              "apply_caption_delete_rollback",
+              "list_playlists",
+              "get_playlist_details",
+              "preview_playlist_metadata_update",
+              "apply_playlist_metadata_update",
+              "apply_playlist_metadata_rollback",
+              "preview_playlist_item_add",
+              "apply_playlist_item_add",
+              "apply_playlist_item_add_rollback",
+              "preview_playlist_item_remove",
+              "apply_playlist_item_remove",
+              "apply_playlist_item_remove_rollback",
           }
 
           CLOUD_FORBIDDEN = {
@@ -137,19 +165,34 @@ jobs:
               "build_channel_strategy",
           }
 
-          EXPECTED_HINTS = {
-              "creator_status": (True, False, False),
-              "get_creator_capabilities": (True, False, False),
-              "list_connected_channels": (True, False, False),
-              "activate_connected_channel": (False, False, False),
-              "create_onboarding_link": (False, False, False),
-              "get_channel_profile": (True, False, False),
-              "get_strategy_evidence": (True, False, False),
-              "validate_keyword_candidates": (True, True, False),
-              "preview_video_metadata_update": (False, False, False),
-              "apply_video_metadata_update": (False, True, True),
-              "apply_video_metadata_rollback": (False, True, True),
+          READ_CLOSED = {
+              "creator_status", "get_creator_capabilities", "list_connected_channels",
+              "get_channel_profile", "get_strategy_evidence", "list_channel_videos",
+              "get_video_details", "get_video_transcript", "list_playlists", "get_playlist_details",
           }
+          READ_OPEN = {
+              "validate_keyword_candidates", "list_video_categories", "list_video_captions",
+          }
+          PREVIEW = {
+              "activate_connected_channel", "create_onboarding_link",
+              "preview_video_metadata_update", "preview_video_metadata_update_advanced",
+              "preview_caption_upload", "preview_playlist_metadata_update",
+              "preview_playlist_item_add", "preview_playlist_item_remove",
+          }
+          DESTRUCTIVE = {
+              "apply_video_metadata_update", "apply_video_metadata_rollback",
+              "apply_video_metadata_update_advanced", "apply_video_metadata_rollback_advanced",
+              "apply_caption_upload", "apply_caption_delete_rollback",
+              "apply_playlist_metadata_update", "apply_playlist_metadata_rollback",
+              "apply_playlist_item_add", "apply_playlist_item_add_rollback",
+              "apply_playlist_item_remove", "apply_playlist_item_remove_rollback",
+          }
+
+          EXPECTED_HINTS = {}
+          EXPECTED_HINTS.update({name: (True, False, False) for name in READ_CLOSED})
+          EXPECTED_HINTS.update({name: (True, True, False) for name in READ_OPEN})
+          EXPECTED_HINTS.update({name: (False, False, False) for name in PREVIEW})
+          EXPECTED_HINTS.update({name: (False, True, True) for name in DESTRUCTIVE})
 
           async def names_for(server):
               async with Client(server, raise_exceptions=True) as client:
@@ -164,11 +207,13 @@ jobs:
               assert LOCAL_EXPECTED <= local_names
 
               cloud_tools, cloud_names = await names_for(create_server())
-              assert CLOUD_EXPECTED <= cloud_names
+              missing = CLOUD_EXPECTED - cloud_names
+              assert not missing, f"Production MCP missing tools: {sorted(missing)}"
               assert not (CLOUD_FORBIDDEN & cloud_names), (
                   "Cloud MCP must not expose tools that invoke backend LLM strategy: "
                   f"{sorted(CLOUD_FORBIDDEN & cloud_names)}"
               )
+              assert set(EXPECTED_HINTS) <= cloud_names
               for tool in cloud_tools:
                   assert "tenant_id" not in tool.input_schema.get("properties", {}), (
                       f"Cloud tool {tool.name} must derive tenant from auth, not model input"
@@ -179,14 +224,15 @@ jobs:
                   assert "readOnlyHint" in hints, f"{tool.name}: missing readOnlyHint"
                   assert "openWorldHint" in hints, f"{tool.name}: missing openWorldHint"
                   assert "destructiveHint" in hints, f"{tool.name}: missing destructiveHint"
-                  expected = EXPECTED_HINTS[tool.name]
-                  actual = (
-                      hints["readOnlyHint"],
-                      hints["openWorldHint"],
-                      hints["destructiveHint"],
-                  )
-                  assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
-              print("ChatGPT-native MCP + review annotations: OK", sorted(cloud_names))
+                  if tool.name in EXPECTED_HINTS:
+                      expected = EXPECTED_HINTS[tool.name]
+                      actual = (
+                          hints["readOnlyHint"],
+                          hints["openWorldHint"],
+                          hints["destructiveHint"],
+                      )
+                      assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
+              print("Unified production ChatGPT-native MCP: OK", sorted(cloud_names))
 
           asyncio.run(main())
           PY
