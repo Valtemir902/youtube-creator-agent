@@ -1,0 +1,188 @@
+name: Backend Real Write Rollback
+
+on:
+  push:
+    branches: ["test/mcp-real-write-validation"]
+    paths:
+      - ".github/workflows/backend-real-write-rollback.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-real-write:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      TARGET_CHANNEL_ID: UCePN99heaPy2YfUJPEMwbGA
+      TARGET_VIDEO_ID: l4gm7rYg8KQ
+
+    steps:
+      - name: Check deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Real write, verify, rollback, verify restoration
+        shell: bash
+        env:
+          CHANNEL_ID: ${{ env.TARGET_CHANNEL_ID }}
+          VIDEO_ID: ${{ env.TARGET_VIDEO_ID }}
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "cd ~/apps/youtube-creator-agent && CHANNEL_ID='$CHANNEL_ID' VIDEO_ID='$VIDEO_ID' docker compose -f deploy/docker-compose.oracle.yml exec -T -e CHANNEL_ID='$CHANNEL_ID' -e VIDEO_ID='$VIDEO_ID' mcp python -" <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+
+          from creator_service.cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
+          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
+
+          channel_id = os.environ["CHANNEL_ID"].strip()
+          video_id = os.environ["VIDEO_ID"].strip()
+          resolver = CloudTenantResolver()
+
+          with resolver.db._connect() as conn:
+              tenant_ids = [
+                  str(row[0])
+                  for row in conn.execute(
+                      "SELECT DISTINCT tenant_id FROM tenant_secrets WHERE secret_name=? ORDER BY updated_at DESC",
+                      (GOOGLE_SECRET_NAME,),
+                  ).fetchall()
+              ]
+
+          selected = None
+          selected_context = None
+          for tenant_id in tenant_ids:
+              try:
+                  context = resolver.resolve(tenant_id)
+                  youtube, _analytics = context.google_clients()
+                  response = youtube.channels().list(part="id,snippet", mine=True).execute()
+                  items = response.get("items", [])
+                  if items and str(items[0].get("id", "")) == channel_id:
+                      selected = tenant_id
+                      selected_context = context
+                      break
+              except Exception:
+                  continue
+
+          if not selected_context:
+              raise RuntimeError("Nenhum tenant conectado corresponde ao canal alvo.")
+
+          service = VerifiedAdvancedSafeCreatorService(selected_context)
+          before = service._current_video_snippet(video_id)
+          if str(before.get("video_id", video_id)) not in {"", video_id}:
+              raise RuntimeError("Identidade do vídeo divergente antes do teste.")
+
+          suffix = " | TESTE MCP"
+          original_title = str(before.get("title", ""))
+          title = original_title
+          if not title.endswith(suffix):
+              title = title[: max(1, 100 - len(suffix))] + suffix
+          title = title[:100]
+
+          marker = "[TESTE MCP: validação temporária de edição pelo YouTube Creator Agent]"
+          original_description = str(before.get("description", ""))
+          description = original_description.rstrip()
+          if marker not in description:
+              description = f"{description}{chr(10)+chr(10) if description else ''}{marker}"
+          description = description[:5000]
+
+          original_tags = list(before.get("tags", []) or [])
+          tags = []
+          for tag in [*original_tags, "teste mcp", "youtube creator agent"]:
+              value = str(tag).strip()
+              if value and value not in tags:
+                  tags.append(value)
+          tags = tags[:30]
+
+          preview = service.preview_video_metadata_update(
+              video_id=video_id,
+              title=title,
+              description=description,
+              tags=tags,
+          )
+          if not preview.get("approval_payload") or not preview.get("approval_token"):
+              raise RuntimeError("Preview não retornou pacote assinado de aprovação.")
+
+          applied = None
+          rollback = None
+          try:
+              applied = service.apply_video_metadata_update(
+                  approval_payload=preview["approval_payload"],
+                  approval_token=preview["approval_token"],
+              )
+              if not applied.get("ok") or not applied.get("persisted_verified"):
+                  raise RuntimeError("Apply não confirmou persistência integral no YouTube.")
+
+              after = service._current_video_snippet(video_id)
+              expected = {
+                  "title": title,
+                  "description": description,
+                  "tags": tags,
+              }
+              for key, value in expected.items():
+                  if after.get(key) != value:
+                      raise RuntimeError(f"Leitura pós-write divergiu em {key}.")
+
+              rollback_preview = applied.get("rollback_preview", {}) or {}
+              rollback = service.apply_video_metadata_rollback(
+                  rollback_payload=rollback_preview.get("rollback_payload", {}),
+                  rollback_token=str(rollback_preview.get("rollback_token", "")),
+              )
+              if not rollback.get("ok") or not rollback.get("rolled_back"):
+                  raise RuntimeError("Rollback não retornou sucesso.")
+
+              restored = service._current_video_snippet(video_id)
+              for key in ("title", "description", "tags", "categoryId", "defaultLanguage"):
+                  if restored.get(key) != before.get(key):
+                      raise RuntimeError(f"Restauração divergiu em {key}.")
+          except Exception:
+              # Se o apply chegou a acontecer e o fluxo normal de rollback falhar,
+              # não mascaramos a falha. O serviço Verified já possui restauração
+              # automática para persistência parcial. O teste termina em erro para
+              # inspeção humana, em vez de tentar sobrescrever cegamente o vídeo.
+              raise
+
+          digest = lambda value: hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+          print(json.dumps({
+              "ok": True,
+              "channel_id": channel_id,
+              "video_id": video_id,
+              "tenant_resolved": True,
+              "preview_changed": preview.get("changed", {}),
+              "apply_changed_fields": applied.get("changed_fields", []),
+              "persisted_verified": applied.get("persisted_verified", False),
+              "verification_attempts": applied.get("verification_attempts"),
+              "rollback_verified": bool(rollback and rollback.get("rolled_back")),
+              "restored_title_digest": digest(before.get("title", "")),
+              "restored_description_digest": digest(before.get("description", "")),
+              "restored_tags_count": len(before.get("tags", []) or []),
+          }, ensure_ascii=False))
+          PY
