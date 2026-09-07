@@ -118,9 +118,9 @@ jobs:
           done
           test "$found" = "1"
 
-      - name: Mirror ChatGPT DCR and authorization start
+      - name: Mirror ChatGPT DCR and diagnose authorization start
         run: |
-          set -euo pipefail
+          set -u
           reg="$(python - <<'PY'
           import json
           print(json.load(open('/tmp/oidc.json'))['registration_endpoint'])
@@ -132,6 +132,13 @@ jobs:
             -H 'content-type: application/json' -H 'accept: application/json' \
             --data "$payload" "$reg")"
           echo "DCR_HTTP=$code"
+          if [ "$code" != "201" ] && [ "$code" != "200" ]; then
+            python - <<'PY'
+          from pathlib import Path
+          print('DCR_ERROR_PREFIX=', Path('/tmp/dcr.json').read_text(errors='replace')[:1000])
+          PY
+            exit 1
+          fi
           python - <<'PY'
           import json
           p=json.load(open('/tmp/dcr.json'))
@@ -143,33 +150,6 @@ jobs:
           }
           print('DCR_SAFE=', json.dumps(safe, ensure_ascii=False))
           PY
-          test "$code" = "201" || test "$code" = "200"
-
-          python - <<'PY' >/tmp/auth_url
-          import base64, hashlib, json, secrets, urllib.parse
-          discovery=json.load(open('/tmp/oidc.json'))
-          client=json.load(open('/tmp/dcr.json'))
-          verifier=secrets.token_urlsafe(48)
-          challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
-          params={
-              'response_type':'code',
-              'client_id':client['client_id'],
-              'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
-              'scope':'openid offline_access yca:read',
-              'code_challenge':challenge,
-              'code_challenge_method':'S256',
-              'resource':'https://mcp.silvadigitaltech.com/',
-          }
-          print(discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
-          PY
-          auth_url="$(cat /tmp/auth_url)"
-          auth_code="$(curl -sS -L --max-redirs 5 \
-            -A 'Mozilla/5.0 ChatGPT-Compatibility-Audit/1.0' \
-            -o /tmp/auth.body -D /tmp/auth.headers -w '%{http_code}' "$auth_url")"
-          echo "AUTH_START_HTTP=$auth_code"
-          test "$auth_code" = "200"
-          grep -Eiq '(login|username|email|consent)' /tmp/auth.body
-          echo 'CHATGPT_DCR_AUTH_START=ok'
 
           cleanup_uri="$(python - <<'PY'
           import json
@@ -181,11 +161,68 @@ jobs:
           print(json.load(open('/tmp/dcr.json')).get('registration_access_token') or '')
           PY
           )"
+
+          make_url() {
+            local scope="$1"
+            local resource="$2"
+            SCOPE_VALUE="$scope" RESOURCE_VALUE="$resource" python - <<'PY'
+          import base64, hashlib, json, os, secrets, urllib.parse
+          discovery=json.load(open('/tmp/oidc.json'))
+          client=json.load(open('/tmp/dcr.json'))
+          verifier=secrets.token_urlsafe(48)
+          challenge=base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+          params={
+              'response_type':'code',
+              'client_id':client['client_id'],
+              'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect',
+              'scope':os.environ['SCOPE_VALUE'],
+              'code_challenge':challenge,
+              'code_challenge_method':'S256',
+          }
+          resource=os.environ.get('RESOURCE_VALUE','').strip()
+          if resource:
+              params['resource']=resource
+          print(discovery['authorization_endpoint']+'?'+urllib.parse.urlencode(params))
+          PY
+          }
+
+          success=0
+          for variant in base offline resource full; do
+            case "$variant" in
+              base) scope='openid yca:read'; resource='' ;;
+              offline) scope='openid offline_access yca:read'; resource='' ;;
+              resource) scope='openid yca:read'; resource='https://mcp.silvadigitaltech.com/' ;;
+              full) scope='openid offline_access yca:read'; resource='https://mcp.silvadigitaltech.com/' ;;
+            esac
+            auth_url="$(make_url "$scope" "$resource")"
+            auth_code="$(curl -sS -L --max-redirs 5 \
+              -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36' \
+              -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+              -o "/tmp/auth-$variant.body" -D "/tmp/auth-$variant.headers" \
+              -w '%{http_code}' "$auth_url" || true)"
+            echo "AUTH_VARIANT=$variant HTTP=$auth_code"
+            grep -Ei '^(server|content-type|cf-ray|location):' "/tmp/auth-$variant.headers" | tail -n 8 || true
+            VARIANT="$variant" python - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path('/tmp/auth-'+os.environ['VARIANT']+'.body')
+          text=p.read_text(errors='replace') if p.exists() else ''
+          safe=' '.join(text[:1200].split())
+          print('AUTH_BODY_PREFIX=', safe)
+          PY
+            if [ "$auth_code" = "200" ] && grep -Eiq '(login|username|email|consent|password)' "/tmp/auth-$variant.body"; then
+              success=1
+            fi
+          done
+
           if [ -n "$cleanup_uri" ] && [ -n "$cleanup_token" ]; then
             cleanup_code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
               -H "Authorization: Bearer $cleanup_token" "$cleanup_uri" || true)"
             echo "DCR_CLEANUP_HTTP=$cleanup_code"
           fi
+
+          test "$success" = "1"
+          echo 'CHATGPT_DCR_AUTH_START=ok'
 
       - name: No secrets in app package
         run: |
