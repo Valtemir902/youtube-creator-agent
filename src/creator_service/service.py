@@ -4,6 +4,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from .context import CreatorContext
+from .mcp_errors import tool_error
 from .security import signer_from_env
 
 
@@ -31,9 +32,8 @@ def _clean_tags(tags: list[str] | None) -> list[str] | None:
             continue
         seen.add(key)
         clean.append(tag)
-        if len(clean) >= 12:
-            break
-    if sum(len(tag) + 1 for tag in clean) > 500:
+    total = sum(len(tag) + (2 if " " in tag else 0) + 1 for tag in clean)
+    if total > 500:
         raise ValueError("As tags ultrapassam o limite total seguro de 500 caracteres.")
     return clean
 
@@ -51,6 +51,7 @@ class CreatorService:
             credential_store=context.credential_store,
         )
         self.memory = CreatorMemoryStore(context.data_dir / "creator_memory.sqlite3")
+        self._authorized_channel_cache: str | None = None
 
     def _clients(self):
         return self.context.google_clients()
@@ -157,15 +158,36 @@ class CreatorService:
 
         return PublicadorYouTube(str(self.context.token_file)).obter_cliente_youtube()
 
-    def _current_video_snippet(self, video_id: str) -> dict:
-        video_id = video_id.strip()
+    def _authorized_channel_id(self) -> str:
+        if self._authorized_channel_cache:
+            return self._authorized_channel_cache
+        response = self._youtube().channels().list(part="id", mine=True).execute()
+        items = response.get("items", [])
+        if not items or not str(items[0].get("id", "")).strip():
+            raise tool_error("channel_not_found", "No YouTube channel is available for the authenticated tenant.")
+        self._authorized_channel_cache = str(items[0]["id"]).strip()
+        return self._authorized_channel_cache
+
+    def _owned_video_item(self, video_id: str, *, part: str = "snippet") -> dict[str, Any]:
+        video_id = str(video_id or "").strip()
         if not video_id:
-            raise ValueError("video_id é obrigatório.")
-        response = self._youtube().videos().list(part="snippet", id=video_id).execute()
+            raise tool_error("invalid_request", "video_id is required.")
+        parts = {item.strip() for item in str(part).split(",") if item.strip()}
+        parts.add("snippet")
+        response = self._youtube().videos().list(part=",".join(sorted(parts)), id=video_id).execute()
         items = response.get("items", [])
         if not items:
-            raise ValueError("Vídeo não encontrado para a conta conectada.")
-        snippet = items[0].get("snippet", {})
+            raise tool_error("video_not_found")
+        item = dict(items[0])
+        owner = str((item.get("snippet", {}) or {}).get("channelId", "")).strip()
+        authorized = self._authorized_channel_id()
+        if not owner or owner != authorized:
+            raise tool_error("video_not_owned")
+        return item
+
+    def _current_video_snippet(self, video_id: str) -> dict:
+        item = self._owned_video_item(video_id, part="snippet")
+        snippet = item.get("snippet", {}) or {}
         return {
             "title": str(snippet.get("title", "")),
             "description": str(snippet.get("description", "")),
@@ -257,13 +279,11 @@ class CreatorService:
         video_id = str(proposed.get("video_id", "")).strip()
         if not video_id:
             raise ValueError("video_id ausente no payload aprovado.")
-        # Enforce again at write time in case another surface edited the video
-        # after the preview was created.
         self.memory.assert_not_recently_edited(video_id)
         current = self._current_video_snippet(video_id)
         baseline_digest = str(approval_payload.get("baseline_digest", ""))
         if not baseline_digest or baseline_digest != signer_from_env().payload_digest(current):
-            raise RuntimeError("O vídeo mudou desde a prévia. Gere uma nova prévia antes de aplicar.")
+            raise tool_error("external_change_detected")
         normalized = self._normalize_metadata_payload(
             video_id=video_id,
             title=str(proposed.get("title", "")),
