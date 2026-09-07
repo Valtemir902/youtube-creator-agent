@@ -29,7 +29,7 @@ jobs:
           printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
 
-      - name: Inspect Keycloak schema and OAuth records
+      - name: Probe Keycloak admin API and summarize OAuth state
         shell: bash
         run: |
           set -euo pipefail
@@ -37,47 +37,30 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd ~/apps/youtube-creator-agent
-          chatgpt_client="$(docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding sh -lc 'printf %s "$YCA_CHATGPT_OAUTH_CLIENT_ID"')"
-          introspection_client="$(docker compose -f deploy/docker-compose.oracle.yml exec -T mcp sh -lc 'printf %s "$YCA_AUTH_INTROSPECTION_CLIENT_ID"')"
-          test -n "$chatgpt_client" && test -n "$introspection_client"
-          psql_cmd='psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
-          run_sql() { printf '%s\n' "$1" | docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc "$psql_cmd"; }
-          echo '=== COUNTS ==='
-          run_sql "SELECT 'CHATGPT_CLIENT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}';"
-          run_sql "SELECT 'INTROSPECTION_CLIENT=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';"
-          run_sql "SELECT 'YCA_READ_SCOPE=' || COUNT(*) FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:read';"
-          run_sql "SELECT 'YCA_WRITE_SCOPE=' || COUNT(*) FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:write';"
-          run_sql "SELECT 'READ_ASSIGNED=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}' AND cs.name='yca:read';"
-          run_sql "SELECT 'WRITE_ASSIGNED=' || COUNT(*) FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}' AND cs.name='yca:write';"
-          echo '=== CLIENT_SCOPE_COLUMNS ==='
-          run_sql "SELECT column_name || ':' || data_type || ':nullable=' || is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='client_scope' ORDER BY ordinal_position;"
-          echo '=== CLIENT_SCOPE_CLIENT_COLUMNS ==='
-          run_sql "SELECT column_name || ':' || data_type || ':nullable=' || is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='client_scope_client' ORDER BY ordinal_position;"
-          echo '=== CHATGPT CLIENT FLAGS ==='
-          run_sql "SELECT 'enabled=' || c.enabled || '|bearer_only=' || c.bearer_only || '|public_client=' || c.public_client || '|standard_flow=' || c.standard_flow_enabled || '|direct_grants=' || c.direct_access_grants_enabled FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${chatgpt_client}';"
-          echo '=== INTROSPECTION CLIENT FLAGS ==='
-          run_sql "SELECT 'enabled=' || c.enabled || '|bearer_only=' || c.bearer_only || '|public_client=' || c.public_client || '|service_accounts=' || c.service_accounts_enabled || '|secret_present=' || (COALESCE(c.secret,'')<>'') FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${introspection_client}';"
-          REMOTE
-
-      - name: Compare introspection edge and internal backchannel
-        shell: bash
-        run: |
-          set -euo pipefail
-          port="${VPS_PORT:-22}"
-          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
-          set -euo pipefail
-          cd ~/apps/youtube-creator-agent
-          docker compose -f deploy/docker-compose.oracle.yml exec -T mcp python - <<'PY'
-          import base64,json,os,urllib.parse,urllib.request,urllib.error
-          cid=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_ID']; sec=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_SECRET']
-          for label,ep in [('CONFIGURED',os.environ['YCA_AUTH_INTROSPECTION_URL']),('INTERNAL','http://keycloak:8080/realms/yca/protocol/openid-connect/token/introspect')]:
-              body=urllib.parse.urlencode({'token':'deliberately-invalid-token'}).encode()
-              req=urllib.request.Request(ep,data=body,method='POST',headers={'Authorization':'Basic '+base64.b64encode(f'{cid}:{sec}'.encode()).decode(),'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'})
-              try:
-                  with urllib.request.urlopen(req,timeout=10) as r:
-                      d=json.loads(r.read()); print(label+'_HTTP='+str(r.status)+' ACTIVE='+str(bool(d.get('active'))).lower())
-              except urllib.error.HTTPError as e:
-                  raw=e.read().decode('utf-8','replace')[:220].replace('\n',' ')
-                  print(label+'_HTTP='+str(e.code)+' SERVER='+str(e.headers.get('server',''))+' BODY='+raw)
-          PY
+          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak sh -lc '
+            set -eu
+            admin_user="${KC_BOOTSTRAP_ADMIN_USERNAME:-}"
+            admin_pass="${KC_BOOTSTRAP_ADMIN_PASSWORD:-}"
+            test -n "$admin_user" && test -n "$admin_pass"
+            cfg=/tmp/kcadm-yca-probe.config
+            rm -f "$cfg"
+            if /opt/keycloak/bin/kcadm.sh config credentials --config "$cfg" --server http://127.0.0.1:8080 --realm master --user "$admin_user" --password "$admin_pass" >/dev/null 2>&1; then
+              echo KCADM_LOGIN=ok
+              /opt/keycloak/bin/kcadm.sh get realms/yca/client-scopes --config "$cfg" --fields name 2>/dev/null | grep -Eo '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/SCOPE=\1/' | grep -E 'SCOPE=(yca:read|yca:write|email|profile|offline_access)$' || true
+              chatgpt_client="${YCA_CHATGPT_OAUTH_CLIENT_ID:-}"
+              test -n "$chatgpt_client"
+              cid="$(/opt/keycloak/bin/kcadm.sh get clients -r yca --config "$cfg" -q clientId="$chatgpt_client" --fields id --format csv --noquotes 2>/dev/null | tail -n 1)"
+              if [ -n "$cid" ]; then
+                echo CHATGPT_CLIENT_FOUND=1
+                /opt/keycloak/bin/kcadm.sh get clients/$cid/default-client-scopes -r yca --config "$cfg" --fields name 2>/dev/null | grep -Eo '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/DEFAULT_SCOPE=\1/' | grep -E '(yca:read|yca:write|email|profile|offline_access)' || true
+                /opt/keycloak/bin/kcadm.sh get clients/$cid/optional-client-scopes -r yca --config "$cfg" --fields name 2>/dev/null | grep -Eo '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"([^"]+)"$/OPTIONAL_SCOPE=\1/' | grep -E '(yca:read|yca:write|email|profile|offline_access)' || true
+              else
+                echo CHATGPT_CLIENT_FOUND=0
+              fi
+              rm -f "$cfg"
+            else
+              echo KCADM_LOGIN=failed
+              exit 10
+            fi
+          '
           REMOTE
