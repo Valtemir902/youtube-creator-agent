@@ -1,0 +1,76 @@
+name: MCP Production Log Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - ".github/workflows/mcp-production-log-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Inspect recent MCP and auth logs safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/apps/youtube-creator-agent
+          compose='docker compose -f deploy/docker-compose.oracle.yml'
+          echo '=== deployed revision ==='
+          git rev-parse HEAD
+          echo '=== service status ==='
+          $compose ps
+          echo '=== MCP logs last 30 minutes ==='
+          $compose logs --since 30m --no-color mcp 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~-]+/\1[REDACTED]/g' | tail -n 500
+          echo '=== onboarding logs last 30 minutes ==='
+          $compose logs --since 30m --no-color onboarding 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~-]+/\1[REDACTED]/g' | tail -n 300
+          echo '=== keycloak logs last 30 minutes, filtered ==='
+          $compose logs --since 30m --no-color keycloak 2>&1 | grep -Ei 'error|warn|invalid|scope|token|client|auth|login' | tail -n 300 || true
+          echo '=== unauthenticated MCP challenge ==='
+          curl -sS -D - -o /tmp/mcp-body -X POST https://mcp.silvadigitaltech.com/mcp \
+            -H 'content-type: application/json' \
+            -H 'accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"prod-log-diag","version":"1"}}}' | sed -E 's/(set-cookie:).*/\1 [REDACTED]/I'
+          echo '--- body ---'
+          head -c 4000 /tmp/mcp-body || true
+          echo
+          echo '=== protected resource metadata ==='
+          for u in \
+            'https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource' \
+            'https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource/mcp' \
+            'https://mcp.silvadigitaltech.com/mcp/.well-known/oauth-protected-resource'; do
+            echo "--- $u"
+            curl -sS -D - "$u" -o /tmp/meta-body | head -n 30
+            head -c 3000 /tmp/meta-body || true
+            echo
+          done
+          REMOTE
