@@ -22,29 +22,58 @@ jobs:
       VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
     steps:
-      - name: Public DCR probes
+      - name: Register probe client
         shell: bash
         run: |
           set -euo pipefail
           cat >/tmp/payload.json <<'JSON'
-          {"client_name":"ChatGPT edge diagnostic","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}
+          {"client_name":"ChatGPT scope diagnostic","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}
           JSON
-          for ua in \
-            'curl/8.0' \
-            'Mozilla/5.0 ChatGPT-OAuth-Compatibility-Probe/1.0' \
-            'OpenAI-ChatGPT-Connector/1.0'; do
-            echo "=== UA: $ua"
-            code="$(curl -sS --max-time 20 -A "$ua" -D /tmp/h -o /tmp/b -w '%{http_code}' \
-              -H 'content-type: application/json' -H 'accept: application/json' \
-              --data @/tmp/payload.json https://creator.silvadigitaltech.com/oauth/register || true)"
-            echo "HTTP=$code"
-            grep -Eai '^(server|cf-ray|content-type|location|x-request-id):' /tmp/h || true
-            python - <<'PY'
-          from pathlib import Path
-          body=Path('/tmp/b').read_text(errors='replace') if Path('/tmp/b').exists() else ''
-          print('BODY_PREFIX='+body[:800].replace('\n',' '))
+          code="$(curl -sS --max-time 20 -o /tmp/dcr.json -w '%{http_code}' -H 'content-type: application/json' -H 'accept: application/json' --data @/tmp/payload.json https://creator.silvadigitaltech.com/oauth/register)"
+          echo "DCR_HTTP=$code"
+          test "$code" = 201 -o "$code" = 200
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/dcr.json')); assert p.get('client_id')
+          print('DCR_CLIENT_PRESENT=1')
           PY
-          done
+
+      - name: Probe authorization scope matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, json, secrets, subprocess, urllib.parse
+          client=json.load(open('/tmp/dcr.json'))['client_id']
+          endpoint='https://auth.silvadigitaltech.com/realms/yca/protocol/openid-connect/auth'
+          cases=[
+            'openid',
+            'openid email',
+            'openid email offline_access',
+            'openid email yca:read',
+            'openid email offline_access yca:read',
+            'openid email offline_access yca:read yca:write',
+          ]
+          for scope in cases:
+              v=secrets.token_urlsafe(48)
+              ch=base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).rstrip(b'=').decode()
+              q={'response_type':'code','client_id':client,'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect','scope':scope,'state':'diagnostic','code_challenge':ch,'code_challenge_method':'S256'}
+              u=endpoint+'?'+urllib.parse.urlencode(q)
+              cp=subprocess.run(['curl','-sS','--max-redirs','0','--max-time','20','-D','-','-o','/dev/null','-w','\nHTTP=%{http_code}\n',u],text=True,capture_output=True)
+              text=cp.stdout
+              loc=''
+              for line in text.splitlines():
+                  if line.lower().startswith('location:'):
+                      loc=line.split(':',1)[1].strip()
+              status=''
+              for line in text.splitlines():
+                  if line.startswith('HTTP='): status=line.split('=',1)[1]
+              err=''; host=''; path=''
+              if loc:
+                  p=urllib.parse.urlsplit(loc); host=p.netloc; path=p.path; err=(urllib.parse.parse_qs(p.query).get('error') or [''])[0]
+              print('SCOPE_CASE='+scope.replace(' ','|'))
+              print('  HTTP='+status+' HOST='+host+' PATH='+path+' ERROR='+err)
+          PY
 
       - name: Configure SSH
         shell: bash
@@ -57,7 +86,7 @@ jobs:
           printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Probe app directly inside onboarding container
+      - name: Inspect fixed public client and assigned client scopes
         shell: bash
         run: |
           set -euo pipefail
@@ -65,39 +94,39 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
           cd ~/apps/youtube-creator-agent
-          docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding python - <<'PY'
-          import json, urllib.request, urllib.error
-          payload={
-            "client_name":"ChatGPT internal diagnostic",
-            "redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],
-            "grant_types":["authorization_code","refresh_token"],
-            "response_types":["code"],
-            "token_endpoint_auth_method":"none",
-            "scope":"openid email offline_access yca:read",
-          }
-          req=urllib.request.Request('http://127.0.0.1:8080/oauth/register', data=json.dumps(payload).encode(), headers={'content-type':'application/json','accept':'application/json'}, method='POST')
-          try:
-              with urllib.request.urlopen(req, timeout=10) as r:
-                  body=r.read().decode('utf-8','replace')
-                  print('INTERNAL_HTTP='+str(r.status))
-                  print('INTERNAL_BODY_PREFIX='+body[:800].replace('\n',' '))
-          except urllib.error.HTTPError as e:
-              body=e.read().decode('utf-8','replace')
-              print('INTERNAL_HTTP='+str(e.code))
-              print('INTERNAL_BODY_PREFIX='+body[:800].replace('\n',' '))
-          PY
+          client_id="$(docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding sh -lc 'printf %s "$YCA_CHATGPT_OAUTH_CLIENT_ID"')"
+          test -n "$client_id"
+          echo "CHATGPT_CLIENT_ID_CONFIGURED=1"
+          docker compose -f deploy/docker-compose.oracle.yml exec -T keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<SQL
+          SELECT 'CLIENT|' || c.client_id || '|public=' || CASE WHEN c.secret IS NULL OR c.secret='' THEN '1' ELSE '0' END || '|enabled=' || CASE WHEN c.enabled THEN '1' ELSE '0' END
+          FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id='${client_id}';
+          SELECT 'SCOPE|' || cs.name || '|default=' || CASE WHEN csc.default_scope THEN '1' ELSE '0' END
+          FROM client c
+          JOIN realm r ON r.id=c.realm_id
+          JOIN client_scope_client csc ON csc.client_id=c.id
+          JOIN client_scope cs ON cs.id=csc.scope_id
+          WHERE r.name='yca' AND c.client_id='${client_id}'
+          ORDER BY cs.name;
+          SQL
           REMOTE
 
-      - name: Probe public endpoint from VPS
+      - name: Verify introspection credentials are live without exposing secrets
         shell: bash
         run: |
           set -euo pipefail
           port="${VPS_PORT:-22}"
           ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
           set -euo pipefail
-          payload='{"client_name":"ChatGPT VPS diagnostic","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}'
-          code="$(curl -sS --max-time 20 -D /tmp/h -o /tmp/b -w '%{http_code}' -H 'content-type: application/json' -H 'accept: application/json' --data "$payload" https://creator.silvadigitaltech.com/oauth/register || true)"
-          echo "VPS_PUBLIC_HTTP=$code"
-          grep -Eai '^(server|cf-ray|content-type|location|x-request-id):' /tmp/h || true
-          head -c 800 /tmp/b | tr '\n' ' '; echo
+          cd ~/apps/youtube-creator-agent
+          docker compose -f deploy/docker-compose.oracle.yml exec -T mcp python - <<'PY'
+          import base64,json,os,urllib.parse,urllib.request,urllib.error
+          ep=os.environ['YCA_AUTH_INTROSPECTION_URL']; cid=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_ID']; sec=os.environ['YCA_AUTH_INTROSPECTION_CLIENT_SECRET']
+          body=urllib.parse.urlencode({'token':'deliberately-invalid-token'}).encode()
+          req=urllib.request.Request(ep,data=body,method='POST',headers={'Authorization':'Basic '+base64.b64encode(f'{cid}:{sec}'.encode()).decode(),'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'})
+          try:
+              with urllib.request.urlopen(req,timeout=10) as r:
+                  data=json.loads(r.read()); print('INTROSPECTION_HTTP='+str(r.status)); print('INTROSPECTION_ACTIVE='+str(bool(data.get('active'))).lower())
+          except urllib.error.HTTPError as e:
+              print('INTROSPECTION_HTTP='+str(e.code)); print('INTROSPECTION_ERROR=1'); raise
+          PY
           REMOTE
