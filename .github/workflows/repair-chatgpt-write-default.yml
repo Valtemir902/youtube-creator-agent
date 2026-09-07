@@ -1,0 +1,151 @@
+name: Repair ChatGPT Write Scope Default
+
+on:
+  push:
+    branches: ["fix/chatgpt-write-scope-default"]
+    paths:
+      - ".github/workflows/repair-chatgpt-write-default.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yca-chatgpt-write-scope-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Validate deployment credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Backup Keycloak and make yca write default
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          app="$HOME/apps/youtube-creator-agent"
+          compose="$app/deploy/docker-compose.oracle.yml"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$HOME/backups/youtube-creator-agent/$stamp-write-scope"
+          mkdir -p "$backup"
+          chmod 700 "$HOME/backups" "$HOME/backups/youtube-creator-agent" "$backup" 2>/dev/null || true
+          cd "$app"
+
+          echo "[backup] exporting Keycloak database before scope repair"
+          docker compose -f "$compose" exec -T keycloak-db sh -lc \
+            'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' \
+            > "$backup/keycloak.dump"
+          test -s "$backup/keycloak.dump"
+          chmod 600 "$backup/keycloak.dump"
+          printf '%s\n' "$(git rev-parse HEAD)" > "$backup/PRE_REPAIR_SHA"
+
+          client_id="$(sed -n 's/^YCA_CHATGPT_OAUTH_CLIENT_ID=//p' config/server.env | tail -n1 | tr -d '\r')"
+          test -n "$client_id"
+
+          echo "[oauth] promoting yca:write to a default client scope"
+          result="$({ docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc \
+            'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID"' <<'SQL'
+WITH target AS (
+  SELECT c.id AS client_pk, r.id AS realm_pk
+  FROM client c
+  JOIN realm r ON r.id=c.realm_id
+  WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id'
+), write_scope AS (
+  SELECT cs.id AS scope_pk
+  FROM client_scope cs
+  JOIN realm r ON r.id=cs.realm_id
+  WHERE r.name='yca' AND cs.name='yca:write'
+), inserted AS (
+  INSERT INTO client_scope_client (client_id, scope_id, default_scope)
+  SELECT t.client_pk, w.scope_pk, TRUE
+  FROM target t CROSS JOIN write_scope w
+  WHERE NOT EXISTS (
+    SELECT 1 FROM client_scope_client x
+    WHERE x.client_id=t.client_pk AND x.scope_id=w.scope_pk
+  )
+  RETURNING 1
+), promoted AS (
+  UPDATE client_scope_client x
+  SET default_scope=TRUE
+  FROM target t, write_scope w
+  WHERE x.client_id=t.client_pk
+    AND x.scope_id=w.scope_pk
+    AND x.default_scope IS DISTINCT FROM TRUE
+  RETURNING 1
+)
+SELECT
+  (SELECT count(*) FROM target) || '|' ||
+  (SELECT count(*) FROM write_scope) || '|' ||
+  (SELECT count(*) FROM inserted) || '|' ||
+  (SELECT count(*) FROM promoted);
+SQL
+          } | tr -d '\r' | tail -n1)"
+          echo "scope_repair_result=$result"
+          [[ "$result" =~ ^1\|1\|[01]\|[01]$ ]]
+
+          verify="$({ docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc \
+            'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID"' <<'SQL'
+SELECT cs.name || '=' || x.default_scope
+FROM client c
+JOIN realm r ON r.id=c.realm_id
+JOIN client_scope_client x ON x.client_id=c.id
+JOIN client_scope cs ON cs.id=x.scope_id
+WHERE r.name='yca'
+  AND c.client_id=:'chatgpt_client_id'
+  AND cs.name IN ('yca:read','yca:write')
+ORDER BY cs.name;
+SQL
+          } | tr -d '\r')"
+          echo "$verify"
+          grep -qx 'yca:read=t' <<<"$verify"
+          grep -qx 'yca:write=t' <<<"$verify"
+
+          echo "[oauth] restarting Keycloak to clear cached client metadata"
+          docker compose -f "$compose" restart keycloak >/dev/null
+          for i in $(seq 1 45); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration || true)"
+            if [[ "$code" == "200" ]]; then
+              echo "keycloak_ready=ok attempt=$i"
+              break
+            fi
+            if [[ "$i" == "45" ]]; then
+              echo "Keycloak did not become ready" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "CHATGPT_WRITE_SCOPE_DEFAULT=ok"
+          echo "backup=$backup"
+          REMOTE
