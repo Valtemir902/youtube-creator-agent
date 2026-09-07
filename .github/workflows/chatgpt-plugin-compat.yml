@@ -4,6 +4,7 @@ on:
   push:
     branches: ["feat/**", main]
     paths:
+      - "src/creator_service/cloud_auth.py"
       - "src/creator_service/cloud_mcp_server.py"
       - "config/chatgpt_app.json"
       - "docs/CHATGPT_APP_SUBMISSION_PACKAGE.md"
@@ -48,18 +49,30 @@ jobs:
             echo "PUBLIC_OK $url"
           done
 
-      - name: Check OIDC discovery
+      - name: Check OIDC discovery for ChatGPT OAuth
         run: |
           set -euo pipefail
           curl -fsS https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration -o /tmp/oidc.json
           python - <<'PY'
           import json
           p=json.load(open('/tmp/oidc.json'))
-          required=['issuer','authorization_endpoint','token_endpoint','jwks_uri']
+          required=['issuer','authorization_endpoint','token_endpoint','jwks_uri','registration_endpoint']
           missing=[k for k in required if not p.get(k)]
-          assert not missing, missing
-          assert p['issuer'].startswith('https://auth.silvadigitaltech.com/')
+          assert not missing, f'Missing OIDC metadata: {missing}'
+          assert p['issuer'] == 'https://auth.silvadigitaltech.com/realms/yca', p['issuer']
+          scopes=set(p.get('scopes_supported') or [])
+          required_scopes={'openid','offline_access','yca:read'}
+          missing_scopes=sorted(required_scopes-scopes)
+          assert not missing_scopes, f'Missing scopes_supported required by ChatGPT: {missing_scopes}; got={sorted(scopes)}'
+          methods=set(p.get('code_challenge_methods_supported') or [])
+          assert 'S256' in methods, f'PKCE S256 not advertised: {sorted(methods)}'
+          token_methods=set(p.get('token_endpoint_auth_methods_supported') or [])
+          assert token_methods & {'none','client_secret_basic','client_secret_post'}, f'No compatible token endpoint auth method: {sorted(token_methods)}'
+          grants=set(p.get('grant_types_supported') or [])
+          assert 'authorization_code' in grants, f'authorization_code missing: {sorted(grants)}'
           print('OIDC_DISCOVERY=ok')
+          print('SCOPES_SUPPORTED=', ' '.join(sorted(scopes)))
+          print('TOKEN_AUTH_METHODS=', ' '.join(sorted(token_methods)))
           PY
 
       - name: Check MCP unauthenticated challenge
@@ -72,10 +85,11 @@ jobs:
           status="$(head -n1 /tmp/mcp.headers | tr -d '\r')"
           echo "$status"
           grep -Eq ' 401 | 403 ' /tmp/mcp.headers
-          grep -i '^www-authenticate:' /tmp/mcp.headers || true
+          grep -i '^www-authenticate:' /tmp/mcp.headers | tee /tmp/www-authenticate
+          grep -qi 'resource_metadata=' /tmp/www-authenticate
           echo 'MCP_AUTH_GUARD=ok'
 
-      - name: Check OAuth protected-resource metadata when exposed
+      - name: Check OAuth protected-resource metadata
         run: |
           set -euo pipefail
           found=0
@@ -87,18 +101,45 @@ jobs:
               python - <<'PY'
           import json
           p=json.load(open('/tmp/resource.json'))
-          assert p.get('resource'), p
-          servers=p.get('authorization_servers') or []
-          assert servers, p
-          print('PROTECTED_RESOURCE_METADATA=ok', p.get('resource'))
+          resource=str(p.get('resource') or '').rstrip('/')
+          assert resource == 'https://mcp.silvadigitaltech.com', p
+          servers=[str(x).rstrip('/') for x in (p.get('authorization_servers') or [])]
+          assert 'https://auth.silvadigitaltech.com/realms/yca' in servers, p
+          scopes=set(p.get('scopes_supported') or [])
+          if scopes:
+              assert 'yca:read' in scopes, f'yca:read missing from protected resource metadata: {sorted(scopes)}'
+          print('PROTECTED_RESOURCE_METADATA=ok', resource)
           PY
               found=1
               break
             fi
           done
-          if [ "$found" != "1" ]; then
-            echo 'Protected resource metadata endpoint not exposed; WWW-Authenticate challenge will be inspected separately.'
-          fi
+          test "$found" = "1"
+
+      - name: Check DCR accepts a safe public PKCE client
+        run: |
+          set -euo pipefail
+          reg="$(python - <<'PY'
+          import json, urllib.request
+          p=json.load(urllib.request.urlopen('https://auth.silvadigitaltech.com/realms/yca/.well-known/openid-configuration', timeout=10))
+          print(p['registration_endpoint'])
+          PY
+          )"
+          payload='{"client_name":"ChatGPT compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code"],"response_types":["code"],"token_endpoint_auth_method":"none"}'
+          code="$(curl -sS -o /tmp/dcr.json -w '%{http_code}' -H 'content-type: application/json' --data "$payload" "$reg")"
+          echo "DCR_HTTP=$code"
+          cat /tmp/dcr.json
+          test "$code" = "201" || test "$code" = "200"
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/dcr.json'))
+          assert p.get('client_id'), p
+          method=p.get('token_endpoint_auth_method')
+          assert method in (None,'none'), f'DCR did not preserve public-client auth method: {method}'
+          redirects=p.get('redirect_uris') or []
+          assert 'https://chatgpt.com/connector_platform_oauth_redirect' in redirects, redirects
+          print('DCR_PUBLIC_PKCE_CLIENT=ok')
+          PY
 
       - name: No secrets in app package
         run: |
