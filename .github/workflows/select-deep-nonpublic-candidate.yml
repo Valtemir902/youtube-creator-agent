@@ -1,0 +1,128 @@
+name: Select Deep Nonpublic Candidate
+
+on:
+  push:
+    branches: ["test/mcp-real-write-validation"]
+    paths:
+      - ".github/workflows/select-deep-nonpublic-candidate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      TARGET_CHANNEL_ID: UCePN99heaPy2YfUJPEMwbGA
+
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Search older private or unlisted uploads
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "cd ~/apps/youtube-creator-agent && docker compose -f deploy/docker-compose.oracle.yml exec -T -e CHANNEL_ID='$TARGET_CHANNEL_ID' mcp python -" <<'PY'
+          import json, os
+          from creator_service.cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
+          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
+
+          channel_id=os.environ['CHANNEL_ID'].strip()
+          resolver=CloudTenantResolver()
+          with resolver.db._connect() as conn:
+              tenant_ids=[str(r[0]) for r in conn.execute(
+                  "SELECT DISTINCT tenant_id FROM tenant_secrets WHERE secret_name=? ORDER BY updated_at DESC",
+                  (GOOGLE_SECRET_NAME,),
+              ).fetchall()]
+
+          context=None
+          youtube=None
+          channel=None
+          for tenant_id in tenant_ids:
+              try:
+                  candidate=resolver.resolve(tenant_id)
+                  y,_=candidate.google_clients()
+                  items=y.channels().list(part='id,contentDetails',mine=True).execute().get('items',[])
+                  if items and str(items[0].get('id',''))==channel_id:
+                      context=candidate
+                      youtube=y
+                      channel=items[0]
+                      break
+              except Exception:
+                  continue
+          if context is None or youtube is None or channel is None:
+              raise RuntimeError('tenant do canal alvo não encontrado')
+
+          uploads=channel.get('contentDetails',{}).get('relatedPlaylists',{}).get('uploads','')
+          ids=[]
+          token=None
+          while len(ids) < 250:
+              request=youtube.playlistItems().list(
+                  part='contentDetails',playlistId=uploads,maxResults=50,pageToken=token
+              ) if token else youtube.playlistItems().list(
+                  part='contentDetails',playlistId=uploads,maxResults=50
+              )
+              payload=request.execute()
+              ids.extend(
+                  str(item.get('contentDetails',{}).get('videoId',''))
+                  for item in payload.get('items',[])
+                  if item.get('contentDetails',{}).get('videoId')
+              )
+              token=payload.get('nextPageToken')
+              if not token:
+                  break
+
+          service=VerifiedAdvancedSafeCreatorService(context)
+          candidates=[]
+          for offset in range(0,len(ids),50):
+              batch=ids[offset:offset+50]
+              videos=youtube.videos().list(part='snippet,status,statistics',id=','.join(batch)).execute().get('items',[])
+              for item in videos:
+                  status=item.get('status',{}) or {}
+                  privacy=str(status.get('privacyStatus',''))
+                  if privacy not in {'private','unlisted'}:
+                      continue
+                  video_id=str(item.get('id',''))
+                  memory=service.video_memory_state(video_id)
+                  if memory.get('protected'):
+                      continue
+                  snippet=item.get('snippet',{}) or {}
+                  tags=list(snippet.get('tags',[]) or [])
+                  budget=sum(len(str(tag))+(2 if ' ' in str(tag) else 0)+1 for tag in tags)
+                  if budget > 430:
+                      continue
+                  candidates.append({
+                      'video_id':video_id,
+                      'title':str(snippet.get('title','')),
+                      'privacy':privacy,
+                      'published_at':str(snippet.get('publishedAt','')),
+                      'views':int((item.get('statistics',{}) or {}).get('viewCount',0) or 0),
+                      'tags_count':len(tags),
+                      'tag_budget':budget,
+                      'protected':False,
+                  })
+
+          rank={'private':0,'unlisted':1}
+          candidates.sort(key=lambda r:(rank.get(r['privacy'],2),r['views'],r['published_at']))
+          if not candidates:
+              raise RuntimeError('nenhum vídeo privado/não listado livre encontrado nos primeiros 250 uploads')
+          print(json.dumps({'ok':True,'scanned_uploads':len(ids),'selected':candidates[0],'alternatives':candidates[:8]},ensure_ascii=False))
+          PY
