@@ -36,10 +36,20 @@ jobs:
             -A 'Mozilla/5.0 ChatGPT-Exact-Scope-Probe/1.0' \
             -H 'content-type: application/json' \
             -H 'accept: application/json' \
+            -D /tmp/dcr.headers \
             -o /tmp/dcr.json -w '%{http_code}' \
             --data "$payload" "$reg")"
           echo "DCR_HTTP=$dcr_code"
-          cat /tmp/dcr.json | python -c "import json,sys; p=json.load(sys.stdin); print({k:p.get(k) for k in ('client_id','token_endpoint_auth_method','scope','redirect_uris','grant_types')})" || true
+          echo '--- DCR response headers ---'
+          grep -Ei '^(HTTP/|server:|content-type:|www-authenticate:|location:)' /tmp/dcr.headers || true
+          echo '--- DCR response body ---'
+          python - <<'PY'
+          from pathlib import Path
+          body = Path('/tmp/dcr.json').read_text(errors='replace')
+          print(body[:4000])
+          PY
+          echo '--- Parsed DCR fields ---'
+          cat /tmp/dcr.json | python -c "import json,sys; p=json.load(sys.stdin); print({k:p.get(k) for k in ('client_id','token_endpoint_auth_method','scope','redirect_uris','grant_types','error','error_description')})" || true
           test "$dcr_code" = "201" -o "$dcr_code" = "200"
 
           auth_url="$(python - <<'PY'
