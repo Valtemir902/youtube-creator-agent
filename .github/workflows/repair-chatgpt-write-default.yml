@@ -75,12 +75,12 @@ jobs:
           test -n "$client_id"
 
           repair_sql="WITH target AS (SELECT c.id AS client_pk, r.id AS realm_pk FROM client c JOIN realm r ON r.id=c.realm_id WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id'), write_scope AS (SELECT cs.id AS scope_pk FROM client_scope cs JOIN realm r ON r.id=cs.realm_id WHERE r.name='yca' AND cs.name='yca:write'), inserted AS (INSERT INTO client_scope_client (client_id, scope_id, default_scope) SELECT t.client_pk, w.scope_pk, TRUE FROM target t CROSS JOIN write_scope w WHERE NOT EXISTS (SELECT 1 FROM client_scope_client x WHERE x.client_id=t.client_pk AND x.scope_id=w.scope_pk) RETURNING 1), promoted AS (UPDATE client_scope_client x SET default_scope=TRUE FROM target t, write_scope w WHERE x.client_id=t.client_pk AND x.scope_id=w.scope_pk AND x.default_scope IS DISTINCT FROM TRUE RETURNING 1) SELECT (SELECT count(*) FROM target) || '|' || (SELECT count(*) FROM write_scope) || '|' || (SELECT count(*) FROM inserted) || '|' || (SELECT count(*) FROM promoted);"
-          result="$(docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID" -c "$REPAIR_SQL"' -- env REPAIR_SQL="$repair_sql" | tr -d '\r' | tail -n1)"
+          result="$(docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID" -c "$1"' sh "$repair_sql" | tr -d '\r' | tail -n1)"
           echo "scope_repair_result=$result"
           [[ "$result" =~ ^1\|1\|[01]\|[01]$ ]]
 
           verify_sql="SELECT cs.name || '=' || x.default_scope FROM client c JOIN realm r ON r.id=c.realm_id JOIN client_scope_client x ON x.client_id=c.id JOIN client_scope cs ON cs.id=x.scope_id WHERE r.name='yca' AND c.client_id=:'chatgpt_client_id' AND cs.name IN ('yca:read','yca:write') ORDER BY cs.name;"
-          verify="$(docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID" -c "$VERIFY_SQL"' -- env VERIFY_SQL="$verify_sql" | tr -d '\r')"
+          verify="$(docker compose -f "$compose" exec -T -e CHATGPT_CLIENT_ID="$client_id" keycloak-db sh -lc 'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v chatgpt_client_id="$CHATGPT_CLIENT_ID" -c "$1"' sh "$verify_sql" | tr -d '\r')"
           echo "$verify"
           grep -qx 'yca:read=t' <<<"$verify"
           grep -qx 'yca:write=t' <<<"$verify"
