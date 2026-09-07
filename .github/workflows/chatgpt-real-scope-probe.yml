@@ -37,14 +37,16 @@ jobs:
             payload="$(python - "$scope" "$label" <<'PY'
           import json,sys
           scope,label=sys.argv[1],sys.argv[2]
-          print(json.dumps({
+          body={
             'client_name':f'ChatGPT scope probe {label}',
             'redirect_uris':['https://chatgpt.com/connector_platform_oauth_redirect'],
             'grant_types':['authorization_code','refresh_token'],
             'response_types':['code'],
-            'scope':scope,
             'token_endpoint_auth_method':'none',
-          }))
+          }
+          if scope:
+            body['scope']=scope
+          print(json.dumps(body))
           PY
             )"
             code="$(curl -sS \
@@ -53,7 +55,7 @@ jobs:
               -H 'accept: application/json' \
               -o "/tmp/dcr-${label}.json" -w '%{http_code}' \
               --data "$payload" "$reg")"
-            echo "PROBE_${label}_HTTP=$code scope=$scope"
+            echo "PROBE_${label}_HTTP=$code scope=${scope:-<omitted>}"
             python - "$label" <<'PY'
           from pathlib import Path
           import sys
@@ -62,13 +64,18 @@ jobs:
           PY
           }
 
-          # Isolate which scope/policy combination is rejected by Keycloak DCR.
-          probe_scope base 'openid yca:read'
-          probe_scope email 'openid email yca:read'
-          probe_scope offline 'openid offline_access yca:read'
-          probe_scope profile 'openid profile yca:read'
+          # Keycloak DCR policy validates registered client scopes; openid is an OIDC request scope,
+          # not necessarily a Keycloak client-scope object. Probe them separately.
+          probe_scope omitted ''
+          probe_scope read 'yca:read'
+          probe_scope email 'email yca:read'
+          probe_scope offline 'offline_access yca:read'
+          probe_scope emailoffline 'email offline_access yca:read'
+          probe_scope withopenid 'openid email offline_access yca:read'
 
-          payload='{"client_name":"ChatGPT exact scope probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"openid email offline_access yca:read","token_endpoint_auth_method":"none"}'
+          # Use the DCR form most compatible with Keycloak, then request the full ChatGPT scope set
+          # during authorization, where openid belongs.
+          payload='{"client_name":"ChatGPT exact scope probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"scope":"email offline_access yca:read","token_endpoint_auth_method":"none"}'
           dcr_code="$(curl -sS \
             -A 'Mozilla/5.0 ChatGPT-Exact-Scope-Probe/1.0' \
             -H 'content-type: application/json' \
