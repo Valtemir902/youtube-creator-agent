@@ -26,7 +26,11 @@ class IntrospectionTokenVerifier(TokenVerifier):
         self.client_id = os.environ.get("YCA_AUTH_INTROSPECTION_CLIENT_ID", "").strip()
         self.client_secret = os.environ.get("YCA_AUTH_INTROSPECTION_CLIENT_SECRET", "").strip()
         self.resource = os.environ.get("YCA_MCP_PUBLIC_URL", "").strip()
-        self.issuer = os.environ.get("YCA_AUTH_ISSUER_URL", "").strip()
+        self.issuer = (
+            os.environ.get("YCA_TOKEN_ISSUER_URL", "").strip()
+            or os.environ.get("YCA_WEB_OIDC_ISSUER_URL", "").strip()
+            or os.environ.get("YCA_AUTH_ISSUER_URL", "").strip()
+        )
         if not all((self.endpoint, self.client_id, self.client_secret, self.resource, self.issuer)):
             raise RuntimeError("Configuração OAuth do resource server está incompleta.")
 
