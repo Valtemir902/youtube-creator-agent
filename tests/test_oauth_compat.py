@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from creator_service.oauth_compat import (
+    KeycloakDynamicClientStore,
     OAuthCompatError,
     legacy_chatgpt_client_id,
     normalize_dynamic_client_registration,
@@ -110,6 +111,43 @@ def test_repeated_registration_is_idempotent(monkeypatch):
     second = register_dynamic_client(_payload(), store=store)
     assert first.payload["client_id"] == second.payload["client_id"]
     assert len(store.clients) == 1
+
+
+def test_keycloak_assigns_read_default_and_write_optional(monkeypatch):
+    monkeypatch.setenv("YCA_KEYCLOAK_ADMIN_URL", "http://keycloak:8080")
+    monkeypatch.setenv("YCA_DCR_PROVISIONER_CLIENT_ID", "provisioner")
+    monkeypatch.setenv("YCA_DCR_PROVISIONER_CLIENT_SECRET", "secret")
+
+    class Store(KeycloakDynamicClientStore):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+            self.created = False
+
+        def _access_token(self):
+            return "token"
+
+        def _request(self, method, path, token, body=None):
+            self.calls.append((method, path, body))
+            if path.endswith("/client-scopes"):
+                return 200, [{"name": "yca:read", "id": "read"}, {"name": "yca:write", "id": "write"}]
+            if method == "GET" and "/clients?" in path:
+                return 200, ([{"id": "internal"}] if self.created else [])
+            if method == "POST":
+                self.created = True
+                assert body["publicClient"] is True
+                assert body["attributes"]["pkce.code.challenge.method"] == "S256"
+                return 201, None
+            if method == "PUT":
+                return 204, None
+            raise AssertionError((method, path))
+
+    store = Store()
+    assert register_dynamic_client(_payload(), store=store).payload["client_id"].startswith("yca-chatgpt-dcr-")
+    paths = [path for method, path, _ in store.calls if method == "PUT"]
+    assert any("/default-client-scopes/read" in path for path in paths)
+    assert any("/optional-client-scopes/write" in path for path in paths)
+    assert not any("/default-client-scopes/write" in path for path in paths)
 
 
 def test_legacy_client_identifier_is_preserved(monkeypatch):

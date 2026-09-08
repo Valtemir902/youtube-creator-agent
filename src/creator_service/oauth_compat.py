@@ -186,10 +186,10 @@ class KeycloakDynamicClientStore:
         status, scopes = self._request("GET", f"/admin/realms/{realm}/client-scopes", token)
         if status != 200 or not internal_id: raise RuntimeError("Não foi possível configurar escopos do cliente DCR.")
         scope_ids = {str(item.get("name")): str(item.get("id")) for item in scopes if isinstance(item, dict)}
-        for scope_name in ("yca:read", "yca:write"):
+        for scope_name, scope_kind in (("yca:read", "default"), ("yca:write", "optional")):
             scope_id = scope_ids.get(scope_name)
             if not scope_id: raise RuntimeError(f"Escopo obrigatório ausente no Keycloak: {scope_name}")
-            status, _ = self._request("PUT", f"/admin/realms/{realm}/clients/{urllib.parse.quote(internal_id)}/default-client-scopes/{urllib.parse.quote(scope_id)}", token)
+            status, _ = self._request("PUT", f"/admin/realms/{realm}/clients/{urllib.parse.quote(internal_id)}/{scope_kind}-client-scopes/{urllib.parse.quote(scope_id)}", token)
             if status not in (200, 204): raise RuntimeError(f"Não foi possível associar escopo DCR: {scope_name}")
         return client_id
 
