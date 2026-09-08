@@ -61,6 +61,13 @@ def test_secret_is_not_logged_and_client_credentials_is_verified():
     assert 'echo "$TEMP_SECRET"' not in text
 
 
+def test_wrapper_verifies_exact_production_responsible_server():
+    text = _text(WRAPPER)
+    assert "from creator_service.cloud_mcp_server_responsible import create_server" in text
+    assert "from creator_service.cloud_mcp_server_management import create_server" not in text
+    assert "ui://youtube-creator-agent/handoff-v1.html" in text
+
+
 def test_wrapper_keeps_mcp_and_dcr_smoke_checks_read_only_for_youtube():
     text = _text(WRAPPER)
     assert "len(names) >= 34" in text

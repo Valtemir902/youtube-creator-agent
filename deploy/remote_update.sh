@@ -93,11 +93,13 @@ bash -n /tmp/yca-remote-update-core-patched.sh
 
 /tmp/yca-remote-update-core-patched.sh "$TARGET_SHA"
 
-# Independent post-core MCP contract check. This performs no YouTube mutation.
+# Independent post-core MCP contract check. Use the exact production server
+# factory from cloud_mcp_server.py, which includes the responsible handoff layer.
+# Verifying only the management layer would incorrectly omit the 34th tool.
 docker compose -f "$COMPOSE_FILE" exec -T mcp python - <<'PY'
 import asyncio
 from mcp import Client
-from creator_service.cloud_mcp_server_management import create_server
+from creator_service.cloud_mcp_server_responsible import create_server
 
 required = {
     'get_video_details', 'get_video_transcript', 'list_channel_videos',
@@ -111,7 +113,11 @@ async def main():
         missing = required - names
         assert not missing, sorted(missing)
         assert len(names) >= 34, len(names)
-        print(f'mcp_contract=ok tools={len(names)}')
+        resources = await client.list_resources()
+        resource_items = getattr(resources, 'resources', resources)
+        resource_uris = {str(item.uri) for item in resource_items}
+        assert 'ui://youtube-creator-agent/handoff-v1.html' in resource_uris, resource_uris
+        print(f'mcp_contract=ok tools={len(names)} resources={len(resource_uris)}')
 
 asyncio.run(main())
 PY
