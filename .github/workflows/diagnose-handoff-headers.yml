@@ -1,0 +1,21 @@
+name: Diagnose Handoff Headers
+
+on:
+  push:
+    branches: ["fix/diagnose-handoff-headers"]
+
+permissions:
+  contents: read
+
+jobs:
+  headers:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect live GET response headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --location --max-time 20 \
+            --dump-header - --output /dev/null \
+            https://creator.silvadigitaltech.com/handoff/v1 \
+            | tr -d '\r' | sed -E 's/(set-cookie:).*/\1 [redacted]/I'
