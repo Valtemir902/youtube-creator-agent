@@ -8,7 +8,11 @@ from typing import Any
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from . import cloud_mcp_server as base
+from . import cloud_mcp_server_growth as growth
+from . import cloud_mcp_server_inventory as inventory
 from . import cloud_mcp_server_management as management
+from . import cloud_mcp_server_playlist_consistency as playlist_consistency
+from .full_mcp_contract import assert_registered_server_contract
 from .handoff import build_handoff_url, seal_handoff
 from .responsible_service import ResponsibleCreatorService
 from .security import signer_from_env
@@ -243,10 +247,12 @@ def _call_result(result: dict[str, Any]) -> CallToolResult:
 
 
 def create_server():
-    # Existing MCP write tools keep their full behavior, but use the same
-    # responsible executor as Gemini and handoff for verified metadata writes.
+    # Compose the exact production surface here so every caller of the
+    # responsible factory, including the standalone deploy wrapper, sees the
+    # same 47-tool + 1-resource catalog as the public entrypoint.
     management.VerifiedAdvancedSafeCreatorService = ResponsibleCreatorService
-    server = management.create_server()
+    playlist_consistency.install()
+    server = inventory.extend_server(growth.extend_server(management.create_server()))
 
     public_origin = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
     resource_meta: dict[str, Any] = {
@@ -356,6 +362,7 @@ def create_server():
         )
         return _call_result(result)
 
+    assert_registered_server_contract(server)
     return server
 
 
