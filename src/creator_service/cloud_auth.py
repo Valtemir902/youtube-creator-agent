@@ -39,6 +39,7 @@ class IntrospectionTokenVerifier(TokenVerifier):
         self.client_secret = os.environ.get("YCA_AUTH_INTROSPECTION_CLIENT_SECRET", "").strip()
         self.resource = os.environ.get("YCA_MCP_PUBLIC_URL", "").strip()
         self.expected_oauth_client_id = os.environ.get("YCA_CHATGPT_OAUTH_CLIENT_ID", "").strip()
+        self.dcr_client_prefix = os.environ.get("YCA_DCR_CLIENT_ID_PREFIX", "yca-chatgpt-dcr-").strip()
         self.issuer = (
             os.environ.get("YCA_TOKEN_ISSUER_URL", "").strip()
             or os.environ.get("YCA_WEB_OIDC_ISSUER_URL", "").strip()
@@ -76,7 +77,11 @@ class IntrospectionTokenVerifier(TokenVerifier):
             return None
 
         token_client_id = str(data.get("client_id") or data.get("azp") or "").strip()
-        if self.expected_oauth_client_id and token_client_id != self.expected_oauth_client_id:
+        # The legacy ChatGPT plugin remains bound to its original client. New
+        # registrations use a deterministic, server-managed prefix; arbitrary
+        # Keycloak clients never gain MCP access through this check.
+        allowed_dynamic_client = bool(self.dcr_client_prefix) and token_client_id.startswith(self.dcr_client_prefix)
+        if self.expected_oauth_client_id and token_client_id != self.expected_oauth_client_id and not allowed_dynamic_client:
             return None
 
         scope_value = data.get("scope", "")
