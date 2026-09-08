@@ -68,6 +68,10 @@ jobs:
           needed=false
           for path in "${changed[@]}"; do
             case "$path" in
+              .github/workflows/deploy-production.yml)
+                needed=true
+                break
+                ;;
               .github/*|tests/*|docs/*|README.md|*.md)
                 ;;
               *)
