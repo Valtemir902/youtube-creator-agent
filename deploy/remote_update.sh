@@ -76,6 +76,55 @@ echo "[oauth] forcing private Docker backchannels"
 set_env_value YCA_WEB_OIDC_BACKCHANNEL_BASE_URL "$BACKCHANNEL_VALUE"
 set_env_value YCA_AUTH_INTROSPECTION_URL "$INTROSPECTION_VALUE"
 
+# DCR clients are created only through this narrowly scoped, confidential
+# Keycloak service account. Its secret stays solely in server.env on the VPS.
+echo "[oauth] provisioning least-privilege DCR service account"
+dcr_client_id="yca-dcr-provisioner"
+set_env_value YCA_KEYCLOAK_ADMIN_URL "http://keycloak:8080"
+set_env_value YCA_KEYCLOAK_REALM "yca"
+set_env_value YCA_DCR_CLIENT_ID_PREFIX "yca-chatgpt-dcr-"
+set_env_value YCA_DCR_ALLOWED_REDIRECT_HOSTS "chatgpt.com"
+set_env_value YCA_DCR_PROVISIONER_CLIENT_ID "$dcr_client_id"
+chmod 600 config/server.env
+
+compose="docker compose -f $COMPOSE_FILE"
+$compose exec -T keycloak sh -lc '
+  set -eu
+  k=/opt/keycloak/bin/kcadm.sh
+  "$k" config credentials --server http://localhost:8080 --realm master \
+    --user "$KC_BOOTSTRAP_ADMIN_USERNAME" --password "$KC_BOOTSTRAP_ADMIN_PASSWORD" >/dev/null
+  id="$("$k" get clients -r yca -q clientId=yca-dcr-provisioner | sed -n "s/.*\"id\" : \"\([^\"]*\)\".*/\1/p" | head -n1)"
+  if [ -z "$id" ]; then
+    "$k" create clients -r yca -s clientId=yca-dcr-provisioner -s enabled=true \
+      -s publicClient=false -s serviceAccountsEnabled=true -s standardFlowEnabled=false \
+      -s directAccessGrantsEnabled=false -s implicitFlowEnabled=false >/dev/null
+    id="$("$k" get clients -r yca -q clientId=yca-dcr-provisioner | sed -n "s/.*\"id\" : \"\([^\"]*\)\".*/\1/p" | head -n1)"
+  fi
+  test -n "$id"
+  uid="$("$k" get clients/$id/service-account-user -r yca | sed -n "s/.*\"id\" : \"\([^\"]*\)\".*/\1/p" | head -n1)"
+  test -n "$uid"
+  "$k" add-roles -r yca --uid "$uid" --cclientid realm-management --rolename manage-clients
+  if "$k" get users/$uid/role-mappings/realm -r yca | grep -q '"name" : "realm-admin"'; then
+    echo "DCR provisioner must not have realm-admin" >&2; exit 1
+  fi
+  "$k" get clients/$id/client-secret -r yca | sed -n "s/.*\"value\" : \"\([^\"]*\)\".*/\1/p" | head -n1
+' > /tmp/yca-dcr-secret
+dcr_secret="$(tr -d '\r\n' </tmp/yca-dcr-secret)"
+rm -f /tmp/yca-dcr-secret
+test -n "$dcr_secret"
+set_env_value YCA_DCR_PROVISIONER_CLIENT_SECRET "$dcr_secret"
+chmod 600 config/server.env
+echo "[oauth] verifying DCR provisioner client_credentials"
+$compose exec -T -e DCR_CLIENT_ID="$dcr_client_id" -e DCR_CLIENT_SECRET="$dcr_secret" onboarding python - <<'PY'
+import json, os, urllib.parse, urllib.request
+body=urllib.parse.urlencode({"grant_type":"client_credentials","client_id":os.environ["DCR_CLIENT_ID"],"client_secret":os.environ["DCR_CLIENT_SECRET"]}).encode()
+request=urllib.request.Request("http://keycloak:8080/realms/yca/protocol/openid-connect/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
+with urllib.request.urlopen(request, timeout=8) as response:
+    token=json.loads(response.read().decode()).get("access_token")
+    assert response.status == 200 and token
+print("dcr_provisioner_client_credentials=ok")
+PY
+
 # Read the fixed public OAuth client without letting grep/pipefail abort the
 # deploy when an older server.env does not yet contain the variable.
 chatgpt_client_id="$(sed -n 's/^YCA_CHATGPT_OAUTH_CLIENT_ID=//p' config/server.env | tail -n1 | tr -d '\r' || true)"

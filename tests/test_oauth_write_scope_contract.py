@@ -45,8 +45,13 @@ def test_dcr_promotes_management_connection_to_read_and_write(monkeypatch):
 
 def test_dcr_response_returns_write_scope_even_if_client_requested_read_only(monkeypatch):
     _configure(monkeypatch)
-    result = register_dynamic_client(_read_only_dcr_request())
+    class Store:
+        def resolve_or_create(self, registration):
+            assert registration["redirect_uris"] == ["https://chatgpt.com/connector_platform_oauth_redirect"]
+            return "yca-chatgpt-dcr-test-client"
+
+    result = register_dynamic_client(_read_only_dcr_request(), store=Store())
     assert result.status_code == 201
     scopes = set(result.payload["scope"].split())
     assert {"yca:read", "yca:write"} <= scopes
-    assert result.payload["client_id"] == "82da41e4-4d89-4ccf-b134-c6a8b01f8453"
+    assert result.payload["client_id"] == "yca-chatgpt-dcr-test-client"
