@@ -11,17 +11,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Set up Node for web syntax checks
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
+          package-manager-cache: false
 
       - name: Install lightweight test dependencies
         run: |
@@ -78,10 +79,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -104,7 +105,7 @@ jobs:
           YCA_ONBOARDING_PUBLIC_URL: https://creator.example.com
           YCA_AUTH_INTROSPECTION_URL: https://auth.example.com/oauth/introspect
           YCA_AUTH_INTROSPECTION_CLIENT_ID: ci-client
-          YCA_AUTH_INTROSPECTION_CLIENT_SECRET: ci-secret
+          YCA_AUTH_INTROSPECTION_CLIENT_SECRET: nonsecret-ci-fixture
         run: |
           python - <<'PY'
           import asyncio
