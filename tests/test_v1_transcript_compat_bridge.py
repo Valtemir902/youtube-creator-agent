@@ -93,7 +93,7 @@ def test_v1_video_id_only_returns_details_and_full_transcript(monkeypatch):
                 {"video_id": "j4r_jTsS7xU"},
             )
             payload = json.loads(result.content[0].text)
-            assert payload["ok"] is True
+            assert payload["success"] is True
             assert payload["compatibility_mode"] == "v1_video_details_and_transcript"
             assert payload["read_only"] is True
             assert payload["requires_user_click"] is False
@@ -124,13 +124,13 @@ def test_v1_metadata_arguments_keep_existing_preview_handoff_path(monkeypatch):
     monkeypatch.setattr(
         bridge,
         "_legacy_v1_video_read",
-        lambda video_id: read_calls.append(video_id) or {"ok": True},
+        lambda video_id: read_calls.append(video_id) or {"success": True},
     )
 
     def fake_preview(**kwargs):
         preview_calls.append(kwargs)
         return {
-            "ok": True,
+            "success": True,
             "video_id": kwargs["video_id"],
             "changed_fields": ["title"],
             "requires_user_click": True,
@@ -145,7 +145,7 @@ def test_v1_metadata_arguments_keep_existing_preview_handoff_path(monkeypatch):
                 {"video_id": "j4r_jTsS7xU", "title": "Candidate title"},
             )
             payload = json.loads(result.content[0].text)
-            assert payload["ok"] is True
+            assert payload["success"] is True
             assert payload["changed_fields"] == ["title"]
 
     asyncio.run(run())
