@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Creator Agent growth play icon</title>
+  <desc id="desc">Original premium creator economy icon combining a rounded media tile, play symbol, analytics bars and an ascending growth line.</desc>
+  <defs>
+    <linearGradient id="bg" x1="120" y1="90" x2="880" y2="930" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#16191F"/><stop offset="0.46" stop-color="#0B0D12"/><stop offset="1" stop-color="#050608"/></linearGradient>
+    <linearGradient id="panel" x1="280" y1="240" x2="760" y2="760" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FF4B4F"/><stop offset="0.5" stop-color="#D91F2F"/><stop offset="1" stop-color="#8D1020"/></linearGradient>
+    <linearGradient id="growth" x1="270" y1="710" x2="775" y2="350" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FF9A8F"/><stop offset="0.55" stop-color="#FFE2D9"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="34" stdDeviation="36" flood-color="#000" flood-opacity=".44"/></filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="18"/></filter>
+  </defs>
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <circle cx="760" cy="226" r="174" fill="#E72838" opacity=".12" filter="url(#soft)"/>
+  <circle cx="255" cy="810" r="198" fill="#FF594E" opacity=".08" filter="url(#soft)"/>
+  <g filter="url(#shadow)"><rect x="188" y="202" width="648" height="620" rx="192" fill="url(#panel)"/><rect x="203" y="217" width="618" height="590" rx="178" fill="none" stroke="#FF7F7A" stroke-opacity=".32" stroke-width="8"/></g>
+  <path d="M430 387c-24-15-55 2-55 30v190c0 29 32 46 56 29l150-96c22-14 22-47 0-61L430 387Z" fill="#FFF" opacity=".98"/>
+  <g opacity=".98"><rect x="515" y="664" width="52" height="80" rx="13" fill="#FFC0B7"/><rect x="590" y="622" width="52" height="122" rx="13" fill="#FF9C94"/><rect x="665" y="566" width="52" height="178" rx="13" fill="#FF726E"/><rect x="740" y="500" width="52" height="244" rx="13" fill="#FF4D51"/></g>
+  <path d="M279 709C354 696 396 654 446 610C499 563 548 604 607 558C661 517 694 445 754 407" fill="none" stroke="url(#growth)" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M740 362L797 394L767 454" fill="none" stroke="#FFF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
