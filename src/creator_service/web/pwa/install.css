@@ -37,7 +37,25 @@
 
 .yca-install-cta:active { transform: translateY(0) scale(.985); }
 .yca-install-cta:disabled { cursor: wait; opacity: .62; animation: none; }
-.yca-install-login { width: min(100%, 360px); margin: 16px auto 0; }
+
+.yca-install-login-wrap {
+  bottom: max(22px, env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+  left: 50%;
+  padding: 0 18px;
+  pointer-events: none;
+  position: fixed;
+  transform: translateX(-50%);
+  width: min(100%, 460px);
+  z-index: 1200;
+}
+
+.yca-install-login {
+  min-height: 46px;
+  pointer-events: auto;
+  width: 100%;
+}
 
 .yca-install-dashboard {
   min-height: 38px;
@@ -99,4 +117,5 @@
 @media (max-width: 640px) {
   .yca-install-dashboard { min-height: 36px; padding: 0 11px; font-size: 12px; }
   .yca-install-card { border-radius: 18px; padding: 21px; }
+  .yca-install-login-wrap { bottom: max(14px, env(safe-area-inset-bottom)); }
 }
