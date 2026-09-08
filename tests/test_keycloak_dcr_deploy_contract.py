@@ -68,6 +68,26 @@ def test_wrapper_verifies_exact_production_responsible_server():
     assert "ui://youtube-creator-agent/handoff-v1.html" in text
 
 
+def test_legacy_client_supports_only_narrow_modern_chatgpt_redirect_pattern():
+    text = _text(WRAPPER)
+    assert 'LEGACY_CHATGPT_REDIRECT="https://chatgpt.com/connector_platform_oauth_redirect"' in text
+    assert 'MODERN_CHATGPT_REDIRECT_PATTERN="https://chatgpt.com/connector/oauth/*"' in text
+    assert 'MODERN_CHATGPT_SMOKE_REDIRECT="https://chatgpt.com/connector/oauth/yca-deploy-smoke"' in text
+    assert '"https://chatgpt.com/*" not in verified_redirects' in text
+    assert '"*" not in verified_redirects' in text
+    assert "legacy_chatgpt_redirect_compat=ok" in text
+    assert "legacy_modern_redirect_authorization=ok" in text
+
+
+def test_dcr_smoke_covers_exact_legacy_and_modern_callbacks():
+    text = _text(WRAPPER)
+    assert 'https://chatgpt.com/connector_platform_oauth_redirect' in text
+    assert 'https://chatgpt.com/connector/oauth/yca-deploy-smoke' in text
+    assert "dcr_registration_smoke=ok legacy+modern" in text
+    # DCR itself must continue registering exact callbacks, not a wildcard supplied by ChatGPT.
+    assert "body.get('redirect_uris') == payload['redirect_uris']" in text
+
+
 def test_wrapper_keeps_mcp_and_dcr_smoke_checks_read_only_for_youtube():
     text = _text(WRAPPER)
     assert "len(names) >= 34" in text
