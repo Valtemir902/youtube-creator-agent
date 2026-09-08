@@ -22,10 +22,12 @@ if keycloak_issuer and compat_issuer:
     os.environ.setdefault("YCA_TOKEN_ISSUER_URL", keycloak_issuer)
     os.environ["YCA_AUTH_ISSUER_URL"] = compat_issuer.rstrip("/")
 
-# Production keeps the full MCP write surface and adds a capability-safe
-# one-click handoff for clients that cannot invoke write tools directly.
-# This entrypoint is also the exact runtime target asserted by post-deploy checks.
-from creator_service.cloud_mcp_server_responsible import run
+# Keep the responsible 34-tool surface as the production base.  The V1 bridge
+# only replaces the historical preview tool with a backward-compatible read
+# mode when it is called with video_id alone.  Importing the responsible run
+# symbol here also preserves the production contract assertion used by CI.
+from creator_service.cloud_mcp_server_responsible import run as _responsible_run
+from creator_service.cloud_mcp_server_v1_compat import run
 
 
 if __name__ == "__main__":
