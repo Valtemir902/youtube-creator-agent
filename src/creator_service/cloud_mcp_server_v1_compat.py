@@ -7,6 +7,7 @@ from mcp.types import CallToolResult, ToolAnnotations
 
 from . import cloud_mcp_server as base
 from . import cloud_mcp_server_growth as growth
+from . import cloud_mcp_server_inventory as inventory
 from . import cloud_mcp_server_management as management
 from . import cloud_mcp_server_responsible as responsible
 
@@ -67,11 +68,10 @@ def _tool_meta() -> dict[str, Any]:
 
 
 def create_server():
-    # Keep the proven responsible 34-tool server untouched, then add the new
-    # channel/playlist growth tools as an extension. Frozen V1 clients still see
-    # their historical snapshot while newer clients (including V2) can discover
-    # the expanded catalog from the same production endpoint.
-    server = growth.extend_server(responsible.create_server())
+    # Keep the proven responsible server untouched, add growth capabilities,
+    # then harden only the existing list_channel_videos read implementation.
+    # Tool names and schemas remain compatible for frozen and modern clients.
+    server = inventory.extend_server(growth.extend_server(responsible.create_server()))
 
     # Replace only the historical tool. The name and argument schema remain
     # byte-for-byte compatible from the client's point of view: video_id,
