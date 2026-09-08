@@ -14,6 +14,7 @@ PWA_ASSETS = {
     "app-icon.svg": ("image/svg+xml", "public, max-age=86400"),
     "app-icon-solid.svg": ("image/svg+xml", "public, max-age=86400"),
     "app-icon-maskable.svg": ("image/svg+xml", "public, max-age=86400"),
+    "icon-1024.png": ("image/png", "public, max-age=86400"),
     "icon-512.png": ("image/png", "public, max-age=86400"),
     "icon-192.png": ("image/png", "public, max-age=86400"),
     "icon-180.png": ("image/png", "public, max-age=86400"),
