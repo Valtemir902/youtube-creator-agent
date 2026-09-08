@@ -43,19 +43,23 @@ def test_html_enhancement_is_idempotent_and_keeps_existing_content():
     source = "<html><head><meta name=\"theme-color\" content=\"#000\"></head><body>safe</body></html>"
     enhanced = enhance_pwa_html(source)
     assert enhanced.count('rel="manifest" href="/manifest.webmanifest"') == 1
+    assert '<link rel="stylesheet" href="/pwa/install.css">' in enhanced
     assert '<script defer src="/pwa/bootstrap.js"></script>' in enhanced
     assert '<body>safe</body>' in enhanced
     assert enhance_pwa_html(enhanced) == enhanced
 
 
-def test_pwa_routes_preserve_auth_redirects_and_no_store(tmp_path: Path):
+def test_login_and_dashboard_receive_pwa_install_surface_without_html_cache(tmp_path: Path):
     client = TestClient(make_test_app(tmp_path))
 
     login = client.get("/login", follow_redirects=False)
     assert login.status_code == 200
     assert login.headers["cache-control"] == "no-store"
+    assert login.headers["pragma"] == "no-cache"
     assert login.headers["x-pwa-enhanced"] == "1"
     assert 'rel="manifest"' in login.text
+    assert '/pwa/install.css' in login.text
+    assert '/pwa/bootstrap.js' in login.text
 
     dashboard = client.get("/dashboard", follow_redirects=False)
     assert dashboard.status_code == 303
@@ -65,7 +69,54 @@ def test_pwa_routes_preserve_auth_redirects_and_no_store(tmp_path: Path):
     dashboard = client.get("/dashboard", follow_redirects=False)
     assert dashboard.status_code == 200
     assert dashboard.headers["cache-control"] == "no-store"
+    assert dashboard.headers["pragma"] == "no-cache"
     assert 'rel="manifest"' in dashboard.text
+    assert '/pwa/install.css' in dashboard.text
+    assert '/pwa/bootstrap.js' in dashboard.text
+
+
+def test_install_cta_contract_covers_login_dashboard_native_prompt_and_fallback():
+    source = (PWA_ROOT / "bootstrap.js").read_text(encoding="utf-8")
+
+    assert "location.pathname === '/login'" in source
+    assert "Instalar Creator Agent" in source
+    assert "yca-install-login" in source
+    assert "location.pathname === '/dashboard'" in source
+    assert "yca-install-dashboard" in source
+    assert "document.querySelector('.top-actions')" in source
+
+    assert "beforeinstallprompt" in source
+    assert "event.preventDefault()" in source
+    assert "deferredPrompt = event" in source
+    assert "await deferredPrompt.prompt()" in source
+    assert "await deferredPrompt.userChoice" in source
+
+    assert "No Chrome, abra o menu ⋮" in source
+    assert "Adicionar à tela inicial" in source
+    assert "No Safari, toque em Compartilhar" in source
+    assert "Adicionar à Tela de Início" in source
+    assert "showFallback()" in source
+    assert "installFallback" in source
+
+
+def test_install_cta_hides_completely_in_standalone_mode():
+    source = (PWA_ROOT / "bootstrap.js").read_text(encoding="utf-8")
+    assert "matchMedia?.('(display-mode: standalone)').matches === true" in source
+    assert "window.navigator.standalone === true" in source
+    assert "if (state.installedMode)" in source
+    assert "removeInstallUI();" in source
+    assert "appinstalled" in source
+
+
+def test_install_cta_visual_contract_is_premium_and_motion_safe():
+    css = (PWA_ROOT / "install.css").read_text(encoding="utf-8")
+    assert ".yca-install-login-wrap" in css
+    assert ".yca-install-dashboard" in css
+    assert ".yca-install-fallback" in css
+    assert "@keyframes ycaInstallPulse" in css
+    assert "box-shadow:" in css
+    assert "prefers-reduced-motion: reduce" in css
+    assert "safe-area-inset-bottom" in css
 
 
 def test_manifest_is_professional_and_points_only_to_declared_icons():
@@ -95,7 +146,13 @@ def test_service_worker_is_static_only_and_explicitly_bypasses_sensitive_routes(
     assert "request.method !== 'GET'" in source
     assert "caches.open(CACHE_NAME)" in source
     assert "fetch(request)" in source
-    assert "/dashboard" not in source.split("const STATIC_PATHS", 1)[1].split("]);", 1)[0]
+
+    static_block = source.split("const STATIC_PATHS", 1)[1].split("]);", 1)[0]
+    assert "/pwa/install.css" in static_block
+    for forbidden in ("/login", "/dashboard", "/oauth", "/auth", "/callback", "/api", "/mcp", "/onboarding"):
+        assert forbidden not in static_block
+    for secretish in ("token", "session", "authorization"):
+        assert secretish not in static_block.lower()
 
 
 def test_service_worker_and_bootstrap_javascript_parse_with_node():
@@ -120,6 +177,11 @@ def test_public_pwa_assets_and_headers(tmp_path: Path):
     assert sw.status_code == 200
     assert sw.headers["service-worker-allowed"] == "/"
     assert "no-store" in sw.headers["cache-control"]
+
+    css = client.get("/pwa/install.css")
+    assert css.status_code == 200
+    assert css.headers["content-type"].startswith("text/css")
+    assert "no-cache" in css.headers["cache-control"]
 
     for asset in ("icon-192.png", "icon-512.png", "icon-1024.png", "icon-maskable-512.png", "favicon-32.png", "app-icon.svg"):
         response = client.get(f"/pwa/{asset}")
