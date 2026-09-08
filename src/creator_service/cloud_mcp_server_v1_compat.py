@@ -6,6 +6,7 @@ from typing import Any
 from mcp.types import CallToolResult, ToolAnnotations
 
 from . import cloud_mcp_server as base
+from . import cloud_mcp_server_growth as growth
 from . import cloud_mcp_server_management as management
 from . import cloud_mcp_server_responsible as responsible
 
@@ -18,8 +19,8 @@ def _legacy_v1_video_read(video_id: str) -> dict[str, Any]:
 
     Frozen ChatGPT V1 snapshots know ``preview_video_metadata_update`` but do not
     know the newer dedicated ``get_video_details`` / ``get_video_transcript``
-    tools.  Calling that historical tool with only ``video_id`` is therefore a
-    strictly read-only compatibility mode.  Supplying any metadata field keeps
+    tools. Calling that historical tool with only ``video_id`` is therefore a
+    strictly read-only compatibility mode. Supplying any metadata field keeps
     the existing preview/handoff behaviour unchanged.
     """
     base._require_scope(base.READ_SCOPE)
@@ -66,12 +67,15 @@ def _tool_meta() -> dict[str, Any]:
 
 
 def create_server():
-    server = responsible.create_server()
+    # Keep the proven responsible 34-tool server untouched, then add the new
+    # channel/playlist growth tools as an extension. Frozen V1 clients still see
+    # their historical snapshot while newer clients (including V2) can discover
+    # the expanded catalog from the same production endpoint.
+    server = growth.extend_server(responsible.create_server())
 
-    # Replace only the historical tool.  The name and argument schema remain
+    # Replace only the historical tool. The name and argument schema remain
     # byte-for-byte compatible from the client's point of view: video_id,
-    # title, description and tags.  Newer tools and all 34 production tools stay
-    # registered by the responsible server underneath.
+    # title, description and tags.
     server.remove_tool("preview_video_metadata_update")
 
     @server.tool(
