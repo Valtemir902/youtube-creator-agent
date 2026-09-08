@@ -1,0 +1,153 @@
+name: Verify Live Production Final
+
+on:
+  push:
+    branches: ["verify/live-production-final"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: production
+    env:
+      EXPECTED_SHA: a9caab7f44f5580c61a43c3baa53c6cec0179c9f
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      CREATOR_BASE_URL: https://creator.silvadigitaltech.com
+      AUTH_HOST: auth.silvadigitaltech.com
+
+    steps:
+      - name: Checkout exact deployed production revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify exact live revision and responsible MCP contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "EXPECTED_SHA='$EXPECTED_SHA' bash -se" <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/apps/youtube-creator-agent"
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXPECTED_SHA"
+          echo "live_revision=ok sha=$actual"
+          docker compose -f deploy/docker-compose.oracle.yml exec -T mcp python - <<'PY'
+          import asyncio
+          from mcp import Client
+          from creator_service.cloud_mcp_server_responsible import HANDOFF_UI_URI, create_server
+
+          required = {
+              'creator_status', 'list_connected_channels', 'activate_connected_channel',
+              'get_channel_profile', 'get_strategy_evidence', 'validate_keyword_candidates',
+              'list_channel_videos', 'get_video_details', 'get_video_transcript',
+              'preview_video_metadata_update', 'apply_video_metadata_update', 'apply_video_metadata_rollback',
+              'preview_caption_upload', 'apply_caption_upload',
+              'list_playlists', 'get_playlist_details',
+              'preview_playlist_metadata_update', 'apply_playlist_metadata_update',
+              'preview_playlist_item_add', 'apply_playlist_item_add',
+              'preview_playlist_item_remove', 'apply_playlist_item_remove',
+              'render_video_metadata_handoff',
+          }
+
+          def resource_uris(value):
+              if value is None:
+                  return []
+              if hasattr(value, 'uri'):
+                  return [str(value.uri)]
+              if hasattr(value, 'resources'):
+                  return resource_uris(value.resources)
+              if isinstance(value, (list, tuple, set)):
+                  found = []
+                  for item in value:
+                      found.extend(resource_uris(item))
+                  return found
+              return []
+
+          async def main():
+              async with Client(create_server(), raise_exceptions=True) as client:
+                  tools_result = await client.list_tools()
+                  resources_result = await client.list_resources()
+                  names = {tool.name for tool in tools_result.tools}
+                  missing = required - names
+                  assert not missing, sorted(missing)
+                  assert len(names) >= 34, len(names)
+                  uris = set(resource_uris(resources_result))
+                  assert HANDOFF_UI_URI in uris, sorted(uris)
+
+                  preview = next(tool for tool in tools_result.tools if tool.name == 'preview_video_metadata_update')
+                  hints = preview.annotations.model_dump(by_alias=True, exclude_none=True)
+                  assert hints['readOnlyHint'] is True
+                  assert hints['destructiveHint'] is False
+                  assert set(preview.input_schema.get('properties', {})) == {'video_id','title','description','tags'}
+                  assert ((preview.meta or {}).get('ui') or {}).get('resourceUri') == HANDOFF_UI_URI
+
+                  handoff = next(tool for tool in tools_result.tools if tool.name == 'render_video_metadata_handoff')
+                  assert (((handoff.meta or {}).get('ui') or {}).get('resourceUri')) == HANDOFF_UI_URI
+                  print(f'live_mcp_contract=ok tools={len(names)} resources={len(uris)}')
+          asyncio.run(main())
+          PY
+          REMOTE
+
+      - name: Verify public health auth handoff and security headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --location --max-time 20 "$CREATOR_BASE_URL/health" | python -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True; print("health=ok")'
+          curl --fail --show-error --silent --location --max-time 20 "$CREATOR_BASE_URL/ready" | python -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ready") is True and not d.get("missing"); print("ready=ok")'
+          curl --fail --show-error --silent --max-time 20 "$CREATOR_BASE_URL/api/auth/config" | python -c 'import json,sys; d=json.load(sys.stdin); assert d.get("oidc_ready") is True; print("auth_config=ok")'
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$CREATOR_BASE_URL/login")" = "200"
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$CREATOR_BASE_URL/handoff/v1")" = "200"
+          headers="$(curl --fail --show-error --silent --location --max-time 20 --dump-header - --output /dev/null "$CREATOR_BASE_URL/handoff/v1" | tr -d '\r')"
+          grep -qi '^cache-control: .*no-store' <<<"$headers"
+          grep -qi '^referrer-policy: no-referrer' <<<"$headers"
+          grep -qi '^x-robots-tag: noindex' <<<"$headers"
+          echo "public_handoff_security=ok"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Playwright
+        shell: bash
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run live browser audit
+        shell: bash
+        run: node tests/live_browser_smoke.js
+
+      - name: Upload live audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-live-production-audit
+          path: artifacts/
+          if-no-files-found: warn
