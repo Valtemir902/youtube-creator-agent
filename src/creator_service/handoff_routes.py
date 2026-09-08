@@ -88,6 +88,61 @@ def _playlist_membership(service: ResponsibleCreatorService, playlist_id: str) -
     return rows
 
 
+def _remove_playlist_item_verified(
+    service: ResponsibleCreatorService,
+    *,
+    playlist_id: str,
+    video_id: str,
+    playlist_item_id: str,
+) -> dict[str, Any]:
+    """Delete only the exact playlist item we can prove belongs to this operation."""
+    before = _playlist_membership(service, playlist_id)
+    exact = [
+        row
+        for row in before
+        if row["playlist_item_id"] == playlist_item_id and row["video_id"] == video_id
+    ]
+    if not exact:
+        if any(row["playlist_item_id"] == playlist_item_id for row in before):
+            raise RuntimeError("O item de playlist mudou de alvo; a remoção automática foi bloqueada.")
+        return {
+            "playlist_id": playlist_id,
+            "video_id": video_id,
+            "playlist_item_id": playlist_item_id,
+            "already_absent": True,
+            "persisted_verified": True,
+        }
+
+    provider_error: Exception | None = None
+    try:
+        service._youtube().playlistItems().delete(id=playlist_item_id).execute()
+    except Exception as exc:
+        provider_error = exc
+
+    try:
+        after = _playlist_membership(service, playlist_id)
+    except Exception as read_error:
+        raise RuntimeError(
+            "A remoção do item de playlist foi enviada, mas a releitura falhou. "
+            "A ferramenta não repetirá a exclusão às cegas."
+        ) from provider_error or read_error
+
+    still_exists = any(row["playlist_item_id"] == playlist_item_id for row in after)
+    if still_exists:
+        if provider_error is not None:
+            raise provider_error
+        raise RuntimeError("O YouTube não confirmou a remoção do item de playlist.")
+
+    return {
+        "playlist_id": playlist_id,
+        "video_id": video_id,
+        "playlist_item_id": playlist_item_id,
+        "already_absent": False,
+        "persisted_verified": True,
+        "recovered_from_ambiguous_response": provider_error is not None,
+    }
+
+
 def _add_playlist_item_verified(
     service: ResponsibleCreatorService,
     *,
@@ -102,6 +157,7 @@ def _add_playlist_item_verified(
             "video_id": video_id,
             "already_present": True,
             "playlist_item_id": existing[0]["playlist_item_id"],
+            "duplicate_count": len(existing),
             "persisted_verified": True,
         }
 
@@ -120,23 +176,96 @@ def _add_playlist_item_verified(
     except Exception as exc:
         provider_error = exc
 
-    # Never retry the insert blindly. A lost HTTP response can still mean that
-    # YouTube accepted the request, so authoritative membership is read back.
-    after = _playlist_membership(service, playlist_id)
+    try:
+        after = _playlist_membership(service, playlist_id)
+    except Exception as read_error:
+        service.memory.record_video_action(
+            video_id=video_id,
+            action_type="playlist_write_ambiguous_state",
+            surface="responsible_creator_service",
+            changed_fields=["playlist"],
+            before={"playlist_id": playlist_id, "present": False},
+            after={"playlist_id": playlist_id, "present": "unknown"},
+            details={
+                "tenant_id": service.context.tenant_id,
+                "reason": "playlist_insert_readback_failed",
+                "provider_error_type": type(provider_error).__name__ if provider_error else "",
+                "read_error_type": type(read_error).__name__,
+            },
+        )
+        raise RuntimeError(
+            "A inclusão na playlist pode ter sido aceita, mas a releitura falhou. "
+            "A ferramenta bloqueou qualquer nova tentativa automática para não duplicar o vídeo."
+        ) from provider_error or read_error
+
     before_ids = {row["playlist_item_id"] for row in before}
     new_matches = [
-        row for row in after
+        row
+        for row in after
         if row["video_id"] == video_id and row["playlist_item_id"] not in before_ids
     ]
+    all_matches = [row for row in after if row["video_id"] == video_id]
     returned_id = str((response or {}).get("id", "")).strip()
 
-    if returned_id and any(row["playlist_item_id"] == returned_id for row in new_matches):
+    if returned_id:
+        returned_match = next(
+            (row for row in new_matches if row["playlist_item_id"] == returned_id),
+            None,
+        )
+        if returned_match is None:
+            raise RuntimeError(
+                "O YouTube retornou um item de playlist, mas a releitura não confirmou o mesmo ID. "
+                "Nenhuma repetição automática será feita."
+            )
+
+        if len(all_matches) > 1:
+            # A second actor may have inserted the same video between our baseline
+            # read and our insert. Because YouTube returned our exact item ID, we
+            # can safely remove only our copy and preserve the concurrent one.
+            _remove_playlist_item_verified(
+                service,
+                playlist_id=playlist_id,
+                video_id=video_id,
+                playlist_item_id=returned_id,
+            )
+            remaining = [
+                row for row in _playlist_membership(service, playlist_id)
+                if row["video_id"] == video_id
+            ]
+            if not remaining:
+                raise RuntimeError(
+                    "Uma corrida concorrente foi detectada na playlist. Nossa cópia foi removida, "
+                    "mas a outra inclusão também desapareceu; gere uma nova proposta."
+                )
+            return {
+                "playlist_id": playlist_id,
+                "video_id": video_id,
+                "already_present": True,
+                "playlist_item_id": remaining[0]["playlist_item_id"],
+                "persisted_verified": True,
+                "concurrent_duplicate_prevented": True,
+            }
         item_id = returned_id
-    elif len(new_matches) == 1:
+    elif len(new_matches) == 1 and len(all_matches) == 1:
+        # Lost transport response, but the authoritative state has exactly one
+        # new membership for the target video. Treat that state as success and
+        # never retry the insert.
         item_id = new_matches[0]["playlist_item_id"]
     elif not new_matches and provider_error is not None:
         raise provider_error
     else:
+        service.memory.record_video_action(
+            video_id=video_id,
+            action_type="playlist_write_ambiguous_state",
+            surface="responsible_creator_service",
+            changed_fields=["playlist"],
+            before={"playlist_id": playlist_id, "present": False},
+            after={"playlist_id": playlist_id, "matches": len(all_matches)},
+            details={
+                "tenant_id": service.context.tenant_id,
+                "reason": "playlist_insert_ambiguous_membership",
+            },
+        )
         raise RuntimeError(
             "O estado da playlist ficou ambíguo após a tentativa de inclusão. "
             "A ferramenta bloqueou qualquer repetição automática para não duplicar o vídeo."
@@ -214,6 +343,37 @@ def _rollback_metadata_after_secondary_failure(
     ) from original_error
 
 
+def _rollback_playlist_after_final_failure(
+    service: ResponsibleCreatorService,
+    playlist_result: dict[str, Any] | None,
+    original_error: Exception,
+) -> Exception:
+    if not playlist_result or playlist_result.get("already_present"):
+        return original_error
+    item_id = str(playlist_result.get("playlist_item_id", "")).strip()
+    playlist_id = str(playlist_result.get("playlist_id", "")).strip()
+    video_id = str(playlist_result.get("video_id", "")).strip()
+    if not item_id or not playlist_id or not video_id:
+        return RuntimeError(
+            "A verificação final falhou após uma inclusão de playlist sem identificadores suficientes para rollback seguro."
+        )
+    try:
+        _remove_playlist_item_verified(
+            service,
+            playlist_id=playlist_id,
+            video_id=video_id,
+            playlist_item_id=item_id,
+        )
+    except Exception as rollback_error:
+        return RuntimeError(
+            "A verificação final falhou e a remoção compensatória do item de playlist também não pôde ser confirmada. "
+            "Nenhuma nova tentativa automática será feita."
+        )
+    return RuntimeError(
+        f"{original_error} A inclusão de playlist criada por esta operação foi removida e verificada."
+    )
+
+
 def install_handoff_routes(app: FastAPI) -> None:
     """Install YCA HandOff V1 and replace the weaker dashboard AI apply route."""
 
@@ -276,7 +436,10 @@ def install_handoff_routes(app: FastAPI) -> None:
                     "recovered_from_interrupted_response": True,
                 }
 
-        if not service._mismatches(current, package.proposed) and playlist_ok:
+        metadata_ok = not service._mismatches(current, package.proposed)
+        baseline_unchanged = signer_from_env().payload_digest(current) == package.baseline_digest
+
+        if metadata_ok and playlist_ok:
             result = {
                 "ok": True,
                 "video_id": package.video_id,
@@ -292,21 +455,37 @@ def install_handoff_routes(app: FastAPI) -> None:
             audit("handoff_reconciled", "success", package.tenant_id, {"video_id": package.video_id})
             return result
 
-        if signer_from_env().payload_digest(current) == package.baseline_digest and not playlist_ok:
-            message = (
-                "Uma execução anterior foi interrompida antes de uma alteração verificável. "
-                "O ticket foi encerrado por segurança; gere uma nova proposta."
-            )
+        if baseline_unchanged:
+            if "playlist" in set(package.changed_fields) and playlist_ok:
+                message = (
+                    "Uma execução anterior foi interrompida após uma possível inclusão de playlist, "
+                    "mas antes de concluir os metadados. O ticket foi encerrado sem repetir nenhuma gravação."
+                )
+            else:
+                message = (
+                    "Uma execução anterior foi interrompida sem uma alteração de metadados verificável. "
+                    "O ticket foi encerrado por segurança; gere uma nova proposta."
+                )
             execution_store.mark_failed(ticket, message)
+            audit("handoff_reconciled", "failed_safe", package.tenant_id, {"video_id": package.video_id, "baseline_unchanged": True})
             raise HTTPException(status_code=409, detail=message)
 
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Uma execução anterior foi interrompida e o estado atual não permite provar com segurança se a operação terminou. "
-                "Nenhuma nova gravação será tentada com este ticket."
-            ),
+        message = (
+            "Uma execução anterior foi interrompida e o estado atual não permite provar com segurança se a operação terminou. "
+            "O ticket foi encerrado sem novas gravações; gere uma nova análise antes de qualquer outra mudança."
         )
+        execution_store.mark_failed(ticket, message)
+        service.memory.record_video_action(
+            video_id=package.video_id,
+            action_type="handoff_interrupted_ambiguous_state",
+            surface="responsible_creator_service",
+            changed_fields=list(package.changed_fields),
+            before={"baseline_digest": package.baseline_digest},
+            after=current,
+            details={"tenant_id": package.tenant_id, "reason": "stale_processing_state_diverged"},
+        )
+        audit("handoff_reconciled", "failed_safe", package.tenant_id, {"video_id": package.video_id, "baseline_unchanged": False})
+        raise HTTPException(status_code=409, detail=message)
 
     @app.get("/handoff/v1", response_class=FileResponse)
     async def handoff_page() -> FileResponse:
@@ -369,9 +548,6 @@ def install_handoff_routes(app: FastAPI) -> None:
             if existing.status == "failed":
                 raise HTTPException(status_code=409, detail=existing.error or "Este handoff já foi encerrado com falha segura.")
             if existing.status == "processing":
-                # A concurrent request can legitimately be in progress for a few
-                # seconds. Only reconcile stale processing records; otherwise do
-                # not race a second write against the first one.
                 if int(time.time()) - existing.updated_at < 45:
                     raise HTTPException(status_code=409, detail="Este handoff já está sendo processado.")
                 return reconcile_interrupted_handoff(ticket=payload.ticket, package=package, service=service)
@@ -438,6 +614,7 @@ def install_handoff_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=409, detail=message)
 
         metadata_result: dict[str, Any] | None = None
+        playlist_result: dict[str, Any] | None = None
         try:
             if metadata_changed:
                 metadata_result = _apply_metadata_from_exact_baseline(
@@ -447,7 +624,6 @@ def install_handoff_routes(app: FastAPI) -> None:
                     proposed=normalized,
                 )
 
-            playlist_result = None
             if package.playlist_id and playlist_needed:
                 try:
                     playlist_result = _add_playlist_item_verified(
@@ -462,17 +638,19 @@ def install_handoff_routes(app: FastAPI) -> None:
             if metadata_changed and service._mismatches(verified, normalized):
                 raise RuntimeError("A releitura final do vídeo divergiu da alteração aprovada.")
         except HTTPException as exc:
-            execution_store.mark_failed(payload.ticket, str(exc.detail))
+            final_error = _rollback_playlist_after_final_failure(service, playlist_result, exc)
+            execution_store.mark_failed(payload.ticket, str(getattr(final_error, "detail", final_error)))
             raise
         except Exception as exc:
-            execution_store.mark_failed(payload.ticket, str(exc))
+            final_error = _rollback_playlist_after_final_failure(service, playlist_result, exc)
+            execution_store.mark_failed(payload.ticket, str(final_error))
             audit(
                 "handoff_apply",
                 "failed",
                 identity.tenant_id,
-                {"video_id": package.video_id, "error_type": type(exc).__name__},
+                {"video_id": package.video_id, "error_type": type(final_error).__name__},
             )
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=str(final_error)) from final_error
 
         result = {
             "ok": True,
@@ -493,10 +671,8 @@ def install_handoff_routes(app: FastAPI) -> None:
         )
         return result
 
-    # The old dashboard AI endpoint performed videos.update directly. Replace it
-    # with the same ResponsibleCreatorService used by ChatGPT handoff so Gemini,
-    # OpenAI-compatible providers and future internal models all share one
-    # authoritative execution engine.
+    # Replace the old dashboard AI apply endpoint so Gemini, OpenAI-compatible
+    # providers and future internal models share the same responsible executor.
     _remove_route(app, "/api/dashboard/ai-optimize/apply/{action_id}", "POST")
 
     @app.post("/api/dashboard/ai-optimize/apply/{action_id}")
@@ -562,6 +738,7 @@ def install_handoff_routes(app: FastAPI) -> None:
             playlist_needed = not any(row["video_id"] == video_id for row in before_membership)
 
         metadata_result: dict[str, Any] | None = None
+        playlist_result: dict[str, Any] | None = None
         try:
             if _metadata_changed(service, current, normalized):
                 metadata_result = _apply_metadata_from_exact_baseline(
@@ -570,7 +747,6 @@ def install_handoff_routes(app: FastAPI) -> None:
                     baseline_digest=baseline_digest,
                     proposed=normalized,
                 )
-            playlist_result = None
             if playlist_id and playlist_needed:
                 try:
                     playlist_result = _add_playlist_item_verified(
@@ -584,8 +760,9 @@ def install_handoff_routes(app: FastAPI) -> None:
             if service._mismatches(verified, normalized):
                 raise RuntimeError("A releitura final divergiu da proposta de IA aprovada.")
         except Exception as exc:
-            audit("dashboard_ai_responsible_apply", "failed", identity.tenant_id, {"video_id": video_id, "error_type": type(exc).__name__})
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            final_error = _rollback_playlist_after_final_failure(service, playlist_result, exc)
+            audit("dashboard_ai_responsible_apply", "failed", identity.tenant_id, {"video_id": video_id, "error_type": type(final_error).__name__})
+            raise HTTPException(status_code=409, detail=str(final_error)) from final_error
 
         audit("dashboard_ai_responsible_apply", "success", identity.tenant_id, {"video_id": video_id})
         return {
