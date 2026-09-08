@@ -79,7 +79,7 @@ def test_parse_srt_preserves_real_segment_timing():
     ]
 
 
-def test_caption_transcript_prefers_owner_caption_over_asr():
+def test_caption_transcript_prefers_published_manual_caption_over_asr():
     tracks = [
         {"id": "asr", "snippet": {"language": "en", "trackKind": "ASR", "isDraft": False}},
         {"id": "official", "snippet": {"language": "en", "trackKind": "standard", "isDraft": False}},
@@ -88,9 +88,54 @@ def test_caption_transcript_prefers_owner_caption_over_asr():
     assert result is not None
     assert result["caption_id"] == "official"
     assert result["source"] == "youtube_caption"
+    assert result["transcript_source"] == "youtube_manual_caption"
     assert result["is_auto_generated"] is False
+    assert result["has_manual_caption"] is True
+    assert result["has_published_manual_caption"] is True
+    assert result["has_auto_generated_caption"] is True
+    assert result["caption_publish_needed"] is False
+    assert result["caption_publish_reason"] == "manual_caption_already_published"
+    assert result["caption_policy"] == "reuse_published_manual"
+    assert result["seo_context_ready"] is True
     assert result["word_count"] == 8
     assert len(result["segments"]) == 2
+
+
+def test_caption_transcript_uses_youtube_asr_when_manual_caption_is_missing():
+    tracks = [
+        {"id": "asr", "snippet": {"language": "en", "trackKind": "ASR", "isDraft": False}},
+    ]
+    result = caption_transcript(_Youtube(_Captions(tracks, {"asr": SRT})), "video-1", language="en")
+    assert result is not None
+    assert result["caption_id"] == "asr"
+    assert result["source"] == "youtube_caption"
+    assert result["transcript_source"] == "youtube_auto_generated"
+    assert result["is_auto_generated"] is True
+    assert result["has_manual_caption"] is False
+    assert result["has_published_manual_caption"] is False
+    assert result["has_auto_generated_caption"] is True
+    assert result["caption_publish_needed"] is True
+    assert result["caption_publish_reason"] == "manual_caption_missing"
+    assert result["caption_policy"] == "generate_and_publish_if_authorized"
+    assert result["seo_context_ready"] is True
+
+
+def test_draft_manual_caption_does_not_block_asr_or_count_as_published():
+    tracks = [
+        {"id": "draft", "snippet": {"language": "en", "trackKind": "standard", "isDraft": True}},
+        {"id": "asr", "snippet": {"language": "en", "trackKind": "ASR", "isDraft": False}},
+    ]
+    result = caption_transcript(
+        _Youtube(_Captions(tracks, {"draft": SRT, "asr": SRT})),
+        "video-1",
+        language="en",
+    )
+    assert result is not None
+    assert result["caption_id"] == "asr"
+    assert result["transcript_source"] == "youtube_auto_generated"
+    assert result["has_manual_caption"] is True
+    assert result["has_published_manual_caption"] is False
+    assert result["caption_publish_needed"] is True
 
 
 def test_get_video_transcript_without_caption_or_local_media_is_typed(tmp_path):
@@ -131,10 +176,45 @@ def test_get_video_transcript_falls_back_to_tenant_local_whisper(tmp_path):
         transcriber_factory=_Transcriber,
     )
     assert result["source"] == "local_whisper"
+    assert result["transcript_source"] == "local_whisper"
     assert result["full_text"] == "Real words from local media"
     assert result["word_count"] == 5
     assert result["segments"][0]["start"] == 0.0
     assert result["full_text_complete"] is True
+    assert result["has_manual_caption"] is False
+    assert result["has_published_manual_caption"] is False
+    assert result["has_auto_generated_caption"] is False
+    assert result["caption_publish_needed"] is True
+    assert result["caption_policy"] == "generate_and_publish_if_authorized"
+    assert result["seo_context_ready"] is True
+
+
+def test_existing_published_manual_caption_prevents_republication_even_if_download_fails(tmp_path):
+    source_dir = Path(tmp_path) / "video_sources"
+    source_dir.mkdir(parents=True)
+    (source_dir / "video-1.mp4").write_bytes(b"authorized-source-fixture")
+    tracks = [
+        {"id": "manual", "snippet": {"language": "en", "trackKind": "standard", "isDraft": False}},
+    ]
+    context = SimpleNamespace(data_dir=tmp_path)
+    service = _Service(context, _Youtube(_Captions(tracks=tracks, downloads={})))
+
+    class _Transcriber:
+        def transcribe(self, media_path, *, language="auto"):
+            return MediaTranscriptionResult(
+                text="Fallback context only",
+                engine="test-whisper",
+                language="en",
+                chars=21,
+                segments=(MediaTranscriptionSegment(start=0.0, duration=2.0, text="Fallback context only"),),
+            )
+
+    result = get_video_transcript_data(service, "video-1", transcriber_factory=_Transcriber)
+    assert result["source"] == "local_whisper"
+    assert result["has_published_manual_caption"] is True
+    assert result["caption_publish_needed"] is False
+    assert result["caption_publish_reason"] == "manual_caption_already_published"
+    assert result["caption_policy"] == "reuse_published_manual"
 
 
 def test_segments_are_paginated_without_truncating_full_text(tmp_path):
