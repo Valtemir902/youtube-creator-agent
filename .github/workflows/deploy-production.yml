@@ -201,7 +201,7 @@ jobs:
           curl --fail --show-error --silent --max-time 20 https://creator.silvadigitaltech.com/api/auth/config \
             | python -c 'import json,sys; d=json.load(sys.stdin); assert d.get("oidc_ready") is True; print("auth_config=ok")'
 
-          headers="$(curl --show-error --silent --head --max-time 20 https://creator.silvadigitaltech.com/handoff/v1 | tr -d '\r')"
+          headers="$(curl --fail --show-error --silent --location --max-time 20 --dump-header - --output /dev/null https://creator.silvadigitaltech.com/handoff/v1 | tr -d '\r')"
           grep -qi '^cache-control: .*no-store' <<<"$headers"
           grep -qi '^referrer-policy: no-referrer' <<<"$headers"
           grep -qi '^x-robots-tag: noindex' <<<"$headers"
