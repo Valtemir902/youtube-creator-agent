@@ -68,7 +68,10 @@ async def production_http_middleware(request: Request, call_next) -> Response:
         if response_obj is not None:
             response_obj.headers["X-Request-ID"] = request_id
             response_obj.headers["X-Content-Type-Options"] = "nosniff"
-            response_obj.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            # Keep strict-origin-when-cross-origin as the application default,
+            # but never weaken a route that explicitly selected a stricter
+            # policy such as the handoff executor's `no-referrer`.
+            response_obj.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
             response_obj.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             response_obj.headers["X-Frame-Options"] = "DENY"
             response_obj.headers.setdefault(
