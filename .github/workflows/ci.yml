@@ -172,14 +172,14 @@ jobs:
               "creator_status", "get_creator_capabilities", "list_connected_channels",
               "get_channel_profile", "get_strategy_evidence", "list_channel_videos",
               "get_video_details", "get_video_transcript", "list_playlists", "get_playlist_details",
-              "render_video_metadata_handoff",
+              "preview_video_metadata_update", "render_video_metadata_handoff",
           }
           READ_OPEN = {
               "validate_keyword_candidates", "list_video_categories", "list_video_captions",
           }
           PREVIEW = {
               "activate_connected_channel", "create_onboarding_link",
-              "preview_video_metadata_update", "preview_video_metadata_update_advanced",
+              "preview_video_metadata_update_advanced",
               "preview_caption_upload", "preview_playlist_metadata_update",
               "preview_playlist_item_add", "preview_playlist_item_remove",
           }
@@ -214,6 +214,7 @@ jobs:
               cloud_tools, cloud_names, resources = await names_for(create_server())
               missing = CLOUD_EXPECTED - cloud_names
               assert not missing, f"Production MCP missing tools: {sorted(missing)}"
+              assert len(cloud_names) >= 34, f"Expected >=34 production tools, got {len(cloud_names)}"
               assert not (CLOUD_FORBIDDEN & cloud_names), (
                   "Cloud MCP must not expose tools that invoke backend LLM strategy: "
                   f"{sorted(CLOUD_FORBIDDEN & cloud_names)}"
@@ -238,10 +239,13 @@ jobs:
                           hints["destructiveHint"],
                       )
                       assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
-                  if tool.name == "render_video_metadata_handoff":
+                  if tool.name in {"render_video_metadata_handoff", "preview_video_metadata_update"}:
                       meta = tool.meta or {}
                       assert (meta.get("ui") or {}).get("resourceUri") == HANDOFF_UI_URI
                       assert meta.get("openai/outputTemplate") == HANDOFF_UI_URI
+                  if tool.name == "preview_video_metadata_update":
+                      props = set(tool.input_schema.get("properties", {}))
+                      assert props == {"video_id", "title", "description", "tags"}, props
               print("Unified production ChatGPT-native MCP: OK", sorted(cloud_names))
 
           asyncio.run(main())
