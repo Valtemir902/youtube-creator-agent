@@ -68,7 +68,7 @@ def test_historical_preview_requires_read_scope_and_returns_one_click_handoff(mo
     )
 
     assert scopes == [responsible_mcp.base.READ_SCOPE]
-    assert result["ok"] is True
+    assert result["success"] is True
     assert result["approval_token"] == "signed-direct-apply-token"
     assert result["handoff_fallback_supported"] is True
     assert result["button_label"] == "Enviar e aplicar mudanças"
@@ -98,7 +98,7 @@ def test_historical_preview_with_no_diff_does_not_create_executable_ticket(monke
         tags=["old"],
     )
 
-    assert result["ok"] is True
+    assert result["success"] is True
     assert result["changed_fields"] == []
     assert result["handoff_url"] == ""
     assert result["requires_user_click"] is False
