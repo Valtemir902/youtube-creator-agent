@@ -79,28 +79,78 @@ def _language_rank(track_language: str | None, requested: str | None) -> int:
     return 2
 
 
+def _is_auto_track(track: dict[str, Any]) -> bool:
+    snippet = track.get("snippet", {}) or {}
+    return str(snippet.get("trackKind", "")).upper() == "ASR"
+
+
+def _is_published_manual_track(track: dict[str, Any]) -> bool:
+    snippet = track.get("snippet", {}) or {}
+    return not _is_auto_track(track) and not bool(snippet.get("isDraft", False))
+
+
+def _caption_inventory(tracks: list[dict[str, Any]]) -> dict[str, Any]:
+    manual_tracks = [track for track in tracks if not _is_auto_track(track)]
+    published_manual_tracks = [track for track in manual_tracks if _is_published_manual_track(track)]
+    auto_tracks = [track for track in tracks if _is_auto_track(track)]
+    has_published_manual = bool(published_manual_tracks)
+    return {
+        "has_manual_caption": bool(manual_tracks),
+        "has_published_manual_caption": has_published_manual,
+        "has_auto_generated_caption": bool(auto_tracks),
+        "caption_track_count": len(tracks),
+        "manual_caption_count": len(manual_tracks),
+        "published_manual_caption_count": len(published_manual_tracks),
+        "auto_generated_caption_count": len(auto_tracks),
+        "caption_publish_needed": not has_published_manual,
+        "caption_publish_reason": (
+            "manual_caption_already_published" if has_published_manual else "manual_caption_missing"
+        ),
+    }
+
+
 def _ordered_tracks(tracks: list[dict[str, Any]], language: str | None) -> list[dict[str, Any]]:
+    def class_rank(item: dict[str, Any]) -> int:
+        snippet = item.get("snippet", {}) or {}
+        if _is_published_manual_track(item):
+            return 0
+        if _is_auto_track(item):
+            return 1
+        if bool(snippet.get("isDraft", False)):
+            return 2
+        return 3
+
     def key(item: dict[str, Any]):
         snippet = item.get("snippet", {}) or {}
         return (
+            class_rank(item),
             _language_rank(snippet.get("language"), language),
-            str(snippet.get("trackKind", "")).upper() == "ASR",
-            bool(snippet.get("isDraft", False)),
         )
 
     return sorted(tracks, key=key)
 
 
-def caption_transcript(youtube, video_id: str, *, language: str | None = None) -> dict[str, Any] | None:
+def _list_caption_tracks(youtube, video_id: str) -> list[dict[str, Any]]:
     try:
-        tracks = youtube.captions().list(part="id,snippet", videoId=video_id).execute().get("items", [])
+        return list(youtube.captions().list(part="id,snippet", videoId=video_id).execute().get("items", []))
     except Exception as exc:
         raise tool_error("youtube_api_error", "YouTube caption listing failed.") from exc
+
+
+def caption_transcript(
+    youtube,
+    video_id: str,
+    *,
+    language: str | None = None,
+    tracks: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    tracks = _list_caption_tracks(youtube, video_id) if tracks is None else list(tracks)
     if not tracks:
         return None
 
+    inventory = _caption_inventory(tracks)
     requested = str(language or "").strip() or None
-    for track in _ordered_tracks(list(tracks), requested):
+    for track in _ordered_tracks(tracks, requested):
         caption_id = str(track.get("id", "")).strip()
         if not caption_id:
             continue
@@ -115,17 +165,34 @@ def caption_transcript(youtube, video_id: str, *, language: str | None = None) -
         full_text = _full_text(segments)
         if not full_text:
             continue
-        auto = str(snippet.get("trackKind", "")).upper() == "ASR"
+        auto = _is_auto_track(track)
+        draft = bool(snippet.get("isDraft", False))
+        transcript_source = (
+            "youtube_auto_generated"
+            if auto
+            else "youtube_manual_caption_draft"
+            if draft
+            else "youtube_manual_caption"
+        )
         return {
             "language": snippet.get("language") or requested,
             "source": "youtube_caption",
+            "transcript_source": transcript_source,
             "is_auto_generated": auto,
             "caption_id": caption_id,
             "caption_name": snippet.get("name"),
             "track_kind": snippet.get("trackKind"),
+            "is_draft": draft,
             "segments": segments,
             "full_text": full_text,
             "word_count": len(full_text.split()),
+            "seo_context_ready": True,
+            "caption_policy": (
+                "reuse_published_manual"
+                if inventory["has_published_manual_caption"]
+                else "generate_and_publish_if_authorized"
+            ),
+            **inventory,
         }
     return None
 
@@ -169,11 +236,13 @@ def local_audio_transcript(
     return {
         "language": result.language,
         "source": "local_whisper",
+        "transcript_source": "local_whisper",
         "is_auto_generated": True,
         "engine": result.engine,
         "segments": segments,
         "full_text": full_text,
         "word_count": len(full_text.split()),
+        "seo_context_ready": True,
     }
 
 
@@ -193,7 +262,10 @@ def get_video_transcript_data(
 
     # Ownership must be established before captions or local fallback are read.
     service._owned_video_item(video_id, part="snippet")
-    result = caption_transcript(service._youtube(), video_id, language=language)
+    youtube = service._youtube()
+    tracks = _list_caption_tracks(youtube, video_id)
+    inventory = _caption_inventory(tracks)
+    result = caption_transcript(youtube, video_id, language=language, tracks=tracks)
     if result is None:
         result = local_audio_transcript(
             service.context,
@@ -201,10 +273,17 @@ def get_video_transcript_data(
             language=language,
             transcriber_factory=transcriber_factory,
         )
+        if result is not None:
+            result.update(inventory)
+            result["caption_policy"] = (
+                "reuse_published_manual"
+                if inventory["has_published_manual_caption"]
+                else "generate_and_publish_if_authorized"
+            )
     if result is None:
         raise tool_error(
             "caption_not_available",
-            "No downloadable owner-authorized caption is available, and no tenant-owned local source media exists for Whisper fallback.",
+            "No downloadable owner-authorized manual/automatic YouTube caption is available, and no tenant-owned local source media exists for Whisper fallback.",
         )
 
     all_segments = list(result.pop("segments", []))
