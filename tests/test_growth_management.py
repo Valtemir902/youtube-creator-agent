@@ -136,7 +136,7 @@ def test_playlist_audit_detects_empty_thin_and_overlapping_playlists(monkeypatch
         "p2": [
             {"playlist_item_id": "j1", "video_id": "v1", "position": 0},
             {"playlist_item_id": "j2", "video_id": "v2", "position": 1},
-            {"playlist_item_id": "j3", "video_id": "v4", "position": 2},
+            {"playlist_item_id": "j3", "video_id": "v3", "position": 2},
         ],
         "p3": [],
     }
@@ -152,5 +152,5 @@ def test_playlist_audit_detects_empty_thin_and_overlapping_playlists(monkeypatch
         "missing_description", "generic_or_weak_title"
     }
     assert "empty_playlist" in {issue["code"] for issue in by_id["p3"]["issues"]}
-    assert result["high_overlap_groups"][0]["shared_video_count"] == 2
+    assert result["high_overlap_groups"][0]["shared_video_count"] == 3
     assert result["seo_context_ready"] is True
