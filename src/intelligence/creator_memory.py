@@ -145,7 +145,7 @@ class CreatorMemoryStore:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT action_type, changed_fields_json, created_at FROM video_actions "
-                "WHERE video_id=? ORDER BY created_at DESC LIMIT 1",
+                "WHERE video_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
                 (video_id,),
             ).fetchone()
         if row is None:
@@ -187,7 +187,7 @@ class CreatorMemoryStore:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT id,video_id,action_type,surface,changed_fields_json,before_digest,after_digest,details_json,created_at "
-                "FROM video_actions WHERE video_id=? ORDER BY created_at DESC LIMIT ?",
+                "FROM video_actions WHERE video_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
                 ((video_id or "").strip(), max(1, min(200, int(limit)))),
             ).fetchall()
         output = []

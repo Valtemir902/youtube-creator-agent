@@ -75,10 +75,10 @@ def _audit(event_type: str, outcome: str, metadata: dict[str, Any] | None = None
 
 
 def _service():
-    from .service import CreatorService
+    from .safe_service import SafeCreatorService
     resolver = _resolver()
     context = resolver.resolve(_tenant_id())
-    return CreatorService(context)
+    return SafeCreatorService(context)
 
 
 def create_server() -> MCPServer:
@@ -106,50 +106,27 @@ def create_server() -> MCPServer:
 
     @server.tool(
         title="Verificar status do canal",
-        annotations=ToolAnnotations(
-            read_only_hint=True,
-            open_world_hint=False,
-            destructive_hint=False,
-            idempotent_hint=True,
-        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False, destructive_hint=False, idempotent_hint=True),
     )
     def creator_status() -> dict[str, Any]:
-        """Leitura: verifica conexão e prontidão da conta. Não modifica o YouTube."""
         _require_scope(READ_SCOPE)
         _limit("read", limit=180)
         return _service().status()
 
     @server.tool(
         title="Ver capacidades do YouTube Creator Agent",
-        annotations=ToolAnnotations(
-            read_only_hint=True,
-            open_world_hint=False,
-            destructive_hint=False,
-            idempotent_hint=True,
-        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False, destructive_hint=False, idempotent_hint=True),
     )
     def get_creator_capabilities() -> dict[str, Any]:
-        """Leitura: descreve capacidades, responsabilidades e limitações das métricas. Não modifica o YouTube."""
         _require_scope(READ_SCOPE)
         _limit("read", limit=180)
         return _service().chatgpt_capabilities()
 
     @server.tool(
         title="Criar link seguro de conexão",
-        annotations=ToolAnnotations(
-            read_only_hint=False,
-            open_world_hint=False,
-            destructive_hint=False,
-            idempotent_hint=False,
-        ),
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=False, destructive_hint=False, idempotent_hint=False),
     )
     def create_onboarding_link() -> dict[str, Any]:
-        """Configuração: cria um link de onboarding de uso único com validade de 10 minutos.
-
-        Esta ação cria estado temporário no serviço, mas não modifica o canal do YouTube.
-        Use apenas quando o usuário precisar conectar o YouTube ou revisar a própria conta.
-        O link não contém tenant_id e é trocado por uma sessão HttpOnly no navegador.
-        """
         _require_scope(READ_SCOPE)
         _limit("onboarding", limit=10)
         base_url = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
@@ -158,9 +135,7 @@ def create_server() -> MCPServer:
         from .onboarding_sessions import OnboardingSessionStore
         token = _access_token()
         scopes = list(token.scopes or [])
-        launch = OnboardingSessionStore(_resolver().db).issue_launch(
-            _tenant_id(), scopes, ttl_seconds=600
-        )
+        launch = OnboardingSessionStore(_resolver().db).issue_launch(_tenant_id(), scopes, ttl_seconds=600)
         _audit("mcp_onboarding_link_created", "success")
         return {
             "url": f"{base_url}/onboarding/launch?{urlencode({'token': launch})}",
@@ -171,56 +146,31 @@ def create_server() -> MCPServer:
 
     @server.tool(
         title="Obter perfil e métricas do canal",
-        annotations=ToolAnnotations(
-            read_only_hint=True,
-            open_world_hint=False,
-            destructive_hint=False,
-            idempotent_hint=True,
-        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False, destructive_hint=False, idempotent_hint=True),
     )
     def get_channel_profile(period_days: int = 28) -> dict[str, Any]:
-        """Leitura: obtém métricas reais do canal autenticado para 7 a 90 dias, sem chamar IA externa."""
         _require_scope(READ_SCOPE)
         _limit("analytics", limit=60)
         return _service().channel_profile(period_days=period_days)
 
     @server.tool(
         title="Obter evidências para estratégia",
-        annotations=ToolAnnotations(
-            read_only_hint=True,
-            open_world_hint=False,
-            destructive_hint=False,
-            idempotent_hint=True,
-        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False, destructive_hint=False, idempotent_hint=True),
     )
     def get_strategy_evidence(period_days: int = 28) -> dict[str, Any]:
-        """Leitura: retorna evidências reais para o próprio ChatGPT montar a estratégia.
-
-        Inclui termos reais de busca, vídeos fortes/fracos, formato e tráfego. Não gera estratégia via IA externa e não altera o canal.
-        """
         _require_scope(READ_SCOPE)
         _limit("analytics", limit=60)
         return _service().strategy_evidence(period_days=period_days)
 
     @server.tool(
         title="Validar oportunidades de palavras-chave",
-        annotations=ToolAnnotations(
-            read_only_hint=True,
-            open_world_hint=True,
-            destructive_hint=False,
-            idempotent_hint=True,
-        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True, destructive_hint=False, idempotent_hint=True),
     )
     def validate_keyword_candidates(
         keywords: list[str],
         period_days: int = 28,
         max_results: int = 25,
     ) -> dict[str, Any]:
-        """Leitura pesada: valida até 20 keywords sugeridas pelo ChatGPT usando YouTube + Analytics reais.
-
-        Retorna demanda como índice estimado, concorrência, atualidade, velocidade, breakout, channel fit e evidências.
-        A API pública do YouTube não fornece contagem exata de buscas diárias para keywords arbitrárias. Não modifica o canal.
-        """
         _require_scope(READ_SCOPE)
         _limit("keyword_research", limit=20)
         return _service().validate_keyword_candidates(
@@ -231,12 +181,7 @@ def create_server() -> MCPServer:
 
     @server.tool(
         title="Preparar prévia de metadados do vídeo",
-        annotations=ToolAnnotations(
-            read_only_hint=False,
-            open_world_hint=False,
-            destructive_hint=False,
-            idempotent_hint=False,
-        ),
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=False, destructive_hint=False, idempotent_hint=False),
     )
     def preview_video_metadata_update(
         video_id: str,
@@ -244,11 +189,6 @@ def create_server() -> MCPServer:
         description: str | None = None,
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Preparação de escrita: gera uma prévia assinada de título/descrição/tags, mas NÃO altera o canal.
-
-        Esta ação cria um pacote temporário de aprovação e um registro de auditoria no serviço.
-        Mostre a prévia ao usuário. A aplicação posterior exige confirmação explícita e o payload assinado exato.
-        """
         _require_scope(WRITE_SCOPE)
         _limit("write_preview", limit=30)
         result = _service().preview_video_metadata_update(
@@ -257,32 +197,18 @@ def create_server() -> MCPServer:
             description=description,
             tags=tags,
         )
-        _audit(
-            "mcp_video_metadata_preview",
-            "success",
-            metadata={"video_id": video_id, "changed": result.get("changed", {})},
-        )
+        _audit("mcp_video_metadata_preview", "success", metadata={"video_id": video_id, "changed": result.get("changed", {})})
         return result
 
     @server.tool(
         title="Aplicar metadados aprovados no vídeo",
-        annotations=ToolAnnotations(
-            read_only_hint=False,
-            open_world_hint=True,
-            destructive_hint=True,
-            idempotent_hint=False,
-        ),
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True, destructive_hint=True, idempotent_hint=False),
     )
     def apply_video_metadata_update(
         approval_payload: dict[str, Any],
         approval_token: str,
         user_confirmed: bool,
     ) -> dict[str, Any]:
-        """Escrita importante: substitui os metadados indicados por uma prévia assinada após confirmação explícita.
-
-        Esta ação modifica dados publicamente visíveis no YouTube e pode sobrescrever título, descrição ou tags existentes.
-        Rejeita confirmação ausente, token expirado, payload alterado ou vídeo modificado desde a prévia.
-        """
         _require_scope(WRITE_SCOPE)
         _limit("write_apply", limit=15)
         if user_confirmed is not True:
@@ -295,10 +221,37 @@ def create_server() -> MCPServer:
         _audit(
             "mcp_video_metadata_apply",
             "success",
-            metadata={
-                "video_id": result.get("video_id"),
-                "changed_fields": result.get("changed_fields", []),
-            },
+            metadata={"video_id": result.get("video_id"), "changed_fields": result.get("changed_fields", [])},
+        )
+        return result
+
+    @server.tool(
+        title="Restaurar metadados anteriores do vídeo",
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True, destructive_hint=True, idempotent_hint=False),
+    )
+    def apply_video_metadata_rollback(
+        rollback_payload: dict[str, Any],
+        rollback_token: str,
+        user_confirmed: bool,
+    ) -> dict[str, Any]:
+        """Restaura exatamente os metadados anteriores com o pacote assinado retornado pelo apply.
+
+        Exige confirmação explícita e escopo de escrita. É a única exceção à proteção de
+        reedição recente e falha se o vídeo mudou, o token expirou ou o payload foi alterado.
+        """
+        _require_scope(WRITE_SCOPE)
+        _limit("write_rollback", limit=10)
+        if user_confirmed is not True:
+            _audit("mcp_video_metadata_rollback", "denied", metadata={"reason": "confirmation_missing"})
+            raise ValueError("Confirmação explícita do usuário é obrigatória para executar rollback.")
+        result = _service().apply_video_metadata_rollback(
+            rollback_payload=rollback_payload,
+            rollback_token=rollback_token,
+        )
+        _audit(
+            "mcp_video_metadata_rollback",
+            "success",
+            metadata={"video_id": result.get("video_id"), "changed_fields": result.get("changed_fields", [])},
         )
         return result
 

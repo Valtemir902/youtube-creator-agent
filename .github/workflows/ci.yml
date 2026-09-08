@@ -78,6 +78,7 @@ jobs:
               "build_channel_strategy",
               "preview_video_metadata_update",
               "apply_video_metadata_update",
+              "apply_video_metadata_rollback",
           }
 
           CLOUD_EXPECTED = {
@@ -89,6 +90,7 @@ jobs:
               "validate_keyword_candidates",
               "preview_video_metadata_update",
               "apply_video_metadata_update",
+              "apply_video_metadata_rollback",
           }
 
           CLOUD_FORBIDDEN = {
@@ -105,6 +107,7 @@ jobs:
               "validate_keyword_candidates": (True, True, False),
               "preview_video_metadata_update": (False, False, False),
               "apply_video_metadata_update": (False, True, True),
+              "apply_video_metadata_rollback": (False, True, True),
           }
 
           async def names_for(server):
