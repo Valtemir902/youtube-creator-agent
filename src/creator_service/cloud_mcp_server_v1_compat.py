@@ -6,10 +6,7 @@ from typing import Any
 from mcp.types import CallToolResult, ToolAnnotations
 
 from . import cloud_mcp_server as base
-from . import cloud_mcp_server_growth as growth
-from . import cloud_mcp_server_inventory as inventory
 from . import cloud_mcp_server_management as management
-from . import cloud_mcp_server_playlist_consistency as playlist_consistency
 from . import cloud_mcp_server_responsible as responsible
 
 
@@ -69,11 +66,10 @@ def _tool_meta() -> dict[str, Any]:
 
 
 def create_server():
-    # Keep the proven responsible server untouched, add growth capabilities,
-    # then harden only the existing list_channel_videos read implementation.
-    # Tool names and schemas remain compatible for frozen and modern clients.
-    playlist_consistency.install()
-    server = inventory.extend_server(growth.extend_server(responsible.create_server()))
+    # The responsible factory now owns the exact 47-tool + 1-resource production
+    # composition and fails fast if that contract drifts. V1 compatibility only
+    # replaces the historical preview implementation without re-extending tools.
+    server = responsible.create_server()
 
     # Replace only the historical tool. The name and argument schema remain
     # byte-for-byte compatible from the client's point of view: video_id,
