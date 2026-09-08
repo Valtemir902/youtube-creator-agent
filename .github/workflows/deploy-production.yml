@@ -236,6 +236,20 @@ jobs:
               'render_video_metadata_handoff',
           }
 
+          def resource_uris(value):
+              if value is None:
+                  return []
+              if hasattr(value, 'uri'):
+                  return [str(value.uri)]
+              if hasattr(value, 'resources'):
+                  return resource_uris(value.resources)
+              if isinstance(value, (list, tuple, set)):
+                  found = []
+                  for item in value:
+                      found.extend(resource_uris(item))
+                  return found
+              return []
+
           async def main():
               async with Client(create_server(), raise_exceptions=True) as client:
                   result = await client.list_tools()
@@ -244,7 +258,8 @@ jobs:
                   missing = required - names
                   assert not missing, sorted(missing)
                   assert len(names) >= 34, len(names)
-                  assert any(str(resource.uri) == HANDOFF_UI_URI for resource in resources)
+                  uris = set(resource_uris(resources))
+                  assert HANDOFF_UI_URI in uris, sorted(uris)
 
                   preview = next(tool for tool in result.tools if tool.name == 'preview_video_metadata_update')
                   hints = preview.annotations.model_dump(by_alias=True, exclude_none=True)
@@ -257,7 +272,7 @@ jobs:
                   handoff = next(tool for tool in result.tools if tool.name == 'render_video_metadata_handoff')
                   hmeta = handoff.meta or {}
                   assert (hmeta.get('ui') or {}).get('resourceUri') == HANDOFF_UI_URI
-                  print(f'production_responsible_mcp_discovery=ok count={len(names)}')
+                  print(f'production_responsible_mcp_discovery=ok count={len(names)} resources={len(uris)}')
           asyncio.run(main())
           PY
           REMOTE
