@@ -56,6 +56,49 @@ def _playlist_owned_and_contains(service: ResponsibleCreatorService, playlist_id
             return False
 
 
+def _seal_exact_handoff(
+    *,
+    service: ResponsibleCreatorService,
+    current: dict[str, Any],
+    proposed: dict[str, Any],
+    changed_fields: list[str],
+    playlist_id: str = "",
+    source: str = "chatgpt",
+) -> dict[str, Any]:
+    if not changed_fields:
+        return {
+            "handoff_version": "YCA_HANDOFF_V1",
+            "handoff_url": "",
+            "requires_user_click": False,
+            "button_label": "Enviar e aplicar mudanças",
+            "cancel_label": "Cancelar",
+        }
+
+    video_id = str(proposed.get("video_id", "")).strip()
+    channel_id = service._authorized_channel_id()
+    ticket, package = seal_handoff(
+        tenant_id=base._tenant_id(),
+        channel_id=channel_id,
+        video_id=video_id,
+        baseline_digest=signer_from_env().payload_digest(current),
+        proposed=proposed,
+        changed_fields=changed_fields,
+        playlist_id=playlist_id,
+        source=source,
+        ttl_seconds=300,
+    )
+    public_origin = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
+    return {
+        "handoff_version": package.version,
+        "handoff_url": build_handoff_url(ticket, public_origin),
+        "handoff_expires_in_seconds": package.expires_at - package.issued_at,
+        "requires_user_click": True,
+        "button_label": "Enviar e aplicar mudanças",
+        "cancel_label": "Cancelar",
+        "handoff_channel_id": channel_id,
+    }
+
+
 def _prepare_handoff(
     *,
     video_id: str,
@@ -104,34 +147,98 @@ def _prepare_handoff(
             "message": "A proposta já corresponde ao estado atual do vídeo; nada precisa ser aplicado.",
         }
 
-    channel_id = service._authorized_channel_id()
-    ticket, package = seal_handoff(
-        tenant_id=base._tenant_id(),
-        channel_id=channel_id,
-        video_id=video_id,
-        baseline_digest=signer_from_env().payload_digest(current),
+    handoff = _seal_exact_handoff(
+        service=service,
+        current=current,
         proposed=normalized,
         changed_fields=changed_fields,
         playlist_id=final_playlist_id,
-        source="chatgpt",
-        ttl_seconds=300,
     )
-    public_origin = os.environ.get("YCA_ONBOARDING_PUBLIC_URL", "").strip().rstrip("/")
-    href = build_handoff_url(ticket, public_origin)
     return {
         "ok": True,
-        "version": package.version,
+        "version": handoff["handoff_version"],
         "video_id": video_id,
         "video_title": current.get("title", ""),
-        "channel_id": channel_id,
+        "channel_id": handoff["handoff_channel_id"],
         "changed_fields": changed_fields,
-        "expires_in_seconds": package.expires_at - package.issued_at,
-        "handoff_url": href,
+        "expires_in_seconds": handoff["handoff_expires_in_seconds"],
+        "handoff_url": handoff["handoff_url"],
         "requires_user_click": True,
-        "button_label": "Enviar e aplicar mudanças",
-        "cancel_label": "Cancelar",
+        "button_label": handoff["button_label"],
+        "cancel_label": handoff["cancel_label"],
         "message": "A proposta está pronta. A alteração real só será enviada após o usuário escolher Enviar e aplicar mudanças.",
     }
+
+
+def _preview_metadata_with_handoff(
+    *,
+    video_id: str,
+    title: str | None,
+    description: str | None,
+    tags: list[str] | None,
+) -> dict[str, Any]:
+    """Read-only preview compatible with the historical ChatGPT tool schema.
+
+    Old ChatGPT app snapshots already know this tool name and argument schema.
+    Keeping that exact contract lets Plus/Free sessions obtain a safe handoff URL
+    without yca:write, while Business/Enterprise/Edu clients still receive the
+    original signed approval payload for direct MCP apply.
+    """
+    base._require_scope(base.READ_SCOPE)
+    base._limit("metadata_preview", limit=30)
+    service = _service()
+    preview = service.preview_video_metadata_update(
+        video_id=video_id,
+        title=title,
+        description=description,
+        tags=tags,
+    )
+    current = dict(preview.get("current", {}) or {})
+    proposed = dict(preview.get("proposed", {}) or {})
+    changed_map = dict(preview.get("changed", {}) or {})
+    changed_fields = [
+        field
+        for field in ("title", "description", "tags", "categoryId")
+        if bool(changed_map.get(field))
+    ]
+    preview.update(
+        _seal_exact_handoff(
+            service=service,
+            current=current,
+            proposed=proposed,
+            changed_fields=changed_fields,
+        )
+    )
+    preview["changed_fields"] = changed_fields
+    preview["handoff_fallback_supported"] = True
+    if changed_fields:
+        preview["message"] = (
+            "Prévia verificada. Clientes com escrita MCP podem usar o approval_payload; "
+            "clientes sem escrita MCP devem usar handoff_url uma única vez."
+        )
+    else:
+        preview["message"] = "A proposta já corresponde ao estado atual; nenhuma gravação é necessária."
+    return base.success_response(preview)
+
+
+def _call_result(result: dict[str, Any]) -> CallToolResult:
+    visible = dict(result)
+    href = str(visible.get("handoff_url", ""))
+    meta = None
+    if href and visible.get("ok"):
+        meta = {
+            "yca/handoff": {
+                "href": href,
+                "video_id": visible.get("video_id"),
+                "changed_fields": visible.get("changed_fields", []),
+            }
+        }
+    text = json.dumps(visible, ensure_ascii=False, sort_keys=True)
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structuredContent=visible,
+        _meta=meta,
+    )
 
 
 def create_server():
@@ -173,6 +280,44 @@ def create_server():
         "openai/toolInvocation/invoked": "Alterações prontas para confirmação",
     }
 
+    # Replace the historical metadata preview in-place. The public tool name and
+    # input schema stay compatible with frozen ChatGPT snapshots, but the server
+    # now correctly treats preview as read-only and includes a one-click handoff.
+    server.remove_tool("preview_video_metadata_update")
+
+    @server.tool(
+        name="preview_video_metadata_update",
+        title="Pré-visualizar metadados e preparar aplicação segura",
+        description=(
+            "Read-only preview of title, description and tags for one authenticated video. "
+            "Returns both the historical signed approval package and a one-click first-party handoff for clients without direct MCP write capability."
+        ),
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            open_world_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+        ),
+        meta=tool_meta,
+        structured_output=False,
+    )
+    def preview_video_metadata_update(
+        video_id: str,
+        title: str | None = None,
+        description: str | None = None,
+        tags: list[str] | None = None,
+    ) -> CallToolResult:
+        result = base._structured(
+            "preview_video_metadata_update",
+            lambda: _preview_metadata_with_handoff(
+                video_id=video_id,
+                title=title,
+                description=description,
+                tags=tags,
+            ),
+        )
+        return _call_result(result)
+
     @server.tool(
         name="render_video_metadata_handoff",
         title="Preparar botão seguro para aplicar mudanças",
@@ -208,23 +353,7 @@ def create_server():
                 playlist_id=playlist_id,
             ),
         )
-        visible = dict(result)
-        href = str(visible.get("handoff_url", ""))
-        meta = None
-        if href and visible.get("ok"):
-            meta = {
-                "yca/handoff": {
-                    "href": href,
-                    "video_id": visible.get("video_id"),
-                    "changed_fields": visible.get("changed_fields", []),
-                }
-            }
-        text = json.dumps(visible, ensure_ascii=False, sort_keys=True)
-        return CallToolResult(
-            content=[TextContent(type="text", text=text)],
-            structuredContent=visible,
-            _meta=meta,
-        )
+        return _call_result(result)
 
     return server
 
