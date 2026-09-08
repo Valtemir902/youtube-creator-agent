@@ -22,10 +22,9 @@ if keycloak_issuer and compat_issuer:
     os.environ.setdefault("YCA_TOKEN_ISSUER_URL", keycloak_issuer)
     os.environ["YCA_AUTH_ISSUER_URL"] = compat_issuer.rstrip("/")
 
-# Production exposes one unified ChatGPT-native surface. Intelligence lives in
-# ChatGPT and optional connected SEO apps; this backend supplies authenticated
-# evidence and guarded YouTube mutations.
-from creator_service.cloud_mcp_server_management import run
+# Production keeps the full MCP write surface and adds a capability-safe
+# one-click handoff for clients that cannot invoke write tools directly.
+from creator_service.cloud_mcp_server_responsible import run
 
 
 if __name__ == "__main__":
