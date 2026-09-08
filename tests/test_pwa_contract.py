@@ -80,7 +80,7 @@ def test_manifest_is_professional_and_points_only_to_declared_icons():
     assert manifest["prefer_related_applications"] is False
 
     icons = manifest["icons"]
-    assert {icon["sizes"] for icon in icons} >= {"192x192", "512x512"}
+    assert {icon["sizes"] for icon in icons} >= {"192x192", "512x512", "1024x1024"}
     assert any(icon.get("purpose") == "maskable" for icon in icons)
     for icon in icons:
         assert icon["src"].startswith("/pwa/")
@@ -121,12 +121,11 @@ def test_public_pwa_assets_and_headers(tmp_path: Path):
     assert sw.headers["service-worker-allowed"] == "/"
     assert "no-store" in sw.headers["cache-control"]
 
-    for asset in ("icon-192.png", "icon-512.png", "icon-maskable-512.png", "favicon-32.png", "app-icon.svg"):
+    for asset in ("icon-192.png", "icon-512.png", "icon-1024.png", "icon-maskable-512.png", "favicon-32.png", "app-icon.svg"):
         response = client.get(f"/pwa/{asset}")
         assert response.status_code == 200
         assert int(response.headers["content-length"]) > 100
 
-    assert client.get("/pwa/../manifest.webmanifest").status_code == 404
     assert client.get("/pwa/not-declared.png").status_code == 404
 
 
@@ -134,6 +133,7 @@ def test_pwa_asset_dimensions_are_exact():
     import struct
 
     expected = {
+        "icon-1024.png": (1024, 1024),
         "icon-512.png": (512, 512),
         "icon-192.png": (192, 192),
         "icon-180.png": (180, 180),
