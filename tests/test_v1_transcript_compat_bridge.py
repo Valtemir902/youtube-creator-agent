@@ -70,6 +70,15 @@ def test_v1_video_id_only_returns_details_and_full_transcript(monkeypatch):
             "video_id": video_id,
             "language": "en",
             "source": "youtube_caption",
+            "transcript_source": "youtube_manual_caption",
+            "is_auto_generated": False,
+            "has_manual_caption": True,
+            "has_published_manual_caption": True,
+            "has_auto_generated_caption": True,
+            "caption_publish_needed": False,
+            "caption_publish_reason": "manual_caption_already_published",
+            "caption_policy": "reuse_published_manual",
+            "seo_context_ready": True,
             "full_text": "first line second line",
             "word_count": 4,
             "segments": [
@@ -100,6 +109,10 @@ def test_v1_video_id_only_returns_details_and_full_transcript(monkeypatch):
             assert payload["changed_fields"] == []
             assert payload["video"]["title"] == "Bridge Test"
             assert payload["transcript"]["source"] == "youtube_caption"
+            assert payload["transcript"]["transcript_source"] == "youtube_manual_caption"
+            assert payload["transcript"]["caption_publish_needed"] is False
+            assert payload["transcript"]["caption_policy"] == "reuse_published_manual"
+            assert payload["transcript"]["seo_context_ready"] is True
             assert payload["transcript"]["full_text"] == "first line second line"
             assert len(payload["transcript"]["segments"]) == 2
             assert "approval_payload" not in payload
