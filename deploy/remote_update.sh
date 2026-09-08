@@ -9,6 +9,10 @@ fi
 
 APP_DIR="${YCA_DEPLOY_DIR:-$HOME/apps/youtube-creator-agent}"
 COMPOSE_FILE="deploy/docker-compose.oracle.yml"
+LEGACY_CHATGPT_CLIENT_ID="82da41e4-4d89-4ccf-b134-c6a8b01f8453"
+LEGACY_CHATGPT_REDIRECT="https://chatgpt.com/connector_platform_oauth_redirect"
+MODERN_CHATGPT_REDIRECT_PATTERN="https://chatgpt.com/connector/oauth/*"
+MODERN_CHATGPT_SMOKE_REDIRECT="https://chatgpt.com/connector/oauth/yca-deploy-smoke"
 PREVIOUS_SHA=""
 ENV_BACKUP=""
 SUCCESS=0
@@ -69,6 +73,91 @@ set_env_value YCA_DCR_ALLOWED_REDIRECT_HOSTS "chatgpt.com"
 set_env_value YCA_DCR_PROVISIONER_CLIENT_ID "yca-dcr-provisioner"
 set_env_value YCA_DCR_PROVISIONER_CLIENT_SECRET "$dcr_secret"
 chmod 600 config/server.env
+
+# Compatibility bridge for ChatGPT apps created before the isolated DCR fix.
+# Those drafts can retain the legacy Keycloak client_id while ChatGPT now sends
+# a per-connection callback under /connector/oauth/<id>. Keep the historical
+# exact callback and add only the narrow, HTTPS, exact-host path wildcard that
+# Keycloak supports at the end of a redirect pattern. Never allow a host wildcard.
+legacy_client_id="$(sed -n 's/^YCA_CHATGPT_OAUTH_CLIENT_ID=//p' config/server.env | tail -n1 | tr -d '\r' || true)"
+if [[ -z "$legacy_client_id" ]]; then
+  legacy_client_id="$LEGACY_CHATGPT_CLIENT_ID"
+fi
+
+docker compose -f "$COMPOSE_FILE" exec -T \
+  -e DCR_CLIENT_ID="yca-dcr-provisioner" \
+  -e DCR_CLIENT_SECRET="$dcr_secret" \
+  -e LEGACY_CLIENT_ID="$legacy_client_id" \
+  -e LEGACY_REDIRECT="$LEGACY_CHATGPT_REDIRECT" \
+  -e MODERN_REDIRECT_PATTERN="$MODERN_CHATGPT_REDIRECT_PATTERN" \
+  onboarding python - <<'PY'
+import json
+import os
+import urllib.parse
+import urllib.request
+
+base = "http://keycloak:8080"
+realm = "yca"
+
+form = urllib.parse.urlencode(
+    {
+        "grant_type": "client_credentials",
+        "client_id": os.environ["DCR_CLIENT_ID"],
+        "client_secret": os.environ["DCR_CLIENT_SECRET"],
+    }
+).encode("ascii")
+with urllib.request.urlopen(
+    urllib.request.Request(
+        f"{base}/realms/{realm}/protocol/openid-connect/token",
+        data=form,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    ),
+    timeout=10,
+) as response:
+    token = json.loads(response.read().decode("utf-8"))["access_token"]
+
+headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+query = urllib.parse.urlencode({"clientId": os.environ["LEGACY_CLIENT_ID"], "exact": "true"})
+with urllib.request.urlopen(
+    urllib.request.Request(f"{base}/admin/realms/{realm}/clients?{query}", headers=headers),
+    timeout=10,
+) as response:
+    matches = json.loads(response.read().decode("utf-8"))
+assert len(matches) == 1, f"legacy_client_count={len(matches)}"
+internal_id = matches[0]["id"]
+
+with urllib.request.urlopen(
+    urllib.request.Request(f"{base}/admin/realms/{realm}/clients/{internal_id}", headers=headers),
+    timeout=10,
+) as response:
+    representation = json.loads(response.read().decode("utf-8"))
+
+required = {os.environ["LEGACY_REDIRECT"], os.environ["MODERN_REDIRECT_PATTERN"]}
+redirects = set(representation.get("redirectUris") or [])
+if not required.issubset(redirects):
+    representation["redirectUris"] = sorted(redirects | required)
+    body = json.dumps(representation).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}/admin/realms/{realm}/clients/{internal_id}",
+        data=body,
+        method="PUT",
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        assert response.status in (200, 204), response.status
+
+with urllib.request.urlopen(
+    urllib.request.Request(f"{base}/admin/realms/{realm}/clients/{internal_id}", headers=headers),
+    timeout=10,
+) as response:
+    verified = json.loads(response.read().decode("utf-8"))
+verified_redirects = set(verified.get("redirectUris") or [])
+assert required.issubset(verified_redirects), sorted(verified_redirects)
+assert "*" not in verified_redirects
+assert "https://chatgpt.com/*" not in verified_redirects
+print("legacy_chatgpt_redirect_compat=ok")
+PY
+
 unset dcr_secret
 rm -f /tmp/yca-dcr-provisioner.secret
 
@@ -122,31 +211,75 @@ async def main():
 asyncio.run(main())
 PY
 
-# Exercise DCR safely with the official ChatGPT callback. No YouTube write occurs.
+# Exercise DCR safely with both the historical and modern ChatGPT callback
+# shapes. DCR stores the exact callback on its isolated client; no wildcard is
+# accepted from the DCR payload itself and no YouTube write occurs.
 docker compose -f "$COMPOSE_FILE" exec -T onboarding python - <<'PY'
-import json, urllib.request
-payload = {
-    'client_name': 'YCA deploy DCR smoke',
-    'redirect_uris': ['https://chatgpt.com/connector_platform_oauth_redirect'],
-    'grant_types': ['authorization_code', 'refresh_token'],
-    'response_types': ['code'],
-    'token_endpoint_auth_method': 'none',
+import json
+import urllib.request
+
+for suffix, redirect in (
+    ("legacy", "https://chatgpt.com/connector_platform_oauth_redirect"),
+    ("modern", "https://chatgpt.com/connector/oauth/yca-deploy-smoke"),
+):
+    payload = {
+        'client_name': f'YCA deploy DCR smoke {suffix}',
+        'redirect_uris': [redirect],
+        'grant_types': ['authorization_code', 'refresh_token'],
+        'response_types': ['code'],
+        'token_endpoint_auth_method': 'none',
+        'scope': 'openid email offline_access yca:read yca:write',
+    }
+    req = urllib.request.Request(
+        'http://127.0.0.1:8080/oauth/register',
+        data=json.dumps(payload).encode('utf-8'),
+        method='POST',
+        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+    )
+    with urllib.request.urlopen(req, timeout=10) as response:
+        body = json.loads(response.read().decode('utf-8'))
+        assert response.status == 201, response.status
+        cid = body.get('client_id', '')
+        assert cid.startswith('yca-chatgpt-dcr-'), cid
+        assert body.get('redirect_uris') == payload['redirect_uris']
+        assert body.get('token_endpoint_auth_method') == 'none'
+print('dcr_registration_smoke=ok legacy+modern')
+PY
+
+# Verify the legacy public client also accepts a modern per-connection callback.
+# This is the compatibility path used by ChatGPT drafts created before DCR was
+# fixed. A 200 login page proves Keycloak accepted redirect_uri; no login occurs.
+docker compose -f "$COMPOSE_FILE" exec -T \
+  -e LEGACY_CLIENT_ID="$legacy_client_id" \
+  -e MODERN_SMOKE_REDIRECT="$MODERN_CHATGPT_SMOKE_REDIRECT" \
+  onboarding python - <<'PY'
+import base64
+import hashlib
+import os
+import secrets
+import urllib.parse
+import urllib.request
+
+verifier = secrets.token_urlsafe(48)
+challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
+params = {
+    'response_type': 'code',
+    'client_id': os.environ['LEGACY_CLIENT_ID'],
+    'redirect_uri': os.environ['MODERN_SMOKE_REDIRECT'],
     'scope': 'openid email offline_access yca:read yca:write',
+    'state': 'modern-redirect-smoke',
+    'code_challenge': challenge,
+    'code_challenge_method': 'S256',
 }
-req = urllib.request.Request(
-    'http://127.0.0.1:8080/oauth/register',
-    data=json.dumps(payload).encode('utf-8'),
-    method='POST',
-    headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
-)
-with urllib.request.urlopen(req, timeout=10) as response:
-    body = json.loads(response.read().decode('utf-8'))
-    assert response.status == 201, response.status
-    cid = body.get('client_id', '')
-    assert cid.startswith('yca-chatgpt-dcr-'), cid
-    assert body.get('redirect_uris') == payload['redirect_uris']
-    assert body.get('token_endpoint_auth_method') == 'none'
-print('dcr_registration_smoke=ok')
+url = 'http://keycloak:8080/realms/yca/protocol/openid-connect/auth?' + urllib.parse.urlencode(params)
+request = urllib.request.Request(url, headers={'Host': 'auth.silvadigitaltech.com', 'X-Forwarded-Proto': 'https'})
+with urllib.request.urlopen(request, timeout=10) as response:
+    body = response.read(8192).decode('utf-8', 'replace').lower()
+    assert response.status == 200
+    assert 'invalid parameter: redirect_uri' not in body
+    assert 'invalid_redirect_uri' not in body
+    assert 'invalid_scope' not in body
+print('legacy_modern_redirect_authorization=ok')
 PY
 
 SUCCESS=1
