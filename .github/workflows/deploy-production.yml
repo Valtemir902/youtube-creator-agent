@@ -43,7 +43,7 @@ jobs:
           echo "Deploy candidate: $sha"
 
       - name: Checkout deploy candidate for classification
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.ref.outputs.sha }}
           fetch-depth: 2
@@ -276,22 +276,24 @@ jobs:
 
       - name: Checkout deployed revision for browser audit
         if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.ref.outputs.sha }}
 
       - name: Set up Node for browser audit
         if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
+          package-manager-cache: false
 
       - name: Install browser audit runtime
         if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
         shell: bash
         run: |
           npm init -y >/dev/null 2>&1
-          npm install --save-dev playwright@1.55.0
+          npm install --save-dev playwright@1.63.0
+          npm audit --audit-level=high
           npx playwright install --with-deps chromium
 
       - name: Live browser audit after deploy
@@ -304,7 +306,7 @@ jobs:
 
       - name: Upload browser screenshots and diagnostics
         if: always() && steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: post-deploy-browser-audit
           path: artifacts/
