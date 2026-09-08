@@ -24,6 +24,7 @@ if keycloak_issuer and compat_issuer:
 
 # Production keeps the full MCP write surface and adds a capability-safe
 # one-click handoff for clients that cannot invoke write tools directly.
+# This entrypoint is also the exact runtime target asserted by post-deploy checks.
 from creator_service.cloud_mcp_server_responsible import run
 
 
