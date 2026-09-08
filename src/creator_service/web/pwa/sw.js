@@ -1,13 +1,14 @@
 'use strict';
 
 const CACHE_PREFIX = 'yca-pwa-static-';
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v2`;
 const STATIC_PATHS = new Set([
   '/manifest.webmanifest',
   '/pwa/bootstrap.js',
   '/pwa/app-icon.svg',
   '/pwa/app-icon-solid.svg',
   '/pwa/app-icon-maskable.svg',
+  '/pwa/icon-1024.png',
   '/pwa/icon-512.png',
   '/pwa/icon-192.png',
   '/pwa/icon-180.png',
