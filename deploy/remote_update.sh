@@ -180,6 +180,13 @@ awk '
 chmod 700 /tmp/yca-remote-update-core-patched.sh
 bash -n /tmp/yca-remote-update-core-patched.sh
 
+# Refresh the production branch's remote-tracking ref before the core checks out
+# the persistent local branch. Fetching only TARGET_SHA leaves origin/<branch>
+# stale and can make Git report a fictitious "ahead by hundreds of commits" state.
+# This does not select what gets deployed: the core still resets to TARGET_SHA.
+git fetch --prune origin \
+  "refs/heads/feat/web-dashboard-v1:refs/remotes/origin/feat/web-dashboard-v1"
+
 /tmp/yca-remote-update-core-patched.sh "$TARGET_SHA"
 
 # Independent post-core MCP contract check. Use the exact production server
