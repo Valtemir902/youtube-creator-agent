@@ -111,10 +111,10 @@ jobs:
           from pathlib import Path
           from mcp import Client
           import creator_service.mcp_server as local_server
-          from creator_service.cloud_mcp_server_responsible import HANDOFF_UI_URI, create_server
+          from creator_service.cloud_mcp_server_v1_compat import HANDOFF_UI_URI, create_server
 
           root = Path("cloud_mcp_server.py").read_text(encoding="utf-8")
-          assert "creator_service.cloud_mcp_server_responsible import run" in root
+          assert "creator_service.cloud_mcp_server_v1_compat import run" in root
 
           LOCAL_EXPECTED = {
               "creator_status",
@@ -127,61 +127,42 @@ jobs:
           }
 
           CLOUD_EXPECTED = {
-              "creator_status",
-              "get_creator_capabilities",
-              "list_connected_channels",
-              "activate_connected_channel",
-              "create_onboarding_link",
-              "get_channel_profile",
-              "get_strategy_evidence",
-              "validate_keyword_candidates",
-              "preview_video_metadata_update",
-              "apply_video_metadata_update",
-              "apply_video_metadata_rollback",
-              "list_channel_videos",
-              "get_video_details",
-              "get_video_transcript",
-              "list_video_categories",
-              "preview_video_metadata_update_advanced",
-              "apply_video_metadata_update_advanced",
-              "apply_video_metadata_rollback_advanced",
-              "list_video_captions",
-              "preview_caption_upload",
-              "apply_caption_upload",
-              "apply_caption_delete_rollback",
-              "list_playlists",
-              "get_playlist_details",
-              "preview_playlist_metadata_update",
-              "apply_playlist_metadata_update",
-              "apply_playlist_metadata_rollback",
-              "preview_playlist_item_add",
-              "apply_playlist_item_add",
-              "apply_playlist_item_add_rollback",
-              "preview_playlist_item_remove",
-              "apply_playlist_item_remove",
-              "apply_playlist_item_remove_rollback",
+              "creator_status", "get_creator_capabilities", "list_connected_channels",
+              "activate_connected_channel", "create_onboarding_link", "get_channel_profile",
+              "get_strategy_evidence", "validate_keyword_candidates",
+              "preview_video_metadata_update", "apply_video_metadata_update", "apply_video_metadata_rollback",
+              "list_channel_videos", "get_video_details", "get_video_transcript", "list_video_categories",
+              "preview_video_metadata_update_advanced", "apply_video_metadata_update_advanced",
+              "apply_video_metadata_rollback_advanced", "list_video_captions",
+              "preview_caption_upload", "apply_caption_upload", "apply_caption_delete_rollback",
+              "list_playlists", "get_playlist_details", "preview_playlist_metadata_update",
+              "apply_playlist_metadata_update", "apply_playlist_metadata_rollback",
+              "preview_playlist_item_add", "apply_playlist_item_add", "apply_playlist_item_add_rollback",
+              "preview_playlist_item_remove", "apply_playlist_item_remove", "apply_playlist_item_remove_rollback",
               "render_video_metadata_handoff",
+              "audit_playlist_organization", "preview_playlist_create", "apply_playlist_create",
+              "apply_playlist_create_rollback", "preview_playlist_delete", "apply_playlist_delete",
+              "apply_playlist_delete_recovery", "preview_playlist_item_reorder", "apply_playlist_item_reorder",
+              "audit_channel_profile", "preview_channel_profile_update", "apply_channel_profile_update",
+              "apply_channel_profile_rollback",
           }
 
-          CLOUD_FORBIDDEN = {
-              "research_youtube_topic",
-              "build_channel_strategy",
-          }
+          CLOUD_FORBIDDEN = {"research_youtube_topic", "build_channel_strategy"}
 
           READ_CLOSED = {
               "creator_status", "get_creator_capabilities", "list_connected_channels",
               "get_channel_profile", "get_strategy_evidence", "list_channel_videos",
               "get_video_details", "get_video_transcript", "list_playlists", "get_playlist_details",
               "preview_video_metadata_update", "render_video_metadata_handoff",
+              "audit_playlist_organization", "audit_channel_profile",
           }
-          READ_OPEN = {
-              "validate_keyword_candidates", "list_video_categories", "list_video_captions",
-          }
+          READ_OPEN = {"validate_keyword_candidates", "list_video_categories", "list_video_captions"}
           PREVIEW = {
               "activate_connected_channel", "create_onboarding_link",
-              "preview_video_metadata_update_advanced",
-              "preview_caption_upload", "preview_playlist_metadata_update",
-              "preview_playlist_item_add", "preview_playlist_item_remove",
+              "preview_video_metadata_update_advanced", "preview_caption_upload",
+              "preview_playlist_metadata_update", "preview_playlist_item_add", "preview_playlist_item_remove",
+              "preview_playlist_create", "preview_playlist_delete", "preview_playlist_item_reorder",
+              "preview_channel_profile_update",
           }
           DESTRUCTIVE = {
               "apply_video_metadata_update", "apply_video_metadata_rollback",
@@ -190,6 +171,9 @@ jobs:
               "apply_playlist_metadata_update", "apply_playlist_metadata_rollback",
               "apply_playlist_item_add", "apply_playlist_item_add_rollback",
               "apply_playlist_item_remove", "apply_playlist_item_remove_rollback",
+              "apply_playlist_create", "apply_playlist_create_rollback",
+              "apply_playlist_delete", "apply_playlist_delete_recovery", "apply_playlist_item_reorder",
+              "apply_channel_profile_update", "apply_channel_profile_rollback",
           }
 
           EXPECTED_HINTS = {}
@@ -198,13 +182,20 @@ jobs:
           EXPECTED_HINTS.update({name: (False, False, False) for name in PREVIEW})
           EXPECTED_HINTS.update({name: (False, True, True) for name in DESTRUCTIVE})
 
+          EXPECTED_SCHEMAS = {
+              "preview_video_metadata_update": ({"video_id", "title", "description", "tags"}, {"video_id"}),
+              "list_channel_videos": ({"max_results", "page_token"}, set()),
+              "preview_playlist_create": ({"title", "description", "privacy_status", "default_language", "video_ids"}, {"title"}),
+              "apply_playlist_create": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
+              "apply_playlist_create_rollback": ({"rollback_payload", "rollback_token", "user_confirmed"}, {"rollback_payload", "rollback_token", "user_confirmed"}),
+          }
+
           async def names_for(server):
               async with Client(server, raise_exceptions=True) as client:
                   result = await client.list_tools()
                   resources = await client.list_resources()
                   for tool in result.tools:
-                      schema = tool.input_schema
-                      assert schema.get("type") == "object"
+                      assert tool.input_schema.get("type") == "object"
                   return result.tools, {tool.name for tool in result.tools}, resources.resources
 
           async def main():
@@ -212,15 +203,16 @@ jobs:
               assert LOCAL_EXPECTED <= local_names
 
               cloud_tools, cloud_names, resources = await names_for(create_server())
-              missing = CLOUD_EXPECTED - cloud_names
-              assert not missing, f"Production MCP missing tools: {sorted(missing)}"
-              assert len(cloud_names) >= 34, f"Expected >=34 production tools, got {len(cloud_names)}"
-              assert not (CLOUD_FORBIDDEN & cloud_names), (
-                  "Cloud MCP must not expose tools that invoke backend LLM strategy: "
-                  f"{sorted(CLOUD_FORBIDDEN & cloud_names)}"
+              assert cloud_names == CLOUD_EXPECTED, (
+                  f"Production MCP drift: missing={sorted(CLOUD_EXPECTED-cloud_names)} "
+                  f"unexpected={sorted(cloud_names-CLOUD_EXPECTED)}"
               )
+              assert len(cloud_names) == 47, f"Expected exactly 47 production tools, got {len(cloud_names)}"
+              assert not (CLOUD_FORBIDDEN & cloud_names)
               assert any(str(resource.uri) == HANDOFF_UI_URI for resource in resources), "Handoff UI resource missing"
-              assert set(EXPECTED_HINTS) <= cloud_names
+              assert set(EXPECTED_HINTS) == cloud_names
+
+              by_name = {tool.name: tool for tool in cloud_tools}
               for tool in cloud_tools:
                   assert "tenant_id" not in tool.input_schema.get("properties", {}), (
                       f"Cloud tool {tool.name} must derive tenant from auth, not model input"
@@ -228,25 +220,21 @@ jobs:
                   annotations = tool.annotations
                   assert annotations is not None, f"Cloud tool {tool.name} must declare annotations"
                   hints = annotations.model_dump(by_alias=True, exclude_none=True)
-                  assert "readOnlyHint" in hints, f"{tool.name}: missing readOnlyHint"
-                  assert "openWorldHint" in hints, f"{tool.name}: missing openWorldHint"
-                  assert "destructiveHint" in hints, f"{tool.name}: missing destructiveHint"
-                  if tool.name in EXPECTED_HINTS:
-                      expected = EXPECTED_HINTS[tool.name]
-                      actual = (
-                          hints["readOnlyHint"],
-                          hints["openWorldHint"],
-                          hints["destructiveHint"],
-                      )
-                      assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
+                  expected = EXPECTED_HINTS[tool.name]
+                  actual = (hints.get("readOnlyHint"), hints.get("openWorldHint"), hints.get("destructiveHint"))
+                  assert actual == expected, f"{tool.name}: annotations {actual} != {expected}"
                   if tool.name in {"render_video_metadata_handoff", "preview_video_metadata_update"}:
                       meta = tool.meta or {}
                       assert (meta.get("ui") or {}).get("resourceUri") == HANDOFF_UI_URI
                       assert meta.get("openai/outputTemplate") == HANDOFF_UI_URI
-                  if tool.name == "preview_video_metadata_update":
-                      props = set(tool.input_schema.get("properties", {}))
-                      assert props == {"video_id", "title", "description", "tags"}, props
-              print("Unified production ChatGPT-native MCP: OK", sorted(cloud_names))
+
+              for name, (props, required) in EXPECTED_SCHEMAS.items():
+                  schema = by_name[name].input_schema
+                  assert set(schema.get("properties", {})) == props, (name, schema)
+                  assert set(schema.get("required", [])) == required, (name, schema)
+
+              print(f"Full production ChatGPT-native MCP: OK count={len(cloud_names)} resources={len(resources)}")
+              print("tools=", ",".join(sorted(cloud_names)))
 
           asyncio.run(main())
           PY
