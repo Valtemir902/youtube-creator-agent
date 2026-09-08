@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
 
-from creator_service.handoff import HandoffError, build_handoff_url, open_handoff, seal_handoff
+from creator_service.handoff import (
+    HandoffError,
+    _b64url_decode,
+    build_handoff_url,
+    open_handoff,
+    seal_handoff,
+)
 from creator_service.handoff_store import HandoffExecutionStore
 
 
@@ -54,9 +61,23 @@ def test_handoff_tampering_is_rejected():
         now=1000,
         secret=SECRET,
     )
-    replacement = "A" if ticket[-1] != "A" else "B"
+    # Mutate a full Base64 sextet in the ciphertext rather than the final
+    # padding-adjacent character, so this test deterministically exercises AEAD.
+    index = max(4, len(ticket) // 2)
+    replacement = "A" if ticket[index] != "A" else "B"
+    tampered = ticket[:index] + replacement + ticket[index + 1 :]
     with pytest.raises(HandoffError, match="criptográfica"):
-        open_handoff(ticket[:-1] + replacement, now=1001, secret=SECRET)
+        open_handoff(tampered, now=1001, secret=SECRET)
+
+
+def test_handoff_rejects_noncanonical_base64_aliases():
+    # RFC 4648 decoders can ignore unused low bits in the last sextet. Thus AA
+    # and AB decode to the same byte under permissive decoding. Handoff tickets
+    # must reject the alias so one ciphertext has exactly one replay-ledger key.
+    assert base64.urlsafe_b64decode("AA==") == base64.urlsafe_b64decode("AB==") == b"\x00"
+    assert _b64url_decode("AA") == b"\x00"
+    with pytest.raises(HandoffError, match="Ticket de handoff inválido"):
+        _b64url_decode("AB")
 
 
 def test_handoff_expiry_is_fail_closed():

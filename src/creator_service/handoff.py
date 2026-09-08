@@ -19,6 +19,7 @@ HANDOFF_DEFAULT_TTL_SECONDS = 300
 HANDOFF_MAX_TTL_SECONDS = 600
 HANDOFF_MAX_DECOMPRESSED_BYTES = 64 * 1024
 _ALLOWED_CHANGED_FIELDS = {"title", "description", "tags", "categoryId", "playlist"}
+_B64URL_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
 class HandoffError(ValueError):
@@ -64,11 +65,20 @@ def _b64url_encode(value: bytes) -> str:
 
 
 def _b64url_decode(value: str) -> bytes:
+    # Handoff replay protection hashes the exact ticket string. Accepting multiple
+    # textual Base64URL aliases for the same ciphertext would therefore create
+    # distinct replay-ledger keys for one cryptographic package. Require the
+    # unpadded RFC 4648 representation to be canonical before accepting it.
+    if not value or any(ch not in _B64URL_ALPHABET for ch in value):
+        raise HandoffError("Ticket de handoff inválido.")
     try:
         padding = "=" * (-len(value) % 4)
-        return base64.urlsafe_b64decode(value + padding)
+        decoded = base64.urlsafe_b64decode(value + padding)
     except Exception as exc:  # pragma: no cover - implementation detail
         raise HandoffError("Ticket de handoff inválido.") from exc
+    if _b64url_encode(decoded) != value:
+        raise HandoffError("Ticket de handoff inválido.")
+    return decoded
 
 
 def canonical_digest(payload: Any) -> str:
