@@ -224,8 +224,9 @@ def _preview_metadata_with_handoff(
 def _call_result(result: dict[str, Any]) -> CallToolResult:
     visible = dict(result)
     href = str(visible.get("handoff_url", ""))
+    succeeded = visible.get("ok") is True or visible.get("success") is True
     meta = None
-    if href and visible.get("ok"):
+    if href and succeeded:
         meta = {
             "yca/handoff": {
                 "href": href,
