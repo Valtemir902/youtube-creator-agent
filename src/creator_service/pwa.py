@@ -22,12 +22,14 @@ PWA_ASSETS = {
     "icon-solid-512.png": ("image/png", "public, max-age=86400"),
     "favicon-32.png": ("image/png", "public, max-age=86400"),
     "bootstrap.js": ("application/javascript; charset=utf-8", "no-cache"),
+    "install.css": ("text/css; charset=utf-8", "no-cache"),
 }
 
 
 _HEAD_MARKUP = """  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/pwa/favicon-32.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/pwa/icon-180.png">
+  <link rel="stylesheet" href="/pwa/install.css">
   <meta name="application-name" content="Creator Agent Elite">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
