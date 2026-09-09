@@ -15,7 +15,7 @@ _SCRIPT = r'''
 <script data-yca-ai-experience>
 (()=>{
   if(window.__ycaAiExperience)return;window.__ycaAiExperience=true;
-  const escx=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]));
+  const escx=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const pretty=v=>typeof v==='object'?JSON.stringify(v):String(v??'—');
   function selectedKeyIds(){return [...document.querySelectorAll('#aiKeyVault .vault-key-check:checked')].map(x=>x.dataset.keyId).filter(Boolean)}
   async function applyKeySelection(rotation){

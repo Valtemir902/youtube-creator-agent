@@ -274,6 +274,21 @@ jobs:
           PY
           REMOTE
 
+      - name: Verify configured AI runtime on VPS
+        if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/apps/youtube-creator-agent"
+          docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding \
+            python scripts/production_ai_runtime_smoke.py
+          REMOTE
+
       - name: Checkout deployed revision for browser audit
         if: steps.classify.outputs.needed == 'true' && steps.creds.outputs.configured == 'true'
         uses: actions/checkout@v5
