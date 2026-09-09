@@ -4,14 +4,25 @@ const fs = require('fs');
 const out = process.env.BROWSER_ARTIFACT_DIR || 'artifacts/screenshots';
 fs.mkdirSync(out, { recursive: true });
 
+function assets(path) {
+  const source = fs.readFileSync(path, 'utf8');
+  const css = source.match(/_CSS = r'''([\s\S]*?)'''/);
+  const script = source.match(/_SCRIPT = r'''([\s\S]*?)'''/);
+  if (!css || !script) throw new Error(`Could not extract dashboard assets from ${path}.`);
+  return { css: css[1], script: script[1] };
+}
+
 function injectedDashboardHtml() {
   let html = fs.readFileSync('src/creator_service/web/dashboard.html', 'utf8');
-  const enhancer = fs.readFileSync('src/creator_service/dashboard_pro_ui.py', 'utf8');
-  const css = enhancer.match(/_CSS = r'''([\s\S]*?)'''/);
-  const script = enhancer.match(/_SCRIPT = r'''([\s\S]*?)'''/);
-  if (!css || !script) throw new Error('Could not extract dashboard professional enhancement assets.');
-  html = html.replace('</head>', `${css[1]}\n</head>`);
-  html = html.replace('</body>', `${script[1]}\n</body>`);
+  for (const path of [
+    'src/creator_service/ai_vault_ui.py',
+    'src/creator_service/dashboard_pro_ui.py',
+    'src/creator_service/dashboard_ai_experience.py',
+  ]) {
+    const part = assets(path);
+    html = html.replace('</head>', `${part.css}\n</head>`);
+    html = html.replace('</body>', `${part.script}\n</body>`);
+  }
   html = html.replace("document.getElementById('home')", "document.getElementById('overview')");
   return html;
 }
@@ -42,6 +53,14 @@ const videos = { videos: [
   { id:'v5', title:'Dark Americana | Devil at the Door', views:510, likes:31, comments:2, privacy_status:'public' },
   { id:'v6', title:'Southern Gothic Acoustic | Cold River', views:330, likes:21, comments:2, privacy_status:'public' },
 ]};
+const vault = {
+  provider:'gemini',
+  auto_rotate:true,
+  keys:[
+    { id:'key-a', label:'Ana', masked:'AQ.Ab********eQ3w', status:'ok', enabled:true, active:true, preferred_model:'gemini-3.5-flash-lite' },
+    { id:'key-b', label:'Reserva', masked:'AQ.Zz********91Fx', status:'ok', enabled:true, active:false, preferred_model:'gemini-3.5-flash-lite' },
+  ],
+};
 
 async function json(route, value, status=200) {
   await route.fulfill({ status, contentType:'application/json', body:JSON.stringify(value) });
@@ -63,18 +82,19 @@ async function json(route, value, status=200) {
     if (u.pathname === '/api/dashboard/channel') return json(route, channel);
     if (u.pathname === '/api/dashboard/channel/identity') return json(route, identity);
     if (u.pathname === '/api/dashboard/videos') return json(route, videos);
-    if (u.pathname === '/api/dashboard/status') return json(route, { youtube_connected:true, external_ai_configured:true, ai_provider:'gemini', ai_model:'gemini-2.5-flash' });
+    if (u.pathname === '/api/dashboard/status') return json(route, { youtube_connected:true, external_ai_configured:true, ai_provider:'gemini', ai_model:'gemini-3.5-flash-lite', ai_enabled_key_count:2, ai_auto_rotate_keys:true });
     if (u.pathname === '/api/dashboard/channels') return json(route, { channels:[{ channel_id:identity.id, title:identity.title, active:true }] });
     if (u.pathname === '/api/dashboard/playlists') return json(route, { playlists:[] });
     if (u.pathname === '/api/dashboard/capabilities') return json(route, {});
     if (u.pathname === '/api/dashboard/live') return json(route, { broadcasts:[] });
     if (u.pathname === '/api/dashboard/publications') return json(route, { publications:[] });
     if (u.pathname === '/api/dashboard/upload/sessions') return json(route, { sessions:[] });
+    if (u.pathname === '/api/ai/keys') return json(route, vault);
     return json(route, {});
   });
 
   await page.goto('https://visual.test/dashboard', { waitUntil:'networkidle' });
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(700);
   const head = page.locator('#proDashboardHead');
   if (await head.count() !== 1) throw new Error('Professional dashboard overview did not mount.');
   if (!(await head.innerText()).includes('Desempenho real do canal')) throw new Error('Real-data dashboard heading missing.');
@@ -104,7 +124,7 @@ async function json(route, value, status=200) {
       ]});
     }
   });
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(300);
   const pretty = page.locator('#researchResult .result-summary');
   if (await pretty.count() !== 1) throw new Error('Research JSON was not converted into readable cards.');
   if (await page.locator('#researchResult summary', { hasText:'Ver dados técnicos' }).count() !== 1) throw new Error('Technical data disclosure missing.');
@@ -116,14 +136,42 @@ async function json(route, value, status=200) {
     const node = document.getElementById('auditRaw');
     if (node) {
       node.classList.remove('hidden');
-      node.textContent = JSON.stringify({ period_days:28, channel:{ channel_title:'Logan Western', subscribers:82, total_views:11723, video_count:52, total_analytics_views:59, search_share:0.0169 }, evidence:{ top_search_terms:[{term:'deadbone',views:1}] } });
+      node.textContent = JSON.stringify({
+        period_days:28,
+        channel:{ channel_title:'Logan Western', subscribers:82, total_views:11723, video_count:52, total_analytics_views:59, search_views:1, search_share:0.0169 },
+        evidence:{ top_search_terms:[{term:'deadbone',views:1}] },
+        ai_advice:{
+          status:'ready', grounded:true, no_invented_metrics:true, health:'atenção',
+          executive_summary:'A descoberta por busca merece atenção. As recomendações abaixo usam somente métricas verificadas do YouTube e Analytics.',
+          priorities:[{ title:'Aumentar descoberta por busca', why:'A participação de busca está baixa no período medido.', action:'Validar temas recentes e alinhar títulos e descrições ao conteúdo real dos vídeos.', evidence:{'analytics.search_share':0.0169} }],
+          seo_actions:[{ title:'Usar termos validados', why:'Evita otimização baseada em palpites.', action:'Priorizar somente palavras-chave medidas com demanda recente e competição aceitável.', evidence:{'analytics.search_views':1} }],
+          analytics_actions:[{ title:'Medir evolução semanal', why:'O canal precisa de uma linha de base comparável.', action:'Acompanhar participação de busca e views do período após cada teste.', evidence:{'analytics.period_views':59} }],
+          content_actions:[],
+          next_7_days:['Validar candidatos de busca dos vídeos prioritários.'],
+          next_30_days:['Comparar descoberta orgânica e repetir apenas os padrões que melhorarem dados reais.'],
+        },
+      });
     }
   });
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(450);
   if (await page.locator('#auditRaw .result-summary').count() !== 1) throw new Error('Audit JSON was not converted into readable cards.');
-  await page.screenshot({ path:`${out}/09-dashboard-mobile-audit-readable.png`, fullPage:true });
+  if (await page.locator('#auditRaw .advice-head').count() !== 1) throw new Error('Grounded AI audit recommendations were not rendered.');
+  if (!(await page.locator('#auditRaw').innerText()).includes('Aumentar descoberta por busca')) throw new Error('SEO recommendation is missing from audit UI.');
+  const tech = page.locator('#auditRaw .tech-details');
+  if (await tech.count() && await tech.evaluate(el => el.open)) throw new Error('Technical audit JSON must start collapsed.');
+  await page.screenshot({ path:`${out}/09-dashboard-mobile-audit-advice.png`, fullPage:true });
 
-  fs.writeFileSync('artifacts/dashboard-visual-audit.json', JSON.stringify({ ok:true, screenshots:4, consoleErrors:errors }, null, 2));
+  await page.evaluate(() => {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.getElementById('settings')?.classList.add('active');
+  });
+  await page.waitForTimeout(500);
+  if (await page.locator('#vaultUseSelectedOnly').count() !== 1) throw new Error('Exclusive key selection control is missing.');
+  if (await page.locator('#vaultRotateSelected').count() !== 1) throw new Error('Selected-key rotation control is missing.');
+  if (!(await page.locator('#aiKeyVault').innerText()).includes('Rotacionar selecionadas')) throw new Error('Rotation semantics are not visible to the user.');
+  await page.screenshot({ path:`${out}/10-dashboard-mobile-ai-key-selection.png`, fullPage:true });
+
+  fs.writeFileSync('artifacts/dashboard-visual-audit.json', JSON.stringify({ ok:true, screenshots:5, consoleErrors:errors }, null, 2));
   await browser.close();
   if (errors.length) {
     console.error(errors.join('\n'));
