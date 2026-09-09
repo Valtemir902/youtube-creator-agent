@@ -184,6 +184,45 @@ class GeminiProvider(AIProvider):
                 return dict(dump(exclude_none=True))
         return {}
 
+    @staticmethod
+    def _response_text(response: Any) -> str:
+        """Extract usable text without assuming the convenience ``response.text`` works.
+
+        New Gemini model surfaces may return a valid candidate while the SDK's
+        convenience property is empty or unavailable. In that case inspect the
+        authoritative candidate/content/parts structure before declaring the
+        generation empty.
+        """
+        direct = str(getattr(response, "text", "") or "").strip()
+        if direct:
+            return direct
+
+        fragments: list[str] = []
+        for candidate in getattr(response, "candidates", None) or ():
+            content = getattr(candidate, "content", None)
+            for part in getattr(content, "parts", None) or ():
+                value = getattr(part, "text", None)
+                if value is None and isinstance(part, dict):
+                    value = part.get("text")
+                text = str(value or "").strip()
+                if text:
+                    fragments.append(text)
+        if fragments:
+            return "\n".join(fragments).strip()
+
+        raw = GeminiProvider._plain(response)
+        for candidate in raw.get("candidates", []) if isinstance(raw, dict) else []:
+            if not isinstance(candidate, dict):
+                continue
+            content = candidate.get("content") or {}
+            for part in content.get("parts", []) if isinstance(content, dict) else []:
+                if not isinstance(part, dict):
+                    continue
+                text = str(part.get("text") or "").strip()
+                if text:
+                    fragments.append(text)
+        return "\n".join(fragments).strip()
+
     def generate(
         self,
         model: str,
@@ -237,9 +276,20 @@ class GeminiProvider(AIProvider):
             else:
                 raise self._provider_error("gerar conteúdo", exc) from exc
 
-        text = str(getattr(response, "text", "") or "").strip()
+        text = self._response_text(response)
         if not text:
-            raise AIProviderError("Gemini retornou uma resposta sem texto utilizável.")
+            raw = self._plain(response)
+            candidates = raw.get("candidates", []) if isinstance(raw, dict) else []
+            finish_reasons = [
+                str(candidate.get("finish_reason") or candidate.get("finishReason") or "")
+                for candidate in candidates
+                if isinstance(candidate, dict)
+            ]
+            suffix = f" Motivo(s) de término: {', '.join(item for item in finish_reasons if item)}." if any(finish_reasons) else ""
+            raise AIProviderError(
+                "Gemini autenticou a credencial e respondeu ao modelo, mas não retornou texto utilizável para este teste."
+                + suffix
+            )
         usage = self._plain(getattr(response, "usage_metadata", None))
         raw = self._plain(response)
         return AIResponse(
