@@ -12,6 +12,7 @@ function injectedDashboardHtml() {
   if (!css || !script) throw new Error('Could not extract dashboard professional enhancement assets.');
   html = html.replace('</head>', `${css[1]}\n</head>`);
   html = html.replace('</body>', `${script[1]}\n</body>`);
+  html = html.replace("document.getElementById('home')", "document.getElementById('overview')");
   return html;
 }
 
