@@ -9,6 +9,9 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
+DASHBOARD_UI_REVISION = "professional-v1"
+
+
 def create_app():
     app = create_extended_app()
     install_ai_language_policy()
@@ -17,4 +20,5 @@ def create_app():
     install_pwa_routes(app)
     install_ai_vault_ui(app)
     install_dashboard_pro_ui(app)
+    app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
