@@ -180,11 +180,33 @@ class APIKeyPoolStore:
             changes["preferred_model"] = (model or "")[:200]
         self._patch(provider, key_id, **changes)
 
+    @staticmethod
+    def _is_model_or_output_issue(error: str) -> bool:
+        """Return True when the problem says nothing about credential validity."""
+        text = " ".join(str(error or "").casefold().split())
+        signals = (
+            "sem texto utilizável",
+            "não retornou texto utilizável",
+            "respondeu ao modelo",
+            "unsupported model",
+            "modelo gemini incompatível",
+            "not supported for generatecontent",
+            "does not support generatecontent",
+            "method is not supported",
+            "not found for api version",
+        )
+        return any(signal in text for signal in signals)
+
     def mark_failure(self, provider: str, key_id: str, error: str, *, warning: bool, model: str = "") -> None:
+        # Credential health and model/output health are intentionally distinct.
+        # A valid authenticated request can still fail because one model returned
+        # no usable text or is incompatible. That must be presented as warning,
+        # not as a red "bad key" signal.
+        effective_warning = bool(warning or self._is_model_or_output_issue(error))
         self._patch(
             provider,
             key_id,
-            status="warning" if warning else "error",
+            status="warning" if effective_warning else "error",
             last_error=" ".join(str(error).split())[:500],
             last_error_at=_utc_now(),
             last_model=(model or "")[:200],
