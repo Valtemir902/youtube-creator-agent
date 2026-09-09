@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from cryptography.fernet import Fernet
 from fastapi.routing import APIRoute
 
 from creator_service.oauth_compat_app import create_app
 
 
-def test_grounded_ai_routes_install_without_replacing_existing_surface():
+def test_grounded_ai_routes_install_without_replacing_existing_surface(tmp_path, monkeypatch):
+    monkeypatch.setenv("YCA_ROOT", str(tmp_path))
+    monkeypatch.setenv("YCA_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("YCA_TENANT_DB_PATH", str(tmp_path / "tenants.sqlite3"))
+
     app = create_app()
     routes = {
         route.path: route
