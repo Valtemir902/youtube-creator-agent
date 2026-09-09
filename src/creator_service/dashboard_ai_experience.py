@@ -24,7 +24,7 @@ _SCRIPT = r'''
     const button=rotation?document.getElementById('vaultRotateSelected'):document.getElementById('vaultUseSelectedOnly');
     setBusy(button,true,rotation?'Configurando rotação':'Selecionando');
     try{
-      const d=await api('/api/ai/selection',{method:'PUT',body:JSON.stringify({provider,key_ids:ids,rotation})});
+      await api('/api/ai/selection',{method:'PUT',body:JSON.stringify({provider,key_ids:ids,rotation})});
       toast(rotation?`${ids.length} chave(s) selecionada(s) entrarão na rotação.`:'Somente a seleção marcada ficará disponível para a IA.');
       document.getElementById('refreshAiKeys')?.click();
       if(typeof loadStatus==='function')await loadStatus();
@@ -56,14 +56,17 @@ _SCRIPT = r'''
   }
   function extractRaw(node){const pre=node.querySelector('.tech-details pre');if(pre){try{return JSON.parse(pre.textContent)}catch{}}const text=node.textContent.trim();if(text.startsWith('{')){try{return JSON.parse(text)}catch{}}return null}
   function enhanceResult(node,kind){
-    if(!node||node.dataset.aiAdviceEnhanced==='1')return;const raw=extractRaw(node);if(!raw)return;
+    if(!node)return;const raw=extractRaw(node);if(!raw)return;
     const advice=kind==='audit'?raw.ai_advice:(raw.strategy||raw.ai_advice);if(!advice)return;
-    node.dataset.aiAdviceEnhanced='1';const details=node.querySelector('.tech-details');const holder=document.createElement('div');holder.innerHTML=adviceHtml(advice);while(holder.firstChild)node.insertBefore(holder.firstChild,details||null);
+    const signature=JSON.stringify(advice);const existing=node.querySelector(':scope > .ai-advice-render');
+    if(existing&&node.dataset.aiAdviceSignature===signature)return;
+    existing?.remove();
+    const details=node.querySelector('.tech-details');const holder=document.createElement('div');holder.className='ai-advice-render';holder.innerHTML=adviceHtml(advice);node.insertBefore(holder,details||null);node.dataset.aiAdviceSignature=signature;
     if(details){const summary=details.querySelector('summary');if(summary)summary.textContent='Dados técnicos (opcional)';details.open=false}
   }
-  [['auditRaw','audit'],['strategyResult','strategy']].forEach(([id,kind])=>{const node=document.getElementById(id);if(!node)return;const obs=new MutationObserver(()=>{node.dataset.aiAdviceEnhanced='0';setTimeout(()=>enhanceResult(node,kind),0)});obs.observe(node,{childList:true,subtree:true,characterData:true});setTimeout(()=>enhanceResult(node,kind),250)});
+  [['auditRaw','audit'],['strategyResult','strategy']].forEach(([id,kind])=>{const node=document.getElementById(id);if(!node)return;let pending=false;const obs=new MutationObserver(()=>{if(pending)return;pending=true;setTimeout(()=>{pending=false;enhanceResult(node,kind)},0)});obs.observe(node,{childList:true,subtree:true,characterData:true});setTimeout(()=>enhanceResult(node,kind),250)});
 
-  function clearOnClick(buttonId,resultId){const b=document.getElementById(buttonId),out=document.getElementById(resultId);if(!b||!out)return;b.addEventListener('click',()=>{out.classList.add('hidden');out.textContent='';out.dataset.aiAdviceEnhanced='0'},{capture:true})}
+  function clearOnClick(buttonId,resultId){const b=document.getElementById(buttonId),out=document.getElementById(resultId);if(!b||!out)return;b.addEventListener('click',()=>{out.classList.add('hidden');out.textContent='';delete out.dataset.aiAdviceSignature},{capture:true})}
   clearOnClick('buildStrategy','strategyResult');clearOnClick('researchTopic','researchResult');clearOnClick('validateKeywords','keywordResult');
 
   const oldApi=window.api;
