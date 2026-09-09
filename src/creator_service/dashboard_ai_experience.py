@@ -15,7 +15,7 @@ _SCRIPT = r'''
 <script data-yca-ai-experience>
 (()=>{
   if(window.__ycaAiExperience)return;window.__ycaAiExperience=true;
-  const escx=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const escx=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[m]));
   const pretty=v=>typeof v==='object'?JSON.stringify(v):String(v??'—');
   function selectedKeyIds(){return [...document.querySelectorAll('#aiKeyVault .vault-key-check:checked')].map(x=>x.dataset.keyId).filter(Boolean)}
   async function applyKeySelection(rotation){
@@ -30,8 +30,20 @@ _SCRIPT = r'''
       if(typeof loadStatus==='function')await loadStatus();
     }catch(e){toast(e.message,true)}finally{setBusy(button,false)}
   }
+  function resolveVaultSurface(){
+    let vault=document.getElementById('aiKeyVault');
+    if(vault)return vault;
+    const cards=[...document.querySelectorAll('#settings .card')];
+    vault=cards.find(card=>String(card.textContent||'').includes('Inteligência artificial externa opcional'))||null;
+    if(!vault)return null;
+    vault.id='aiKeyVault';
+    if(!vault.querySelector('.vault-toolbar')){
+      const toolbar=document.createElement('div');toolbar.className='vault-toolbar';vault.appendChild(toolbar);
+    }
+    return vault;
+  }
   function installSelectionControls(){
-    const vault=document.getElementById('aiKeyVault');if(!vault||document.getElementById('vaultUseSelectedOnly'))return false;
+    const vault=resolveVaultSurface();if(!vault||document.getElementById('vaultUseSelectedOnly'))return false;
     const toolbar=vault.querySelector('.vault-toolbar');if(!toolbar)return false;
     const box=document.createElement('div');box.className='vault-use-selection';
     box.innerHTML='<div class="hint"><b>Quais chaves a IA pode usar?</b> Marque exatamente as desejadas. Chaves não marcadas serão desativadas e nunca entrarão no fallback.</div><button class="btn success" id="vaultUseSelectedOnly">Usar somente selecionadas</button><button class="btn primary" id="vaultRotateSelected">Rotacionar selecionadas</button>';
