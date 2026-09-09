@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 
 const base = process.env.CREATOR_BASE_URL || 'https://creator.silvadigitaltech.com';
@@ -157,6 +158,8 @@ async function checkKeycloakStyle(page, label) {
     console.error(`Browser audit found ${failures.length} issue(s):\n- ${failures.join('\n- ')}`);
     process.exit(1);
   }
+
+  execFileSync(process.execPath, ['tests/dashboard_visual_smoke.js'], { stdio: 'inherit', env: process.env });
   console.log('Live browser audit passed.');
 })().catch(err => {
   console.error(err.stack || err);
