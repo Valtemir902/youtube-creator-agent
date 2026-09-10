@@ -4,6 +4,7 @@ from collections import Counter
 from typing import Any
 
 from intelligence.free_growth_engine import FreeGrowthEngine, _tokens
+from intelligence.free_video_optimizer import FreeVideoOptimizer
 
 
 def _candidate_keywords(title: str, transcript: str, *, limit: int = 8) -> list[str]:
@@ -54,9 +55,11 @@ def install_free_intelligence_service() -> None:
         result["free_intelligence"] = {
             "available": True,
             "version": FreeGrowthEngine.VERSION,
+            "video_optimizer_version": FreeVideoOptimizer.VERSION,
             "external_ai_required": False,
             "automatic_writes": False,
             "evidence_first": True,
+            "optimization_requires_transcript_and_measured_search": True,
         }
         return result
 
@@ -113,6 +116,7 @@ def install_free_intelligence_service() -> None:
             except Exception as exc:
                 keyword_error = str(exc)[:700]
         report = FreeGrowthEngine().video_report(current, transcript=transcript, keyword_results=keyword_rows)
+        optimization = FreeVideoOptimizer().build(current, transcript=transcript, keyword_results=keyword_rows)
         report.update({
             "video_id": str(video_id),
             "plan_tier": "free",
@@ -123,8 +127,32 @@ def install_free_intelligence_service() -> None:
             "keyword_research_error": keyword_error,
             "transcript": {key: value for key, value in transcript_payload.items() if key != "text"},
             "current": current,
+            "optimization": optimization,
         })
         return report
+
+    def free_video_optimization_plan(
+        self,
+        video_id: str,
+        *,
+        period_days: int = 28,
+        max_results: int = 20,
+        candidate_limit: int = 8,
+    ) -> dict[str, Any]:
+        report = free_video_intelligence(
+            self,
+            video_id,
+            period_days=period_days,
+            max_results=max_results,
+            candidate_limit=candidate_limit,
+        )
+        plan = dict(report.get("optimization") or {})
+        plan["video_id"] = str(video_id)
+        plan["plan_tier"] = "free"
+        plan["premium_ai_required"] = False
+        plan["keyword_research_error"] = report.get("keyword_research_error", "")
+        plan["transcript"] = report.get("transcript", {})
+        return plan
 
     def free_channel_strategy(self, period_days: int = 28) -> dict[str, Any]:
         report = free_channel_intelligence(self, period_days=period_days)
@@ -147,5 +175,6 @@ def install_free_intelligence_service() -> None:
     CreatorService.status = status
     CreatorService.free_channel_intelligence = free_channel_intelligence
     CreatorService.free_video_intelligence = free_video_intelligence
+    CreatorService.free_video_optimization_plan = free_video_optimization_plan
     CreatorService.free_channel_strategy = free_channel_strategy
     CreatorService._yca_free_intelligence_installed = True
