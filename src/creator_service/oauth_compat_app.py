@@ -10,6 +10,7 @@ from .dashboard_grounded_advice import install_grounded_strategy_service
 from .dashboard_overview_compat import install_dashboard_overview_compat
 from .dashboard_pro_ui import install_dashboard_pro_ui
 from .extended_onboarding import create_app as create_extended_app
+from .free_intelligence_dashboard import install_free_intelligence_dashboard
 from .free_intelligence_service import install_free_intelligence_service
 from .handoff_routes import install_handoff_routes
 from .oauth_compat import install_oauth_compat_routes
@@ -34,5 +35,6 @@ def create_app():
     install_dashboard_pro_ui(app)
     install_dashboard_overview_compat(app)
     install_dashboard_ai_experience(app)
+    install_free_intelligence_dashboard(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
