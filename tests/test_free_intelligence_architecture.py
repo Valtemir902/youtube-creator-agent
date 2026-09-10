@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 
-from creator_service.free_intelligence_workspace import install_free_intelligence_workspace
+from creator_service.free_intelligence_workspace import _SCRIPT, install_free_intelligence_workspace
 
 
 def test_free_engine_has_no_external_llm_or_youtube_content_write_calls():
@@ -20,24 +21,20 @@ def test_free_engine_has_no_external_llm_or_youtube_content_write_calls():
         root / "creator_service" / "free_intelligence_workspace.py",
     ]
     forbidden = (
-        "AIRuntime",
-        "openai.ChatCompletion",
-        "google.generativeai",
-        ".videos().update(",
-        ".videos().delete(",
-        ".playlists().insert(",
-        ".playlists().update(",
-        ".playlists().delete(",
-        ".playlistItems().insert(",
-        ".playlistItems().delete(",
-        ".channels().update(",
-        ".captions().insert(",
-        ".captions().delete(",
+        "AIRuntime", "openai.ChatCompletion", "google.generativeai",
+        ".videos().update(", ".videos().delete(", ".playlists().insert(", ".playlists().update(", ".playlists().delete(",
+        ".playlistItems().insert(", ".playlistItems().delete(", ".channels().update(", ".captions().insert(", ".captions().delete(",
     )
     for path in files:
         text = path.read_text(encoding="utf-8")
         for needle in forbidden:
             assert needle not in text, f"{needle} found in free engine file {path.name}"
+
+
+def test_injected_workspace_javascript_is_valid_node_syntax():
+    js = _SCRIPT.replace("<script data-yca-free-workspace>", "", 1).rsplit("</script>", 1)[0]
+    result = subprocess.run(["node", "--check"], input=js, text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 def test_workspace_injects_professional_free_cards_additively():
