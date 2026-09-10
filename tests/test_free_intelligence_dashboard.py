@@ -21,6 +21,12 @@ def _add_dashboard_contract(app: FastAPI) -> None:
         def free_channel_intelligence(self, period_days=28):
             return {"mode": "deterministic_free", "period_days": period_days}
 
+        def free_channel_trend(self, period_days=28):
+            return {"mode": "deterministic_free", "period_days": period_days, "status": "stable"}
+
+        def free_publication_strategy(self, period_days=28):
+            return {"period_days": period_days, "recommendation_ready": False}
+
         def free_video_intelligence(self, video_id, period_days=28):
             return {"mode": "deterministic_free", "video_id": video_id, "period_days": period_days}
 
@@ -130,6 +136,8 @@ def test_free_engine_routes_are_exposed_without_replacing_ai_route():
     paths = {r.path for r in app.router.routes if isinstance(r, APIRoute)}
     expected = {
         "/api/dashboard/free/channel",
+        "/api/dashboard/free/channel/trend",
+        "/api/dashboard/free/channel/publication-strategy",
         "/api/dashboard/free/video/{video_id}",
         "/api/dashboard/free/video/{video_id}/optimization",
         "/api/dashboard/free/video/{video_id}/retention",
