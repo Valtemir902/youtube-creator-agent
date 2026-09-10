@@ -12,14 +12,16 @@ def _candidate_keywords(title: str, transcript: str, *, limit: int = 8) -> list[
     counts = Counter(tokens)
     top = [token for token, count in counts.most_common(24) if count >= 2]
     candidates: list[str] = []
+    seen: set[str] = set()
 
     def add(value: str) -> None:
         value = " ".join(str(value or "").split()).strip()
         if len(value) < 3:
             return
         key = value.casefold()
-        if key in {item.casefold() for item in candidates}:
+        if key in seen:
             return
+        seen.add(key)
         candidates.append(value[:100])
 
     add(title[:90])
@@ -45,11 +47,23 @@ def install_free_intelligence_service() -> None:
     if getattr(CreatorService, "_yca_free_intelligence_installed", False):
         return
 
+    original_status = CreatorService.status
+
+    def status(self) -> dict[str, Any]:
+        result = dict(original_status(self))
+        result["free_intelligence"] = {
+            "available": True,
+            "version": FreeGrowthEngine.VERSION,
+            "external_ai_required": False,
+            "automatic_writes": False,
+            "evidence_first": True,
+        }
+        return result
+
     def free_channel_intelligence(self, period_days: int = 28) -> dict[str, Any]:
         days = max(7, min(90, int(period_days)))
         profile = self.channel_profile(period_days=days)
-        evidence = self.strategy_evidence(period_days=days)
-        report = FreeGrowthEngine().channel_report(profile, evidence)
+        report = FreeGrowthEngine().channel_report(profile, {})
         report["plan_tier"] = "free"
         report["premium_ai_required"] = False
         return report
@@ -69,7 +83,7 @@ def install_free_intelligence_service() -> None:
         candidates = _candidate_keywords(current.get("title", ""), transcript, limit=max(3, min(12, candidate_limit)))
         keyword_rows: list[dict[str, Any]] = []
         keyword_error = ""
-        if candidates:
+        if transcript and candidates:
             try:
                 validation = self.validate_keyword_candidates(
                     candidates,
@@ -103,9 +117,9 @@ def install_free_intelligence_service() -> None:
             "video_id": str(video_id),
             "plan_tier": "free",
             "premium_ai_required": False,
-            "candidate_source": "deterministic_transcript_terms",
-            "keyword_metrics_source": "youtube_search_results",
-            "candidate_keywords": candidates,
+            "candidate_source": "deterministic_transcript_terms" if transcript else "none_without_transcript",
+            "keyword_metrics_source": "youtube_search_results" if keyword_rows else "not_measured",
+            "candidate_keywords": candidates if transcript else [],
             "keyword_research_error": keyword_error,
             "transcript": {key: value for key, value in transcript_payload.items() if key != "text"},
             "current": current,
@@ -130,6 +144,7 @@ def install_free_intelligence_service() -> None:
             "requires_review": True,
         }
 
+    CreatorService.status = status
     CreatorService.free_channel_intelligence = free_channel_intelligence
     CreatorService.free_video_intelligence = free_video_intelligence
     CreatorService.free_channel_strategy = free_channel_strategy
