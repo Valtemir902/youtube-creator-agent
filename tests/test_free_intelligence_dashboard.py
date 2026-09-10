@@ -27,6 +27,24 @@ def _add_dashboard_contract(app: FastAPI) -> None:
         def free_video_optimization_plan(self, video_id, period_days=28):
             return {"video_id": video_id, "optimization_ready": False, "blocked_reason": "teste"}
 
+        def free_video_retention(self, video_id, period_days=28):
+            return {"video_id": video_id, "data_available": True, "period_days": period_days}
+
+        def free_video_reach(self, video_id):
+            return {"video_id": video_id, "source": "youtube_reporting_api", "data_available": False}
+
+        def free_video_performance(self, video_id, period_days=28):
+            return {"video_id": video_id, "period_days": period_days, "writes_performed": 0}
+
+        def free_category_suggestion(self, video_id):
+            return {"video_id": video_id, "suggestion_ready": False}
+
+        def free_catalog_opportunities(self, period_days=28, max_videos=5):
+            return {"period_days": period_days, "max_videos": max_videos, "opportunities": []}
+
+        def free_plan_route(self, action, plan="free", credits=0, ai_opt_in=False):
+            return {"action": action, "plan": plan, "credits": credits, "ai_opt_in": ai_opt_in, "route": "deterministic_free"}
+
         def free_channel_action_plan(self, period_days=28, max_videos=3):
             return {"mode": "deterministic_free", "period_days": period_days, "max_videos": max_videos}
 
@@ -110,12 +128,21 @@ def test_free_engine_routes_are_exposed_without_replacing_ai_route():
     app = _base_app()
     install_free_intelligence_dashboard(app)
     paths = {r.path for r in app.router.routes if isinstance(r, APIRoute)}
-    assert "/api/dashboard/free/channel" in paths
-    assert "/api/dashboard/free/video/{video_id}" in paths
-    assert "/api/dashboard/free/video/{video_id}/optimization" in paths
-    assert "/api/dashboard/free/action-plan" in paths
-    assert "/api/dashboard/free/video/{video_id}/preview" in paths
-    assert "/api/dashboard/video/{video_id}/ai-optimize" in paths
+    expected = {
+        "/api/dashboard/free/channel",
+        "/api/dashboard/free/video/{video_id}",
+        "/api/dashboard/free/video/{video_id}/optimization",
+        "/api/dashboard/free/video/{video_id}/retention",
+        "/api/dashboard/free/video/{video_id}/reach",
+        "/api/dashboard/free/video/{video_id}/performance",
+        "/api/dashboard/free/video/{video_id}/category",
+        "/api/dashboard/free/catalog-opportunities",
+        "/api/dashboard/free/action-plan",
+        "/api/dashboard/free/plan-route",
+        "/api/dashboard/free/video/{video_id}/preview",
+        "/api/dashboard/video/{video_id}/ai-optimize",
+    }
+    assert expected <= paths
 
 
 def test_installer_is_idempotent():
