@@ -12,6 +12,7 @@ from .dashboard_pro_ui import install_dashboard_pro_ui
 from .extended_onboarding import create_app as create_extended_app
 from .free_intelligence_dashboard import install_free_intelligence_dashboard
 from .free_intelligence_service import install_free_intelligence_service
+from .free_performance_service import install_free_performance_service
 from .handoff_routes import install_handoff_routes
 from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
@@ -25,6 +26,7 @@ def create_app():
     install_ai_runtime_policy()
     install_grounded_strategy_service()
     install_free_intelligence_service()
+    install_free_performance_service()
     install_ai_language_policy()
     install_ai_selection_api(app)
     install_dashboard_ai_route_guard(app)
