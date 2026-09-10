@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 
@@ -44,6 +44,17 @@ _SCRIPT = r'''
 '''
 
 
+def _closure_values(fn) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    closure = getattr(fn, "__closure__", None) or ()
+    for name, cell in zip(getattr(fn.__code__, "co_freevars", ()), closure):
+        try:
+            values[name] = cell.cell_contents
+        except ValueError:
+            pass
+    return values
+
+
 def _replace_call(app: FastAPI, path: str, replacement) -> None:
     route = next((r for r in app.router.routes if isinstance(r, APIRoute) and r.path == path), None)
     if route is None:
@@ -58,6 +69,14 @@ def install_free_intelligence_dashboard(app: FastAPI) -> None:
 
     audit_route = next(r for r in app.router.routes if isinstance(r, APIRoute) and r.path == "/api/dashboard/audit")
     audit_original = audit_route.endpoint
+    status_route = next(r for r in app.router.routes if isinstance(r, APIRoute) and r.path == "/api/dashboard/status")
+    status_context = _closure_values(status_route.endpoint)
+    service_for = status_context.get("service_for")
+    if service_for is None:
+        raise RuntimeError("Não foi possível resolver o serviço do dashboard para o motor gratuito.")
+    readable = status_route.dependant.dependencies[0].call
+    writable_route = next(r for r in app.router.routes if isinstance(r, APIRoute) and r.path == "/api/dashboard/video/{video_id}/ai-optimize")
+    writable = writable_route.dependant.dependencies[-1].call
 
     async def dashboard_audit(period_days=28, tenant=None):
         factual = await audit_original(period_days=period_days, tenant=tenant)
@@ -68,6 +87,77 @@ def install_free_intelligence_dashboard(app: FastAPI) -> None:
         return {**factual, "free_intelligence": report, "writes_performed": 0}
 
     _replace_call(app, "/api/dashboard/audit", dashboard_audit)
+
+    @app.get("/api/dashboard/free/channel")
+    async def free_channel(period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_channel_intelligence(period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/channel/trend")
+    async def free_channel_trend(period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_channel_trend(period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/channel/publication-strategy")
+    async def free_publication_strategy(period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_publication_strategy(period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}")
+    async def free_video(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_intelligence(video_id, period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}/optimization")
+    async def free_video_optimization(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_optimization_plan(video_id, period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}/retention")
+    async def free_video_retention(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_retention(video_id, period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}/reach")
+    async def free_video_reach(video_id: str, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_reach(video_id)
+
+    @app.get("/api/dashboard/free/video/{video_id}/performance")
+    async def free_video_performance(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_performance(video_id, period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}/category")
+    async def free_video_category(video_id: str, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_category_suggestion(video_id)
+
+    @app.get("/api/dashboard/free/catalog-opportunities")
+    async def free_catalog_opportunities(period_days: int = 28, max_videos: int = 5, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_catalog_opportunities(period_days=max(7, min(90, period_days)), max_videos=max(1, min(8, max_videos)))
+
+    @app.get("/api/dashboard/free/action-plan")
+    async def free_action_plan(period_days: int = 28, max_videos: int = 3, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_channel_action_plan(
+            period_days=max(7, min(90, period_days)),
+            max_videos=max(1, min(5, max_videos)),
+        )
+
+    @app.get("/api/dashboard/free/plan-route")
+    async def free_plan_route(action: str, plan: str = "free", credits: int = 0, ai_opt_in: bool = False, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_plan_route(action, plan=plan, credits=max(0, credits), ai_opt_in=ai_opt_in)
+
+    @app.post("/api/dashboard/free/video/{video_id}/preview")
+    async def free_video_preview(video_id: str, period_days: int = 28, tenant: Any = Depends(writable)) -> dict[str, Any]:
+        service = service_for(tenant.tenant_id)
+        plan = service.free_video_optimization_plan(video_id, period_days=max(7, min(90, period_days)))
+        if not plan.get("optimization_ready"):
+            raise HTTPException(status_code=409, detail=str(plan.get("blocked_reason") or "Nenhuma mudança segura foi recomendada."))
+        proposed = dict(plan.get("proposed") or {})
+        preview = service.preview_video_metadata_update(
+            video_id=video_id,
+            title=proposed.get("title"),
+            description=proposed.get("description"),
+            tags=list(proposed.get("tags") or []),
+        )
+        return {
+            "engine_plan": plan,
+            "preview": preview,
+            "writes_performed": 0,
+            "requires_explicit_user_confirmation": True,
+        }
 
     dashboard_route = next(
         r for r in app.router.routes

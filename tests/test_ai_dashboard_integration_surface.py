@@ -19,18 +19,24 @@ def test_grounded_ai_routes_install_without_replacing_existing_surface(tmp_path,
     monkeypatch.setattr(extended_onboarding, "IntrospectionTokenVerifier", _TestVerifier)
 
     app = create_app()
-    routes = {
-        route.path: route
-        for route in app.router.routes
-        if isinstance(route, APIRoute)
-    }
+    routes = {route.path: route for route in app.router.routes if isinstance(route, APIRoute)}
 
     assert "/api/ai/selection" in routes
     assert "/api/dashboard/audit" in routes
     assert "/api/dashboard/strategy/build" in routes
     assert "/api/dashboard/video/{video_id}/ai-optimize" in routes
-    assert app.state.dashboard_ui_revision == "professional-v1.3-free-intelligence"
+    assert "/api/dashboard/free/channel/optimization" in routes
+    assert "/api/dashboard/free/channel/trend" in routes
+    assert "/api/dashboard/free/channel/publication-strategy" in routes
+    assert "/api/dashboard/free/video/{video_id}/performance" in routes
+    assert "/api/dashboard/free/video/{video_id}/reach" in routes
+    assert "/api/dashboard/free/video/{video_id}/retention" in routes
+    assert "/api/dashboard/free/playlist/{playlist_id}/optimization" in routes
+    assert app.state.dashboard_ui_revision == "professional-v1.4-free-intelligence"
     assert app.state.free_intelligence_dashboard_installed is True
+    assert app.state.free_channel_dashboard_installed is True
+    assert app.state.free_playlist_optimizer_dashboard_installed is True
+    assert app.state.free_intelligence_workspace_installed is True
 
     video_call = routes["/api/dashboard/video/{video_id}/ai-optimize"].dependant.call
     assert video_call.__name__ == "video_ai_optimize"
