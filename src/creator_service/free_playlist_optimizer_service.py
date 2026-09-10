@@ -14,8 +14,7 @@ def _candidate_terms(videos: list[dict[str, Any]], limit: int = 6) -> list[str]:
     tokens = _tokens(" ".join(str(row.get("title") or "") for row in videos))
     counts = Counter(tokens)
     terms = [term for term, count in counts.most_common(20) if count >= 2]
-    phrases = []
-    seen = set()
+    phrases, seen = [], set()
     for row in videos:
         row_tokens = _tokens(str(row.get("title") or ""))
         for size in (3, 2):
@@ -39,6 +38,14 @@ def install_free_playlist_optimizer_service() -> None:
     from .service import CreatorService
     if getattr(CreatorService, "_yca_free_playlist_optimizer_installed", False):
         return
+    original_status = CreatorService.status
+
+    def status(self) -> dict[str, Any]:
+        result = dict(original_status(self))
+        free = dict(result.get("free_intelligence") or {})
+        free["playlist_optimizer_version"] = FreePlaylistOptimizer.VERSION
+        result["free_intelligence"] = free
+        return result
 
     def free_playlist_optimization_plan(self, playlist_id: str, *, period_days: int = 28) -> dict[str, Any]:
         self.context.validate_youtube()
@@ -51,12 +58,7 @@ def install_free_playlist_optimizer_service() -> None:
         snippet = item.get("snippet", {}) or {}
         if str(snippet.get("channelId") or "") != str(self._authorized_channel_id()):
             raise PermissionError("A playlist não pertence ao canal autorizado.")
-        current = {
-            "playlist_id": playlist_id,
-            "title": str(snippet.get("title") or ""),
-            "description": str(snippet.get("description") or ""),
-            "privacy_status": str((item.get("status", {}) or {}).get("privacyStatus") or ""),
-        }
+        current = {"playlist_id": playlist_id, "title": str(snippet.get("title") or ""), "description": str(snippet.get("description") or ""), "privacy_status": str((item.get("status", {}) or {}).get("privacyStatus") or "")}
         videos: list[dict[str, Any]] = []
         token = None
         while len(videos) < 50:
@@ -68,8 +70,7 @@ def install_free_playlist_optimizer_service() -> None:
             if not token:
                 break
         candidates = _candidate_terms(videos)
-        keyword_rows = []
-        keyword_error = ""
+        keyword_rows, keyword_error = [], ""
         if candidates:
             try:
                 validation = self.validate_keyword_candidates(candidates, period_days=max(7, min(90, int(period_days))), max_results=12)
@@ -82,6 +83,7 @@ def install_free_playlist_optimizer_service() -> None:
         plan.update({"period_days": max(7, min(90, int(period_days))), "candidate_keywords": candidates, "keyword_research_error": keyword_error, "plan_tier": "free", "premium_ai_required": False, "member_scan_limit": 50})
         return plan
 
+    CreatorService.status = status
     CreatorService.free_playlist_optimization_plan = free_playlist_optimization_plan
     CreatorService._yca_free_playlist_optimizer_installed = True
 
