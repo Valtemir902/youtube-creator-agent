@@ -7,6 +7,7 @@ from .ai_vault_ui import install_ai_vault_ui
 from .dashboard_ai_experience import install_dashboard_ai_experience
 from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
 from .dashboard_grounded_advice import install_grounded_strategy_service
+from .dashboard_native_ux import install_dashboard_native_ux
 from .dashboard_overview_compat import install_dashboard_overview_compat
 from .dashboard_pro_ui import install_dashboard_pro_ui
 from .extended_onboarding import create_app as create_extended_app
@@ -21,7 +22,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "professional-v1.4-free-intelligence"
+DASHBOARD_UI_REVISION = "professional-v1.5-native-intelligence"
 
 
 def create_app():
@@ -45,5 +46,6 @@ def create_app():
     install_free_channel_dashboard(app)
     install_free_playlist_optimizer_dashboard(app)
     install_free_intelligence_workspace(app)
+    install_dashboard_native_ux(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app

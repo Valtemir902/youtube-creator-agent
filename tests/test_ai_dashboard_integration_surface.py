@@ -32,11 +32,12 @@ def test_grounded_ai_routes_install_without_replacing_existing_surface(tmp_path,
     assert "/api/dashboard/free/video/{video_id}/reach" in routes
     assert "/api/dashboard/free/video/{video_id}/retention" in routes
     assert "/api/dashboard/free/playlist/{playlist_id}/optimization" in routes
-    assert app.state.dashboard_ui_revision == "professional-v1.4-free-intelligence"
+    assert app.state.dashboard_ui_revision == "professional-v1.5-native-intelligence"
     assert app.state.free_intelligence_dashboard_installed is True
     assert app.state.free_channel_dashboard_installed is True
     assert app.state.free_playlist_optimizer_dashboard_installed is True
     assert app.state.free_intelligence_workspace_installed is True
+    assert app.state.dashboard_native_ux_installed is True
 
     video_call = routes["/api/dashboard/video/{video_id}/ai-optimize"].dependant.call
     assert video_call.__name__ == "video_ai_optimize"
