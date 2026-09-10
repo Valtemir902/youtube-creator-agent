@@ -29,7 +29,8 @@ def test_grounded_ai_routes_install_without_replacing_existing_surface(tmp_path,
     assert "/api/dashboard/audit" in routes
     assert "/api/dashboard/strategy/build" in routes
     assert "/api/dashboard/video/{video_id}/ai-optimize" in routes
-    assert app.state.dashboard_ui_revision == "professional-v1.2-grounded-ai"
+    assert app.state.dashboard_ui_revision == "professional-v1.3-free-intelligence"
+    assert app.state.free_intelligence_dashboard_installed is True
 
     video_call = routes["/api/dashboard/video/{video_id}/ai-optimize"].dependant.call
     assert video_call.__name__ == "video_ai_optimize"
