@@ -16,6 +16,7 @@ def test_free_engine_has_no_external_llm_or_youtube_content_write_calls():
     files = list((root / "intelligence").glob("free_*.py")) + [
         root / "creator_service" / "free_intelligence_service.py",
         root / "creator_service" / "free_performance_service.py",
+        root / "creator_service" / "free_playlist_optimizer_service.py",
         root / "creator_service" / "free_intelligence_dashboard.py",
         root / "creator_service" / "free_channel_dashboard.py",
         root / "creator_service" / "free_intelligence_workspace.py",
