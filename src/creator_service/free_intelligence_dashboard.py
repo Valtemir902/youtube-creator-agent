@@ -92,6 +92,14 @@ def install_free_intelligence_dashboard(app: FastAPI) -> None:
     async def free_channel(period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
         return service_for(tenant.tenant_id).free_channel_intelligence(period_days=max(7, min(90, period_days)))
 
+    @app.get("/api/dashboard/free/channel/trend")
+    async def free_channel_trend(period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_channel_trend(period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/channel/publication-strategy")
+    async def free_publication_strategy(period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_publication_strategy(period_days=max(7, min(90, period_days)))
+
     @app.get("/api/dashboard/free/video/{video_id}")
     async def free_video(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
         return service_for(tenant.tenant_id).free_video_intelligence(video_id, period_days=max(7, min(90, period_days)))
