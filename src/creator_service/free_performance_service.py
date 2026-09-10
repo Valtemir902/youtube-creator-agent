@@ -5,7 +5,9 @@ from typing import Any
 
 from intelligence.free_catalog_opportunities import FreeCatalogOpportunityDetector
 from intelligence.free_category_classifier import FreeCategoryClassifier
+from intelligence.free_channel_trend import FreeChannelTrend
 from intelligence.free_plan_policy import FreePremiumPolicy
+from intelligence.free_publication_strategy import FreePublicationStrategy
 from intelligence.free_reach_reporting import YouTubeReachReporting
 from intelligence.free_retention_intelligence import FreeRetentionIntelligence
 
@@ -26,6 +28,8 @@ def install_free_performance_service() -> None:
             "reach_reporting_version": YouTubeReachReporting.VERSION,
             "category_classifier_version": FreeCategoryClassifier.VERSION,
             "catalog_opportunity_version": FreeCatalogOpportunityDetector.VERSION,
+            "channel_trend_version": FreeChannelTrend.VERSION,
+            "publication_strategy_version": FreePublicationStrategy.VERSION,
             "plan_policy_version": FreePremiumPolicy.VERSION,
             "thumbnail_ctr_source": "youtube_reporting_api",
             "thumbnail_ctr_estimated": False,
@@ -35,7 +39,7 @@ def install_free_performance_service() -> None:
 
     def free_video_retention(self, video_id: str, *, period_days: int = 28) -> dict[str, Any]:
         self.context.validate_youtube()
-        self._owned_video_item(video_id, part="id")
+        self._owned_video_item(video_id, part="snippet")
         _, analytics = self._clients()
         if analytics is None:
             return {"engine": FreeRetentionIntelligence.VERSION, "data_available": False, "blocked_reason": "YouTube Analytics client unavailable.", "writes_performed": 0}
@@ -60,7 +64,7 @@ def install_free_performance_service() -> None:
 
     def free_video_reach(self, video_id: str) -> dict[str, Any]:
         self.context.validate_youtube()
-        self._owned_video_item(video_id, part="id")
+        self._owned_video_item(video_id, part="snippet")
         return YouTubeReachReporting(str(self.context.token_file)).fetch_latest(video_id=str(video_id))
 
     def free_video_performance(self, video_id: str, *, period_days: int = 28) -> dict[str, Any]:
@@ -145,6 +149,55 @@ def install_free_performance_service() -> None:
         result.update({"period_days": period_days, "videos_considered": candidates[:max_videos], "errors": errors})
         return result
 
+    def _analytics_period(self, start: datetime, end: datetime) -> dict[str, Any]:
+        _, analytics = self._clients()
+        if analytics is None:
+            return {}
+        response = analytics.reports().query(
+            ids="channel==MINE",
+            startDate=start.strftime("%Y-%m-%d"),
+            endDate=end.strftime("%Y-%m-%d"),
+            metrics="views,estimatedMinutesWatched,subscribersGained,likes,comments,shares",
+        ).execute()
+        headers = [str(item.get("name") or "") for item in (response.get("columnHeaders") or [])]
+        row = (response.get("rows") or [[]])[0] if (response.get("rows") or []) else []
+        return {headers[index]: value for index, value in enumerate(row) if index < len(headers)}
+
+    def free_channel_trend(self, *, period_days: int = 28) -> dict[str, Any]:
+        self.context.validate_youtube()
+        days = max(7, min(90, int(period_days)))
+        now = datetime.now(timezone.utc)
+        current_end = now
+        current_start = now - timedelta(days=days)
+        previous_end = current_start - timedelta(days=1)
+        previous_start = previous_end - timedelta(days=days)
+        current = _analytics_period(self, current_start, current_end)
+        previous = _analytics_period(self, previous_start, previous_end)
+        result = FreeChannelTrend().compare(current, previous)
+        result.update({
+            "period_days": days,
+            "current_period": {"start": current_start.strftime("%Y-%m-%d"), "end": current_end.strftime("%Y-%m-%d")},
+            "previous_period": {"start": previous_start.strftime("%Y-%m-%d"), "end": previous_end.strftime("%Y-%m-%d")},
+        })
+        return result
+
+    def free_publication_strategy(self, *, period_days: int = 28) -> dict[str, Any]:
+        profile = self.channel_profile(period_days=max(7, min(90, int(period_days))))
+        videos = list(profile.get("top_videos") or []) + list(profile.get("weak_videos") or [])
+        unique = []
+        seen = set()
+        for row in videos:
+            if not isinstance(row, dict):
+                continue
+            video_id = str(row.get("video_id") or "")
+            if video_id in seen:
+                continue
+            seen.add(video_id)
+            unique.append(row)
+        result = FreePublicationStrategy().analyze(unique)
+        result["period_days"] = max(7, min(90, int(period_days)))
+        return result
+
     def free_plan_route(self, action: str, *, plan: str = "free", credits: int = 0, ai_opt_in: bool = False) -> dict[str, Any]:
         return FreePremiumPolicy().decide(action=action, plan=plan, credits=credits, ai_opt_in=ai_opt_in)
 
@@ -154,5 +207,7 @@ def install_free_performance_service() -> None:
     CreatorService.free_video_performance = free_video_performance
     CreatorService.free_category_suggestion = free_category_suggestion
     CreatorService.free_catalog_opportunities = free_catalog_opportunities
+    CreatorService.free_channel_trend = free_channel_trend
+    CreatorService.free_publication_strategy = free_publication_strategy
     CreatorService.free_plan_route = free_plan_route
     CreatorService._yca_free_performance_installed = True
