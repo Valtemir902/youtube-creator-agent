@@ -15,6 +15,7 @@ from .free_intelligence_dashboard import install_free_intelligence_dashboard
 from .free_intelligence_service import install_free_intelligence_service
 from .free_intelligence_workspace import install_free_intelligence_workspace
 from .free_performance_service import install_free_performance_service
+from .free_playlist_optimizer_service import install_free_playlist_optimizer_dashboard, install_free_playlist_optimizer_service
 from .handoff_routes import install_handoff_routes
 from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
@@ -29,6 +30,7 @@ def create_app():
     install_grounded_strategy_service()
     install_free_intelligence_service()
     install_free_performance_service()
+    install_free_playlist_optimizer_service()
     install_ai_language_policy()
     install_ai_selection_api(app)
     install_dashboard_ai_route_guard(app)
@@ -41,6 +43,7 @@ def create_app():
     install_dashboard_ai_experience(app)
     install_free_intelligence_dashboard(app)
     install_free_channel_dashboard(app)
+    install_free_playlist_optimizer_dashboard(app)
     install_free_intelligence_workspace(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
