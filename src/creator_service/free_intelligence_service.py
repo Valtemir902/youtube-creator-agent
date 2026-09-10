@@ -5,6 +5,7 @@ from typing import Any
 
 from intelligence.free_action_planner import FreeActionPlanner
 from intelligence.free_growth_engine import FreeGrowthEngine, _tokens
+from intelligence.free_keyword_intelligence import FreeKeywordIntelligence
 from intelligence.free_playlist_matcher import FreePlaylistMatcher
 from intelligence.free_video_optimizer import FreeVideoOptimizer
 
@@ -58,6 +59,7 @@ def install_free_intelligence_service() -> None:
             "available": True,
             "version": FreeGrowthEngine.VERSION,
             "video_optimizer_version": FreeVideoOptimizer.VERSION,
+            "keyword_intelligence_version": FreeKeywordIntelligence.VERSION,
             "playlist_matcher_version": FreePlaylistMatcher.VERSION,
             "action_planner_version": FreeActionPlanner.VERSION,
             "external_ai_required": False,
@@ -117,10 +119,22 @@ def install_free_intelligence_service() -> None:
                         "fresh_90d_rate": row.get("fresh_90d_rate"),
                         "median_views_per_day": row.get("median_views_per_day"),
                         "small_channel_breakout_rate": row.get("small_channel_breakout_rate"),
-                        "evidence": list(row.get("evidence") or [])[:5],
+                        "result_count": row.get("result_count"),
+                        "median_views": row.get("median_views"),
+                        "p75_views_per_day": row.get("p75_views_per_day"),
+                        "median_channel_subscribers": row.get("median_channel_subscribers"),
+                        "dominant_channel_rate": row.get("dominant_channel_rate"),
+                        "exact_title_match_rate": row.get("exact_title_match_rate"),
+                        "evidence": list(row.get("evidence") or [])[:10],
                     })
             except Exception as exc:
                 keyword_error = str(exc)[:700]
+        keyword_intelligence = FreeKeywordIntelligence().analyze(
+            keyword_rows,
+            source_text=transcript,
+            current_title=current.get("title", ""),
+            current_tags=list(current.get("tags") or []),
+        )
         report = FreeGrowthEngine().video_report(current, transcript=transcript, keyword_results=keyword_rows)
         optimization = FreeVideoOptimizer().build(current, transcript=transcript, keyword_results=keyword_rows)
         playlist_error = ""
@@ -149,6 +163,7 @@ def install_free_intelligence_service() -> None:
             "keyword_metrics_source": "youtube_search_results" if keyword_rows else "not_measured",
             "candidate_keywords": candidates if transcript else [],
             "keyword_research_error": keyword_error,
+            "keyword_intelligence": keyword_intelligence,
             "playlist_research_error": playlist_error,
             "transcript": {key: value for key, value in transcript_payload.items() if key != "text"},
             "current": current,
@@ -177,6 +192,7 @@ def install_free_intelligence_service() -> None:
         plan["plan_tier"] = "free"
         plan["premium_ai_required"] = False
         plan["keyword_research_error"] = report.get("keyword_research_error", "")
+        plan["keyword_intelligence"] = report.get("keyword_intelligence", {})
         plan["playlist_match"] = report.get("playlist_match", {})
         plan["playlist_research_error"] = report.get("playlist_research_error", "")
         plan["transcript"] = report.get("transcript", {})
