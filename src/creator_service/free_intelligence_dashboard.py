@@ -100,12 +100,36 @@ def install_free_intelligence_dashboard(app: FastAPI) -> None:
     async def free_video_optimization(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
         return service_for(tenant.tenant_id).free_video_optimization_plan(video_id, period_days=max(7, min(90, period_days)))
 
+    @app.get("/api/dashboard/free/video/{video_id}/retention")
+    async def free_video_retention(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_retention(video_id, period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}/reach")
+    async def free_video_reach(video_id: str, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_reach(video_id)
+
+    @app.get("/api/dashboard/free/video/{video_id}/performance")
+    async def free_video_performance(video_id: str, period_days: int = 28, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_video_performance(video_id, period_days=max(7, min(90, period_days)))
+
+    @app.get("/api/dashboard/free/video/{video_id}/category")
+    async def free_video_category(video_id: str, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_category_suggestion(video_id)
+
+    @app.get("/api/dashboard/free/catalog-opportunities")
+    async def free_catalog_opportunities(period_days: int = 28, max_videos: int = 5, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_catalog_opportunities(period_days=max(7, min(90, period_days)), max_videos=max(1, min(8, max_videos)))
+
     @app.get("/api/dashboard/free/action-plan")
     async def free_action_plan(period_days: int = 28, max_videos: int = 3, tenant: Any = Depends(readable)) -> dict[str, Any]:
         return service_for(tenant.tenant_id).free_channel_action_plan(
             period_days=max(7, min(90, period_days)),
             max_videos=max(1, min(5, max_videos)),
         )
+
+    @app.get("/api/dashboard/free/plan-route")
+    async def free_plan_route(action: str, plan: str = "free", credits: int = 0, ai_opt_in: bool = False, tenant: Any = Depends(readable)) -> dict[str, Any]:
+        return service_for(tenant.tenant_id).free_plan_route(action, plan=plan, credits=max(0, credits), ai_opt_in=ai_opt_in)
 
     @app.post("/api/dashboard/free/video/{video_id}/preview")
     async def free_video_preview(video_id: str, period_days: int = 28, tenant: Any = Depends(writable)) -> dict[str, Any]:
