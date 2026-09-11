@@ -32,5 +32,6 @@ def test_activity_ux_is_idempotent():
     install_dashboard_activity_ux(app)
     install_dashboard_activity_ux(app)
     response = TestClient(app).get('/dashboard')
-    assert response.text.count('data-yca-activity-ux') >= 2  # one CSS marker and one script marker
-    assert response.text.count('window.__ycaActivityUx') == 1
+    assert response.text.count('<style data-yca-activity-ux>') == 1
+    assert response.text.count('<script data-yca-activity-ux>') == 1
+    assert response.text.count('if(window.__ycaActivityUx)return') == 1
