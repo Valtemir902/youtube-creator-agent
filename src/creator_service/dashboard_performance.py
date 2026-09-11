@@ -19,9 +19,9 @@ class _CacheEntry:
 class DashboardReadCache:
     """Small per-process stale-while-revalidate cache for expensive dashboard reads.
 
-    The dashboard read endpoints ultimately call synchronous Google clients.  Running
+    The dashboard read endpoints ultimately call synchronous Google clients. Running
     those coroutine endpoints directly on the ASGI event loop makes unrelated tabs
-    wait behind them.  This cache executes cold reads in worker threads, deduplicates
+    wait behind them. This cache executes cold reads in worker threads, deduplicates
     identical in-flight requests and serves a recent stale value while refreshing it.
     """
 
@@ -29,11 +29,6 @@ class DashboardReadCache:
         self._entries: dict[tuple[Any, ...], _CacheEntry] = {}
         self._locks: dict[tuple[Any, ...], asyncio.Lock] = {}
         self._refreshing: set[tuple[Any, ...]] = set()
-
-    @staticmethod
-    def _tenant_id(kwargs: dict[str, Any]) -> str:
-        tenant = kwargs.get("tenant")
-        return str(getattr(tenant, "tenant_id", "") or "")
 
     @staticmethod
     def _freeze(value: Any) -> Any:
@@ -55,6 +50,17 @@ class DashboardReadCache:
             if key not in {"request", "background_tasks", "authorization"}
         }
         return (path, tuple(sorted((key, self._freeze(value)) for key, value in clean.items())))
+
+    @staticmethod
+    def _key_contains_tenant(key: tuple[Any, ...], tenant_id: str) -> bool:
+        needle = ("tenant", tenant_id)
+        def visit(value: Any) -> bool:
+            if value == needle:
+                return True
+            if isinstance(value, tuple):
+                return any(visit(item) for item in value)
+            return False
+        return visit(key)
 
     async def _invoke(self, fn: Callable[..., Any], kwargs: dict[str, Any]) -> Any:
         # Read handlers are async wrappers around synchronous google-api-python-client
@@ -116,7 +122,7 @@ class DashboardReadCache:
         tenant_id = str(tenant_id or "")
         if not tenant_id:
             return
-        doomed = [key for key in self._entries if ("tenant", tenant_id) in repr(key)]
+        doomed = [key for key in self._entries if self._key_contains_tenant(key, tenant_id)]
         for key in doomed:
             self._entries.pop(key, None)
 
@@ -155,7 +161,7 @@ def _replace_call(route: APIRoute, replacement: Callable[..., Awaitable[Any]]) -
 def install_dashboard_performance(app: FastAPI) -> None:
     """Install non-invasive acceleration around the existing dashboard API.
 
-    No YouTube write contract is changed.  Successful dashboard mutations merely
+    No YouTube write contract is changed. Successful dashboard mutations merely
     invalidate cached read snapshots so subsequent readback remains trustworthy.
     """
     if getattr(app.state, "dashboard_performance_installed", False):
@@ -181,9 +187,6 @@ def install_dashboard_performance(app: FastAPI) -> None:
                 __path: str = path,
                 **kwargs: Any,
             ) -> Any:
-                # FastAPI's existing dependant passes named values according to the
-                # preserved original signature. Positional values are only expected
-                # in direct unit tests, where binding restores the same kwargs.
                 if args:
                     bound = inspect.signature(__original).bind_partial(*args, **kwargs)
                     kwargs = dict(bound.arguments)
