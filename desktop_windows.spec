@@ -12,6 +12,8 @@ hiddenimports = [
     "publicador_youtube",
     "tiktoken_ext.openai_public",
     "tiktoken_ext",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
 ]
 
 datas += collect_data_files("googleapiclient")
@@ -31,7 +33,8 @@ for package in ("whisper", "imageio_ffmpeg"):
         pass
 
 # Do not manually mix Qt DLLs from other bindings. PyInstaller's PySide6 hook
-# collects the matching Qt runtime from the pinned release environment.
+# collects the matching Qt runtime, including QtWebEngineProcess, from the pinned
+# release environment.
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(SRC)],
