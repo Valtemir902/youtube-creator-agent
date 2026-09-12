@@ -29,18 +29,23 @@ jobs:
         shell: pwsh
         run: python scripts/build_windows.py
 
-      - name: Verify artifact and hash
+      - name: Verify artifact, hash, and GUI self-test exit code
         shell: pwsh
         run: |
-          $exe = 'artifacts/windows/YouTube-Creator-Agent-Elite.exe'
+          $exe = (Resolve-Path 'artifacts/windows/YouTube-Creator-Agent-Elite.exe').Path
           $hashFile = "$exe.sha256"
           if (!(Test-Path $exe)) { throw "EXE ausente" }
           if (!(Test-Path $hashFile)) { throw "SHA256 ausente" }
-          $actual = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
-          $expected = ((Get-Content $hashFile -Raw).Trim().Split()[0]).ToLowerInvariant()
-          if ($actual -ne $expected) { throw "SHA256 divergente" }
-          & $exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Smoke test do EXE falhou com $LASTEXITCODE" }
+
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $expected = ((Get-Content -LiteralPath $hashFile -Raw).Trim().Split()[0]).ToLowerInvariant()
+          if ($actual -ne $expected) { throw "SHA256 divergente: atual=$actual esperado=$expected" }
+
+          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) {
+            throw "Smoke test do EXE falhou com exit code $($process.ExitCode)"
+          }
+          Write-Host "EXE GUI self-test OK. ExitCode=$($process.ExitCode) SHA256=$actual"
 
       - name: Upload verified Windows artifact
         uses: actions/upload-artifact@v4
