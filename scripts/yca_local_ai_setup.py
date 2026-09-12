@@ -58,8 +58,6 @@ def download(url: str, destination: Path) -> None:
     req = urlrequest.Request(url, headers=headers)
     mode = "ab" if existing else "wb"
     with urlrequest.urlopen(req, timeout=60) as response, partial.open(mode) as stream:
-        # Some servers ignore Range and return the entire file. Restart instead
-        # of corrupting the installer by appending duplicate bytes.
         if existing and getattr(response, "status", 200) != 206:
             stream.close()
             partial.unlink(missing_ok=True)
@@ -102,7 +100,16 @@ def install_ollama() -> Path:
         print("[2/5] Validando assinatura digital do instalador...")
         verify_ollama_signature(installer)
         print("[3/5] Instalando runtime local...")
-        subprocess.run([str(installer), "/S"], check=True, timeout=180)
+        subprocess.run(
+            [
+                str(installer),
+                "/VERYSILENT",
+                "/NORESTART",
+                "/SUPPRESSMSGBOXES",
+            ],
+            check=True,
+            timeout=240,
+        )
     deadline = time.time() + 45
     while time.time() < deadline:
         current = find_ollama()
