@@ -16,6 +16,7 @@ import webbrowser
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 DASHBOARD_URL = "https://creator.silvadigitaltech.com/dashboard"
+COMPANION_HEALTH_URL = "http://127.0.0.1:17823/v1/health"
 
 
 def app_dir() -> Path:
@@ -101,7 +102,7 @@ def download(
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
     existing = partial.stat().st_size if partial.exists() else 0
-    headers = {"User-Agent": "YouTubeCreatorAgent-LocalAI/1.1"}
+    headers = {"User-Agent": "YouTubeCreatorAgent-LocalAI/1.2"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
     req = urlrequest.Request(url, headers=headers)
@@ -286,6 +287,27 @@ def launch_companion(executable: Path) -> None:
     )
 
 
+def companion_health_ok() -> bool:
+    try:
+        with urlrequest.urlopen(COMPANION_HEALTH_URL, timeout=1.5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return bool(payload.get("ok") and payload.get("service") == "yca-local-ai")
+    except Exception:
+        return False
+
+
+def ensure_companion_running(executable: Path, *, timeout: float = 12.0) -> None:
+    if companion_health_ok():
+        return
+    launch_companion(executable)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if companion_health_ok():
+            return
+        time.sleep(0.5)
+    raise RuntimeError("A IA Local foi instalada, mas o serviço local não permaneceu ativo na porta 17823.")
+
+
 def setup() -> int:
     if os.name != "nt":
         print("Esta versão automática da IA Local é destinada ao Windows.")
@@ -336,8 +358,7 @@ def setup() -> int:
 
     executable = installed_executable()
     create_startup(executable)
-    launch_companion(executable)
-    time.sleep(1)
+    ensure_companion_running(executable)
 
     write_install_state(
         stage="runtime_check",
@@ -353,6 +374,7 @@ def setup() -> int:
 
     config["installed_at"] = int(time.time())
     save_config(config)
+    ensure_companion_running(executable)
     token = str(config.get("token") or "")
     callback = f"{DASHBOARD_URL}#local-ai-token={token}"
     write_install_state(
@@ -363,8 +385,9 @@ def setup() -> int:
         model=model.ollama_model,
         estimated_download_mb=model.estimated_download_mb,
     )
-    print("[5/5] IA Local pronta. Abrindo o Creator Agent...")
+    print("[5/5] IA Local pronta. Serviço local verificado. Abrindo o Creator Agent...")
     webbrowser.open(callback)
+    time.sleep(1.5)
     return 0
 
 
