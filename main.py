@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -14,57 +13,55 @@ if str(SRC) not in sys.path:
 
 
 def _desktop_self_test() -> int:
-    """Exercise the exact Qt/WebEngine and local Python runtime used by desktop."""
+    """Exercise the Qt shell and the fully local desktop control plane."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
         import PySide6
         import shiboken6
         from PySide6.QtCore import qVersion
         from PySide6.QtWidgets import QApplication, QWidget
-        from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript  # noqa: F401
         from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-        from desktop_native_runtime import desktop_fetch_bootstrap, start_native_server
-        from desktop_web_shell import DEFAULT_DASHBOARD_URL, dashboard_url
+        from desktop_local_server import dashboard_html_path, start_local_app_server
 
         app = QApplication.instance() or QApplication([])
         probe = QWidget()
-        probe.setWindowTitle("YCA self-test")
+        probe.setWindowTitle("YCA local-first self-test")
         probe.close()
         app.processEvents()
 
-        url = dashboard_url()
-        if url != DEFAULT_DASHBOARD_URL and not url.startswith("https://"):
-            raise RuntimeError(f"dashboard URL inválida: {url}")
+        dashboard_path = dashboard_html_path()
+        if not dashboard_path.is_file():
+            raise RuntimeError(f"dashboard local não empacotado: {dashboard_path}")
 
-        with tempfile.TemporaryDirectory(prefix="yca-native-selftest-") as temp_dir:
-            native_server, native_thread, native_base = start_native_server(Path(temp_dir) / "cache.json")
-            try:
-                with urllib.request.urlopen(native_base + "/health", timeout=3) as response:
-                    native_health = json.loads(response.read().decode("utf-8"))
-                if not native_health.get("ok") or native_health.get("external_ai_used") is not False:
-                    raise RuntimeError(f"native runtime inválido: {native_health}")
-                bootstrap = desktop_fetch_bootstrap(native_base)
-                if "refreshAll()" in bootstrap:
-                    raise RuntimeError("desktop bootstrap contém refresh recursivo proibido")
-                if "8000" not in bootstrap or "yca:desktop-cache-updated" not in bootstrap:
-                    raise RuntimeError("desktop bootstrap não contém timeout/refresh guard esperado")
-            finally:
-                native_server.shutdown()
-                native_server.server_close()
-                native_thread.join(timeout=3)
+        server, thread, base = start_local_app_server()
+        try:
+            with urllib.request.urlopen(base + "/health", timeout=3) as response:
+                health = json.loads(response.read().decode("utf-8"))
+            if not health.get("ok") or health.get("mode") != "desktop_local_first":
+                raise RuntimeError(f"runtime local inválido: {health}")
+            with urllib.request.urlopen(base + "/dashboard", timeout=3) as response:
+                html = response.read().decode("utf-8")
+            if "YouTube Creator Agent Elite" not in html or "Elite · Local" not in html:
+                raise RuntimeError("dashboard profissional local não foi servido corretamente")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
         payload = {
             "ok": True,
-            "desktop_ui": "modern_production_dashboard",
-            "dashboard_url": url,
+            "desktop_ui": "professional_local_dashboard",
+            "desktop_local_first": True,
+            "cloud_session_required": False,
+            "youtube_oauth_local": True,
+            "youtube_api_transport": "direct_from_pc",
             "qt_version": qVersion(),
             "pyside_version": getattr(PySide6, "__version__", "unknown"),
             "shiboken_version": getattr(shiboken6, "__version__", "unknown"),
             "qt_webengine": True,
-            "desktop_native_python": True,
-            "desktop_native_cache": True,
-            "desktop_remote_read_timeout_seconds": 8,
-            "desktop_refresh_loop_guard": True,
+            "native_python_engine": True,
+            "local_ai_provider": "ollama",
+            "local_fact_cache": True,
             "external_ai_called": False,
             "youtube_write_actions_executed": False,
         }
