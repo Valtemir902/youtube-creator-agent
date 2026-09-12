@@ -202,10 +202,12 @@ def start_native_server(cache_path: Path) -> tuple[DesktopNativeServer, threadin
 
 
 def desktop_fetch_bootstrap(native_base: str) -> str:
-    """Return JS injected before dashboard code to provide instant local snapshots.
+    """Return JS injected before dashboard code to provide bounded, cached reads.
 
     The wrapper only intercepts same-origin GET dashboard reads. Writes, uploads,
-    auth and OAuth are never intercepted and always go straight to the VPS.
+    auth and OAuth always go straight to the VPS. Cache hits are refreshed in the
+    background without recursively calling refreshAll(), which previously caused a
+    permanent refresh loop that kept resetting visible loaders.
     """
     base = json.dumps(native_base)
     return f"""
@@ -214,7 +216,9 @@ def desktop_fetch_bootstrap(native_base: str) -> str:
   window.__ycaDesktopNativeInstalled=true;
   const nativeBase={base};
   const realFetch=window.fetch.bind(window);
-  const cachePrefixes=['/api/dashboard/status','/api/dashboard/capabilities','/api/dashboard/channel','/api/dashboard/channels','/api/dashboard/playlists','/api/dashboard/videos','/api/dashboard/evidence','/api/dashboard/audit','/api/dashboard/free/'];
+  const memoryCache=new Map();
+  const lastRefresh=new Map();
+  const cachePrefixes=['/api/dashboard/capabilities','/api/dashboard/channel','/api/dashboard/playlists','/api/dashboard/videos','/api/dashboard/evidence','/api/dashboard/audit','/api/dashboard/free/'];
   const cacheable=(url,init)=>{{
     const method=String((init&&init.method)||'GET').toUpperCase();
     if(method!=='GET')return false;
@@ -224,10 +228,31 @@ def desktop_fetch_bootstrap(native_base: str) -> str:
   }};
   const keyFor=url=>{{const u=new URL(typeof url==='string'?url:url.url,location.href);return u.pathname+u.search}};
   const timeoutSignal=(ms,external)=>{{const c=new AbortController();const t=setTimeout(()=>c.abort('desktop-timeout'),ms);if(external)external.addEventListener('abort',()=>c.abort(external.reason),{{once:true}});return {{signal:c.signal,done:()=>clearTimeout(t)}}}};
-  const localGet=async key=>{{const c=timeoutSignal(350);try{{const r=await realFetch(nativeBase+'/cache?key='+encodeURIComponent(key),{{cache:'no-store',signal:c.signal}});return r.ok?await r.json():null}}catch{{return null}}finally{{c.done()}}}};
-  const localPut=async(key,data)=>{{try{{await realFetch(nativeBase+'/cache',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{key,data}}),cache:'no-store'}})}}catch{{}}}};
-  const remote=async(input,init,key,background=false)=>{{const c=timeoutSignal(background?10000:12000,init&&init.signal);try{{const r=await realFetch(input,{{...(init||{{}}),signal:c.signal}});if(r.ok){{const clone=r.clone();clone.json().then(data=>localPut(key,data)).catch(()=>{{}})}}return r}}finally{{c.done()}}}};
-  const refreshLater=(input,init,key)=>{{remote(input,init,key,true).then(r=>{{if(!r.ok)return;if(window.__ycaDesktopRefreshTimer)return;window.__ycaDesktopRefreshTimer=setTimeout(()=>{{window.__ycaDesktopRefreshTimer=null;try{{if(typeof window.refreshAll==='function')window.refreshAll()}}catch{{}}}},250)}}).catch(()=>{{}})}};
+  const localGet=async key=>{{
+    if(memoryCache.has(key))return {{hit:true,data:memoryCache.get(key),age_seconds:0,source:'memory'}};
+    const c=timeoutSignal(300);
+    try{{const r=await realFetch(nativeBase+'/cache?key='+encodeURIComponent(key),{{cache:'no-store',signal:c.signal}});const d=r.ok?await r.json():null;if(d&&d.hit)memoryCache.set(key,d.data);return d}}catch{{return null}}finally{{c.done()}}
+  }};
+  const localPut=async(key,data)=>{{
+    memoryCache.set(key,data);
+    try{{await realFetch(nativeBase+'/cache',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{key,data}}),cache:'no-store'}})}}catch{{}}
+  }};
+  const remote=async(input,init,key,timeoutMs)=>{{
+    const c=timeoutSignal(timeoutMs,init&&init.signal);
+    try{{
+      const r=await realFetch(input,{{...(init||{{}}),signal:c.signal}});
+      if(r.ok){{const clone=r.clone();clone.json().then(data=>localPut(key,data)).catch(()=>{{}})}}
+      return r;
+    }}finally{{c.done()}}
+  }};
+  const refreshLater=(input,init,key)=>{{
+    const now=Date.now();
+    if(now-(lastRefresh.get(key)||0)<30000)return;
+    lastRefresh.set(key,now);
+    remote(input,init,key,12000).then(r=>{{
+      if(r.ok)window.dispatchEvent(new CustomEvent('yca:desktop-cache-updated',{{detail:{{key}}}}));
+    }}).catch(()=>{{}});
+  }};
   window.fetch=async(input,init={{}})=>{{
     if(!cacheable(input,init))return realFetch(input,init);
     const key=keyFor(input);
@@ -236,8 +261,8 @@ def desktop_fetch_bootstrap(native_base: str) -> str:
       refreshLater(input,init,key);
       return new Response(JSON.stringify(cached.data),{{status:200,headers:{{'Content-Type':'application/json','X-YCA-Desktop-Cache':'hit','X-YCA-Cache-Age':String(cached.age_seconds||0)}}}});
     }}
-    try{{return await remote(input,init,key,false)}}catch(err){{
-      const body={{detail:'A atualização demorou mais de 12 segundos. O aplicativo continua responsivo e tentará novamente sem bloquear a tela.',desktop_native_timeout:true}};
+    try{{return await remote(input,init,key,8000)}}catch(err){{
+      const body={{detail:'A leitura remota excedeu 8 segundos. O aplicativo interrompeu a espera para não travar a interface.',desktop_native_timeout:true}};
       return new Response(JSON.stringify(body),{{status:504,headers:{{'Content-Type':'application/json','X-YCA-Desktop-Cache':'miss'}}}});
     }}
   }};
