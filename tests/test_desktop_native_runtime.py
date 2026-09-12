@@ -35,7 +35,17 @@ def test_desktop_bootstrap_intercepts_reads_but_not_writes():
     script = desktop_fetch_bootstrap("http://127.0.0.1:43123")
     assert "window.fetch" in script
     assert "method!=='GET'" in script
+    assert "8000" in script
     assert "12000" in script
     assert "/api/dashboard/channel" in script
+    assert "/api/dashboard/status" not in script.split("cachePrefixes=", 1)[1].split("];", 1)[0]
     assert "desktop_native_timeout" in script
     assert "POST" in script  # local cache persistence only
+
+
+def test_desktop_bootstrap_never_recursively_calls_refresh_all():
+    script = desktop_fetch_bootstrap("http://127.0.0.1:43123")
+    assert "refreshAll()" not in script
+    assert "yca:desktop-cache-updated" in script
+    assert "lastRefresh" in script
+    assert "30000" in script
