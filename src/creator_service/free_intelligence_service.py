@@ -55,6 +55,16 @@ def install_free_intelligence_service() -> None:
 
     def status(self) -> dict[str, Any]:
         result = dict(original_status(self))
+        result["intelligence_policy"] = {
+            "mode": "native_first",
+            "primary_engine": "python_native_intelligence",
+            "passive_dashboard_uses_external_ai": False,
+            "external_ai_invocation": "explicit_user_action_only",
+            "external_ai_configured_is_not_active_use": True,
+            "facts_before_ai": True,
+            "cache_before_ai": True,
+            "automatic_writes": False,
+        }
         result["free_intelligence"] = {
             "available": True,
             "version": FreeGrowthEngine.VERSION,
@@ -63,6 +73,7 @@ def install_free_intelligence_service() -> None:
             "playlist_matcher_version": FreePlaylistMatcher.VERSION,
             "action_planner_version": FreeActionPlanner.VERSION,
             "external_ai_required": False,
+            "passive_external_ai_calls": 0,
             "automatic_writes": False,
             "evidence_first": True,
             "optimization_requires_transcript_and_measured_search": True,
@@ -77,6 +88,9 @@ def install_free_intelligence_service() -> None:
         report["candidate_video_ids"] = [str(row.get("video_id") or "") for row in weak if str(row.get("video_id") or "").strip()][:10]
         report["plan_tier"] = "free"
         report["premium_ai_required"] = False
+        report["intelligence_mode"] = "native_first"
+        report["uses_external_ai"] = False
+        report["external_ai_calls"] = 0
         return report
 
     def free_video_intelligence(self, video_id: str, *, period_days: int = 28, max_results: int = 20, candidate_limit: int = 8) -> dict[str, Any]:
@@ -115,6 +129,7 @@ def install_free_intelligence_service() -> None:
                 playlist_error = str(exc)[:500]
         report.update({
             "video_id": str(video_id), "plan_tier": "free", "premium_ai_required": False,
+            "intelligence_mode": "native_first", "uses_external_ai": False, "external_ai_calls": 0,
             "candidate_source": "deterministic_transcript_terms" if transcript else "none_without_transcript",
             "keyword_metrics_source": "youtube_search_results" if keyword_rows else "not_measured", "candidate_keywords": candidates if transcript else [],
             "keyword_research_error": keyword_error, "keyword_intelligence": keyword_intelligence, "playlist_research_error": playlist_error,
@@ -127,12 +142,12 @@ def install_free_intelligence_service() -> None:
         plan = dict(report.get("optimization") or {})
         plan.update({
             "video_id": str(video_id), "plan_tier": "free", "premium_ai_required": False,
+            "intelligence_mode": "native_first", "uses_external_ai": False, "external_ai_calls": 0,
             "keyword_research_error": report.get("keyword_research_error", ""), "keyword_intelligence": report.get("keyword_intelligence", {}),
             "playlist_match": report.get("playlist_match", {}), "playlist_research_error": report.get("playlist_research_error", ""), "transcript": report.get("transcript", {}),
         })
         category_error = ""
         category = {"suggestion_ready": False, "suggested_category_id": str((plan.get("current") or {}).get("categoryId") or ""), "writes_performed": 0}
-        # The performance installer is additive and may not be loaded in minimal test/runtime surfaces.
         if hasattr(self, "free_category_suggestion"):
             try:
                 category = self.free_category_suggestion(video_id)
@@ -162,13 +177,13 @@ def install_free_intelligence_service() -> None:
             except Exception as exc:
                 errors.append({"video_id": video_id, "error": str(exc)[:500]})
         plan = FreeActionPlanner().build(channel_report=channel, video_reports=video_reports)
-        plan.update({"period_days": max(7, min(90, int(period_days))), "videos_considered": unique, "video_analysis_errors": errors, "resource_budget": {"max_videos": max(1, min(5, int(max_videos))), "keyword_candidates_per_video": 6, "search_results_per_candidate": 12}, "plan_tier": "free", "premium_ai_required": False})
+        plan.update({"period_days": max(7, min(90, int(period_days))), "videos_considered": unique, "video_analysis_errors": errors, "resource_budget": {"max_videos": max(1, min(5, int(max_videos))), "keyword_candidates_per_video": 6, "search_results_per_candidate": 12}, "plan_tier": "free", "premium_ai_required": False, "intelligence_mode": "native_first", "uses_external_ai": False, "external_ai_calls": 0})
         return plan
 
     def free_channel_strategy(self, period_days: int = 28) -> dict[str, Any]:
         report = free_channel_intelligence(self, period_days=period_days)
         priorities = list(report.get("recommendations") or [])
-        return {"engine": FreeGrowthEngine.VERSION, "mode": "deterministic_free", "uses_external_ai": False, "writes_performed": 0, "period_days": max(7, min(90, int(period_days))), "health": {"score": report.get("overall_score"), "grade": report.get("grade"), "confidence": report.get("confidence")}, "priorities": priorities[:6], "next_actions": [item.get("action") for item in priorities[:6] if item.get("action")], "facts": report.get("facts"), "scores": report.get("scores"), "methodology": report.get("methodology"), "requires_review": True}
+        return {"engine": FreeGrowthEngine.VERSION, "mode": "deterministic_free", "uses_external_ai": False, "external_ai_calls": 0, "writes_performed": 0, "period_days": max(7, min(90, int(period_days))), "health": {"score": report.get("overall_score"), "grade": report.get("grade"), "confidence": report.get("confidence")}, "priorities": priorities[:6], "next_actions": [item.get("action") for item in priorities[:6] if item.get("action")], "facts": report.get("facts"), "scores": report.get("scores"), "methodology": report.get("methodology"), "requires_review": True}
 
     CreatorService.status = status
     CreatorService.free_channel_intelligence = free_channel_intelligence

@@ -48,7 +48,6 @@ def _safe_ai_error(exc: Exception) -> str:
 
 def install_dashboard_ai_route_guard(app: FastAPI) -> None:
     from . import dashboard_routes
-    from .dashboard_grounded_advice import grounded_channel_advice
     from .security import signer_from_env
 
     video_route = next(
@@ -65,7 +64,8 @@ def install_dashboard_ai_route_guard(app: FastAPI) -> None:
         service = service_for(tenant.tenant_id)
         try:
             service.context.validate_youtube()
-            # Analysis is read-only. The recent-edit guard remains on APPLY, not on analysis.
+            # This is an explicit user-triggered AI preview. Passive dashboard reads
+            # never enter this path and therefore never spend external AI quota.
             current = service._current_video_snippet(video_id)
             transcript = dashboard_routes.youtube_transcript(service._youtube(), video_id)
             transcript_text = str(transcript.get("text") or "").strip()
@@ -123,34 +123,37 @@ def install_dashboard_ai_route_guard(app: FastAPI) -> None:
 
     _replace_call(app, "/api/dashboard/video/{video_id}/ai-optimize", video_ai_optimize)
 
+    # Channel audit is a passive/read-only dashboard surface. It must stay 100%
+    # deterministic and must never invoke Gemini/OpenAI/Groq/xAI merely because the
+    # user opened or refreshed the dashboard. External AI remains available only on
+    # explicit POST actions such as strategy build and AI optimization previews.
     audit_route = next(
         route for route in app.router.routes
         if isinstance(route, APIRoute) and route.path == "/api/dashboard/audit"
     )
     audit_original = audit_route.endpoint
-    audit_ctx = _closure_values(audit_original)
-    audit_service_for = audit_ctx["service_for"]
 
     async def dashboard_audit(period_days=28, tenant=None):
         factual = await audit_original(period_days=period_days, tenant=tenant)
-        try:
-            advice = grounded_channel_advice(
-                audit_service_for(tenant.tenant_id), factual=factual, purpose="channel_audit"
-            )
-        except Exception as exc:
-            advice = {
-                "status": "unavailable",
+        return {
+            **factual,
+            "ai_advice": {
+                "status": "not_requested",
                 "grounded": True,
-                "error": _safe_ai_error(exc),
+                "external_ai_used": False,
+                "reason": "external_ai_requires_explicit_user_action",
                 "no_invented_metrics": True,
                 "writes_performed": 0,
-            }
-        return {**factual, "ai_advice": advice, "writes_performed": 0}
+            },
+            "intelligence_mode": "native_first",
+            "external_ai_used": False,
+            "writes_performed": 0,
+        }
 
     _replace_call(app, "/api/dashboard/audit", dashboard_audit)
 
-    # Other AI previews already protect writes, but convert any uncaught provider
-    # failure into a readable 409 instead of exposing an opaque HTTP 500.
+    # Other AI previews are explicit POST actions. Keep them available, but convert
+    # provider failures into readable 409 responses instead of opaque HTTP 500s.
     for path in (
         "/api/dashboard/playlists/{playlist_id}/ai-optimize",
         "/api/dashboard/upload/ai-plan",
