@@ -9,6 +9,7 @@ from .dashboard_ai_experience import install_dashboard_ai_experience
 from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
 from .dashboard_grounded_advice import install_grounded_strategy_service
 from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
+from .dashboard_native_first_policy import install_dashboard_native_first_policy
 from .dashboard_native_ux import install_dashboard_native_ux
 from .dashboard_overview_compat import install_dashboard_overview_compat
 from .dashboard_performance import install_dashboard_performance
@@ -26,7 +27,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "professional-v1.7-adaptive-local-ai"
+DASHBOARD_UI_REVISION = "professional-v1.8-native-first-no-passive-ai"
 
 
 def create_app():
@@ -58,5 +59,8 @@ def create_app():
     install_dashboard_activity_ux(app)
     install_local_ai_dashboard(app)
     install_dashboard_intelligence_terms(app)
+    # This must be the final dashboard presentation layer: merely configuring an
+    # external provider must never make passive channel reads look like AI calls.
+    install_dashboard_native_first_policy(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
