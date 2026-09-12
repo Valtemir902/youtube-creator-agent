@@ -34,24 +34,27 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install packager
+      - name: Install packager and desktop runtime
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller==6.16.0 pytest
+          python -m pip install pyinstaller==6.16.0 pytest pywebview==5.4
 
       - name: Run local AI unit tests
         shell: pwsh
         run: |
-          python -m pytest tests/test_local_ai_capability.py tests/test_local_ai_router.py tests/test_local_ai_companion.py tests/test_local_ai_installer.py -q
+          python -m pytest tests/test_local_ai_capability.py tests/test_local_ai_router.py tests/test_local_ai_companion.py tests/test_local_ai_installer.py tests/test_local_ai_desktop.py -q
 
-      - name: Build one-click companion
+      - name: Build one-click companion and desktop app
         shell: pwsh
         run: |
           pyinstaller --clean --noconfirm --onefile `
             --name YCA-Local-AI-Setup `
             --paths src `
             --collect-submodules local_ai `
+            --collect-all webview `
+            --hidden-import webview.platforms.edgechromium `
+            --hidden-import webview.platforms.winforms `
             scripts/yca_local_ai_setup.py
 
       - name: Smoke test packaged executable
@@ -61,6 +64,11 @@ jobs:
           $result = Get-Content local-ai-self-test.json -Raw | ConvertFrom-Json
           if (-not $result.ok) { throw 'Packaged companion self-test failed' }
           if (-not $result.manifest_version) { throw 'Packaged companion did not report manifest version' }
+          if ($result.app_protocol -ne 'yca-creator-agent') { throw 'Packaged companion did not expose desktop protocol' }
+
+          .\dist\YCA-Local-AI-Setup.exe --desktop-self-test | Tee-Object -FilePath local-ai-desktop-self-test.json
+          $desktop = Get-Content local-ai-desktop-self-test.json -Raw | ConvertFrom-Json
+          if (-not $desktop.ok -or -not $desktop.native_bridge) { throw 'Packaged desktop native bridge self-test failed' }
 
       - name: Authenticode sign Windows executable when signing identity is configured
         id: signing
@@ -130,6 +138,7 @@ jobs:
             dist/YCA-Local-AI-Setup.exe
             dist/YCA-Local-AI-Setup.exe.sha256
             local-ai-self-test.json
+            local-ai-desktop-self-test.json
           if-no-files-found: error
 
       - name: Publish signed tagged local AI release
@@ -142,6 +151,6 @@ jobs:
           $version = $tag -replace '^local-ai-v', ''
           gh release view "$tag" *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create "$tag" --target "${{ github.sha }}" --title "YouTube Creator Agent Local AI v$version" --notes "Signed adaptive Windows local-AI companion. Detects compatible hardware, installs the official Ollama runtime when required, downloads the appropriate Apache-2.0 Qwen model, reports installation progress, and pairs securely with the Creator Agent dashboard."
+            gh release create "$tag" --target "${{ github.sha }}" --title "YouTube Creator Agent Local AI v$version" --notes "Signed adaptive Windows Local AI desktop companion. It opens the Creator Agent in a native WebView2 shell and bridges the local model in-process, avoiding browser localhost/network permissions while keeping inference on the device."
           }
           gh release upload "$tag" .\dist\YCA-Local-AI-Setup.exe .\dist\YCA-Local-AI-Setup.exe.sha256 --clobber
