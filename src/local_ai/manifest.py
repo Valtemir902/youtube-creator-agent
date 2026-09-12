@@ -15,6 +15,7 @@ class LocalAIModel:
     min_ram_mb: int
     context_tokens: int
     purpose: str
+    license_name: str
 
 
 DEFAULT_MANIFEST: Final[dict[CapabilityProfile, LocalAIModel]] = {
@@ -26,15 +27,17 @@ DEFAULT_MANIFEST: Final[dict[CapabilityProfile, LocalAIModel]] = {
         min_ram_mb=6144,
         context_tokens=4096,
         purpose="reescrita curta, resumo e classificação",
+        license_name="Apache-2.0",
     ),
     CapabilityProfile.LOCAL_STANDARD: LocalAIModel(
         profile=CapabilityProfile.LOCAL_STANDARD,
-        ollama_model="qwen2.5:3b",
-        display_name="Qwen 2.5 3B Local Standard",
+        ollama_model="qwen2.5:1.5b",
+        display_name="Qwen 2.5 1.5B Local Standard",
         min_vram_mb=4096,
         min_ram_mb=8192,
         context_tokens=8192,
         purpose="SEO assistido, títulos, descrições e interpretação de evidências",
+        license_name="Apache-2.0",
     ),
     CapabilityProfile.LOCAL_PRO: LocalAIModel(
         profile=CapabilityProfile.LOCAL_PRO,
@@ -44,6 +47,7 @@ DEFAULT_MANIFEST: Final[dict[CapabilityProfile, LocalAIModel]] = {
         min_ram_mb=16384,
         context_tokens=8192,
         purpose="análises locais mais profundas com contexto ampliado",
+        license_name="Apache-2.0",
     ),
 }
 
