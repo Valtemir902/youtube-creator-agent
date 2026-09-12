@@ -165,6 +165,15 @@ class CompanionHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         return bool(origin) and origin in set(self.config.get("origins") or DEFAULT_ORIGINS)
 
+    def _private_network_preflight_requested(self) -> bool:
+        """Whether a trusted browser explicitly requests loopback access.
+
+        Chromium sends this header when a public HTTPS page reaches a loopback
+        service.  The response is still restricted by the existing exact-origin
+        allow-list in ``_send``.
+        """
+        return self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true"
+
     def _authorized(self) -> bool:
         expected = str(self.config.get("token") or "")
         supplied = self.headers.get("Authorization", "")
@@ -176,7 +185,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin and self._origin_allowed():
             self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Vary", "Origin")
+            self.send_header("Vary", "Origin, Access-Control-Request-Private-Network")
+            if self._private_network_preflight_requested():
+                self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Cache-Control", "no-store")
