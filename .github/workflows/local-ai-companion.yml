@@ -1,0 +1,79 @@
+name: Local AI Companion
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'local-ai-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install packager
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller==6.16.0
+
+      - name: Run local AI unit tests
+        shell: pwsh
+        run: |
+          python -m pip install pytest
+          python -m pytest tests/test_local_ai_capability.py tests/test_local_ai_router.py -q
+
+      - name: Build one-click companion
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm --onefile `
+            --name YCA-Local-AI-Setup `
+            --paths src `
+            --collect-submodules local_ai `
+            scripts/yca_local_ai_setup.py
+
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          .\dist\YCA-Local-AI-Setup.exe --self-test | Tee-Object -FilePath local-ai-self-test.json
+          $result = Get-Content local-ai-self-test.json -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Packaged companion self-test failed' }
+
+      - name: Hash release artifact
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\YCA-Local-AI-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  YCA-Local-AI-Setup.exe" | Set-Content .\dist\YCA-Local-AI-Setup.exe.sha256
+          Get-Content .\dist\YCA-Local-AI-Setup.exe.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: yca-local-ai-windows
+          path: |
+            dist/YCA-Local-AI-Setup.exe
+            dist/YCA-Local-AI-Setup.exe.sha256
+            local-ai-self-test.json
+          if-no-files-found: error
+
+      - name: Publish tagged release asset
+        if: startsWith(github.ref, 'refs/tags/local-ai-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "${{ github.ref_name }}" --title "YouTube Creator Agent Local AI ${{ github.ref_name }}" --notes "Adaptive Windows local-AI companion. Detects supported NVIDIA hardware, installs the official Ollama runtime when needed, downloads the appropriate Qwen model, and pairs with the Creator Agent dashboard."
+          }
+          gh release upload "${{ github.ref_name }}" .\dist\YCA-Local-AI-Setup.exe .\dist\YCA-Local-AI-Setup.exe.sha256 --clobber
