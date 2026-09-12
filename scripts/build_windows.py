@@ -69,23 +69,25 @@ def create_clean_env() -> None:
     run([str(PY), "-m", "pip", "install", "--upgrade", "--force-reinstall", "-r", str(BUILD_REQ)])
 
 
-def qt_preflight() -> dict[str, str]:
+def qt_preflight() -> dict[str, str | bool]:
     code = (
         "import json, PySide6, shiboken6; "
         "from PySide6.QtCore import qVersion; "
         "from PySide6.QtWidgets import QApplication, QWidget; "
+        "from PySide6.QtWebEngineCore import QWebEngineProfile; "
+        "from PySide6.QtWebEngineWidgets import QWebEngineView; "
         "app=QApplication([]); w=QWidget(); w.close(); "
-        "print(json.dumps({'qt':qVersion(),'pyside':PySide6.__version__,'shiboken':shiboken6.__version__}))"
+        "print(json.dumps({'qt':qVersion(),'pyside':PySide6.__version__,'shiboken':shiboken6.__version__,'webengine':True}))"
     )
     env = os.environ.copy()
     env["QT_QPA_PLATFORM"] = "offscreen"
     cp = subprocess.run([str(PY), "-c", code], cwd=ROOT, env=env, text=True, capture_output=True, timeout=60)
     if cp.returncode != 0:
-        raise SystemExit(f"Qt preflight falhou antes do empacotamento:\n{cp.stdout}\n{cp.stderr}")
+        raise SystemExit(f"Qt/WebEngine preflight falhou antes do empacotamento:\n{cp.stdout}\n{cp.stderr}")
     info = json.loads(cp.stdout.strip().splitlines()[-1])
-    if not (info["pyside"] == info["shiboken"] == "6.7.3"):
-        raise SystemExit(f"Runtime Qt inconsistente: {info}")
-    print("Qt preflight OK:", info)
+    if not (info["pyside"] == info["shiboken"] == "6.7.3") or not info.get("webengine"):
+        raise SystemExit(f"Runtime Qt/WebEngine inconsistente: {info}")
+    print("Qt/WebEngine preflight OK:", info)
     return info
 
 
@@ -105,7 +107,7 @@ def build_exe() -> Path:
     return exe
 
 
-def smoke_test(exe: Path) -> float:
+def smoke_test(exe: Path) -> tuple[float, dict[str, object]]:
     started = time.perf_counter()
     cp = subprocess.run([str(exe), "--self-test"], cwd=ROOT, text=True, capture_output=True, timeout=120)
     elapsed_ms = (time.perf_counter() - started) * 1000
@@ -114,8 +116,19 @@ def smoke_test(exe: Path) -> float:
             "EXE foi gerado mas REPROVOU o smoke test. Ele nao sera publicado em artifacts/.\n"
             f"exit={cp.returncode}\nstdout={cp.stdout}\nstderr={cp.stderr}"
         )
-    print(f"EXE smoke test OK em {elapsed_ms:.0f} ms")
-    return elapsed_ms
+    lines = [line.strip() for line in cp.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise SystemExit("EXE smoke test nao retornou payload de verificacao.")
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Payload do self-test invalido: {lines[-1]}") from exc
+    if payload.get("desktop_ui") != "modern_production_dashboard":
+        raise SystemExit(f"Build tentou publicar interface desktop legada: {payload}")
+    if payload.get("qt_webengine") is not True:
+        raise SystemExit(f"Qt WebEngine nao foi validado no EXE: {payload}")
+    print(f"EXE smoke test OK em {elapsed_ms:.0f} ms, UI={payload.get('desktop_ui')}")
+    return elapsed_ms, payload
 
 
 def authenticode_status(path: Path) -> bool:
@@ -133,7 +146,7 @@ def main() -> int:
     qt = qt_preflight()
     run([str(PY), "-m", "compileall", "-q", "src", "main.py"])
     exe = build_exe()
-    smoke_ms = smoke_test(exe)
+    smoke_ms, smoke_payload = smoke_test(exe)
 
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
     for old in ARTIFACT_DIR.glob("*"):
@@ -152,6 +165,8 @@ def main() -> int:
         "size_bytes": ARTIFACT.stat().st_size,
         "smoke_test": True,
         "smoke_test_ms": round(smoke_ms, 2),
+        "desktop_ui": smoke_payload.get("desktop_ui"),
+        "dashboard_url": smoke_payload.get("dashboard_url"),
         "qt": qt,
         "authenticode_signed": authenticode_status(ARTIFACT),
         "external_ai_called": False,
@@ -160,6 +175,7 @@ def main() -> int:
     REPORT_FILE.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"\nARTEFATO OFICIAL: {ARTIFACT}")
     print(f"SHA256: {digest}")
+    print("UI OFICIAL: modern_production_dashboard")
     print("Somente este arquivo em artifacts/windows/ deve ser usado para teste.")
     return 0
 
