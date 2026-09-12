@@ -88,3 +88,14 @@ def test_local_status_detects_missing_model(monkeypatch):
 def test_default_origins_are_restricted_to_creator_and_local_dev():
     assert "https://creator.silvadigitaltech.com" in companion.DEFAULT_ORIGINS
     assert all(origin.startswith(("https://creator.silvadigitaltech.com", "http://localhost", "http://127.0.0.1")) for origin in companion.DEFAULT_ORIGINS)
+
+
+def test_pairing_requires_explicit_trusted_browser_origin():
+    handler = object.__new__(companion.CompanionHandler)
+    handler.server = type("Server", (), {"config": {"origins": ["https://creator.silvadigitaltech.com"]}})()
+    handler.headers = {"Origin": "https://creator.silvadigitaltech.com"}
+    assert handler._trusted_browser_origin() is True
+    handler.headers = {"Origin": "https://evil.example"}
+    assert handler._trusted_browser_origin() is False
+    handler.headers = {}
+    assert handler._trusted_browser_origin() is False

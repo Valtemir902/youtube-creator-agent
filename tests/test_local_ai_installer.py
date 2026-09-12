@@ -41,6 +41,26 @@ def test_install_state_is_written_atomically(monkeypatch, tmp_path: Path):
     assert not state.with_suffix(".tmp").exists()
 
 
+def test_ensure_companion_running_reuses_healthy_service(monkeypatch, tmp_path: Path):
+    executable = tmp_path / "YCA-Local-AI.exe"
+    launched = []
+    monkeypatch.setattr(setup, "companion_health_ok", lambda: True)
+    monkeypatch.setattr(setup, "launch_companion", lambda exe: launched.append(exe))
+    setup.ensure_companion_running(executable, timeout=0.01)
+    assert launched == []
+
+
+def test_ensure_companion_running_launches_and_waits(monkeypatch, tmp_path: Path):
+    executable = tmp_path / "YCA-Local-AI.exe"
+    states = iter([False, False, True])
+    launched = []
+    monkeypatch.setattr(setup, "companion_health_ok", lambda: next(states, True))
+    monkeypatch.setattr(setup, "launch_companion", lambda exe: launched.append(exe))
+    monkeypatch.setattr(setup.time, "sleep", lambda seconds: None)
+    setup.ensure_companion_running(executable, timeout=1)
+    assert launched == [executable]
+
+
 def test_windows_release_workflow_requires_signed_tag_and_does_not_publish_on_branch_push():
     workflow = Path(".github/workflows/local-ai-companion.yml").read_text(encoding="utf-8")
     assert "WINDOWS_CODESIGN_PFX_BASE64" in workflow
