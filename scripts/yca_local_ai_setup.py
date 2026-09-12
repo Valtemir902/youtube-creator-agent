@@ -11,12 +11,12 @@ import tempfile
 import time
 from typing import Callable
 from urllib import request as urlrequest
-import webbrowser
 
 
 OLLAMA_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 DASHBOARD_URL = "https://creator.silvadigitaltech.com/dashboard"
 COMPANION_HEALTH_URL = "http://127.0.0.1:17823/v1/health"
+APP_PROTOCOL = "yca-creator-agent"
 
 
 def app_dir() -> Path:
@@ -102,7 +102,7 @@ def download(
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
     existing = partial.stat().st_size if partial.exists() else 0
-    headers = {"User-Agent": "YouTubeCreatorAgent-LocalAI/1.2"}
+    headers = {"User-Agent": "YouTubeCreatorAgent-LocalAI/1.3"}
     if existing:
         headers["Range"] = f"bytes={existing}-"
     req = urlrequest.Request(url, headers=headers)
@@ -174,12 +174,7 @@ def install_ollama() -> Path:
         print("[3/5] Instalando runtime local...")
         write_install_state(stage="runtime_install", status="running", detail="Instalando o Ollama oficial")
         subprocess.run(
-            [
-                str(installer),
-                "/VERYSILENT",
-                "/NORESTART",
-                "/SUPPRESSMSGBOXES",
-            ],
+            [str(installer), "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
             check=True,
             timeout=240,
         )
@@ -252,22 +247,13 @@ def pull_model(ollama: Path, model: str, *, estimated_download_mb: int | None = 
 
 
 def _stop_existing_companion(executable: Path) -> None:
-    """Stop only the previously installed companion before replacing its EXE.
-
-    Windows locks a running executable. Older YCA installers left
-    YCA-Local-AI.exe running while a repair attempted shutil.copy2 over the
-    same path, which raises PermissionError [Errno 13]. Match the executable
-    path first and keep taskkill as a same-image fallback for legacy builds.
-    """
     if os.name != "nt" or not executable.exists():
         return
-
     escaped = str(executable.resolve()).replace("'", "''")
     command = (
         "$target=[IO.Path]::GetFullPath('"
         + escaped
-        + "'); "
-        + "Get-CimInstance Win32_Process | Where-Object { "
+        + "'); Get-CimInstance Win32_Process | Where-Object { "
         + "$_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $target, "
         + "[StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { "
         + "Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
@@ -295,17 +281,10 @@ def _replace_installed_executable(
     attempts: int = 20,
     retry_delay: float = 0.25,
 ) -> None:
-    """Stage the new executable and atomically replace the old companion.
-
-    The staging file ensures a failed repair never truncates the working EXE.
-    Retrying also covers the short period where Windows/antivirus still owns a
-    file handle after the previous process exits.
-    """
     staged = destination.with_suffix(destination.suffix + ".new")
     staged.unlink(missing_ok=True)
     shutil.copy2(source, staged)
     last_error: PermissionError | None = None
-
     try:
         for _ in range(max(1, attempts)):
             _stop_existing_companion(destination)
@@ -317,10 +296,9 @@ def _replace_installed_executable(
                 time.sleep(max(0.0, retry_delay))
     finally:
         staged.unlink(missing_ok=True)
-
     raise RuntimeError(
         "Não foi possível atualizar o companion local porque o Windows manteve "
-        "YCA-Local-AI.exe bloqueado. Feche o companion e execute Instalar / Reparar novamente."
+        "YCA-Local-AI.exe bloqueado. Feche o Creator Agent e execute Instalar / Reparar novamente."
     ) from last_error
 
 
@@ -336,17 +314,49 @@ def installed_executable() -> Path:
 def create_startup(executable: Path) -> None:
     startup = (
         Path(os.environ.get("APPDATA", str(Path.home())))
-        / "Microsoft"
-        / "Windows"
-        / "Start Menu"
-        / "Programs"
-        / "Startup"
+        / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     )
     startup.mkdir(parents=True, exist_ok=True)
     launcher = startup / "YouTubeCreatorAgent-LocalAI.cmd"
-    launcher.write_text(
-        f'@echo off\r\nstart "" /min "{executable}" --serve\r\n',
-        encoding="utf-8",
+    launcher.write_text(f'@echo off\r\nstart "" /min "{executable}" --serve\r\n', encoding="utf-8")
+
+
+def protocol_command(executable: Path) -> str:
+    return f'"{executable}" --desktop "%1"'
+
+
+def register_app_protocol(executable: Path) -> None:
+    if os.name != "nt":
+        return
+    import winreg
+
+    root_path = rf"Software\Classes\{APP_PROTOCOL}"
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root_path) as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "URL:YouTube Creator Agent Protocol")
+        winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root_path + r"\DefaultIcon") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, f'"{executable}",0')
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root_path + r"\shell\open\command") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, protocol_command(executable))
+
+
+def create_desktop_shortcut(executable: Path) -> None:
+    if os.name != "nt":
+        return
+    exe = str(executable).replace("'", "''")
+    command = (
+        "$desktop=[Environment]::GetFolderPath('Desktop'); "
+        "$w=New-Object -ComObject WScript.Shell; "
+        "$s=$w.CreateShortcut((Join-Path $desktop 'YouTube Creator Agent Elite.lnk')); "
+        f"$s.TargetPath='{exe}'; $s.Arguments='--desktop'; $s.WorkingDirectory='{str(executable.parent).replace(chr(39), chr(39)*2)}'; "
+        "$s.Description='YouTube Creator Agent Elite'; $s.Save()"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
     )
 
 
@@ -354,6 +364,16 @@ def launch_companion(executable: Path) -> None:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     subprocess.Popen(
         [str(executable), "--serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+
+
+def launch_desktop_process(executable: Path) -> None:
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    subprocess.Popen(
+        [str(executable), "--desktop"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=creationflags,
@@ -385,7 +405,6 @@ def setup() -> int:
     if os.name != "nt":
         print("Esta versão automática da IA Local é destinada ao Windows.")
         return 2
-
     (
         CapabilityProfile,
         classify_hardware,
@@ -403,12 +422,7 @@ def setup() -> int:
     print(f"Perfil selecionado: {profile.value}")
 
     if profile == CapabilityProfile.NATIVE_ONLY or model is None:
-        write_install_state(
-            stage="complete",
-            status="native_only",
-            percent=100,
-            detail="Hardware mantido na Inteligência Nativa",
-        )
+        write_install_state(stage="complete", status="native_only", percent=100, detail="Hardware mantido na Inteligência Nativa")
         print("Este dispositivo continuará usando a Inteligência Nativa. A IA Local não será instalada.")
         return 0
 
@@ -416,7 +430,6 @@ def setup() -> int:
         f"Modelo selecionado: {model.display_name} "
         f"(download estimado: {model.estimated_download_mb} MB; licença {model.license_name})."
     )
-
     config = ensure_config()
     config.update(
         {
@@ -431,6 +444,8 @@ def setup() -> int:
 
     executable = installed_executable()
     create_startup(executable)
+    register_app_protocol(executable)
+    create_desktop_shortcut(executable)
     ensure_companion_running(executable)
 
     write_install_state(
@@ -446,20 +461,19 @@ def setup() -> int:
     pull_model(ollama, model.ollama_model, estimated_download_mb=model.estimated_download_mb)
 
     config["installed_at"] = int(time.time())
+    config["desktop_shell"] = True
     save_config(config)
     ensure_companion_running(executable)
-    token = str(config.get("token") or "")
-    callback = f"{DASHBOARD_URL}#local-ai-token={token}"
     write_install_state(
         stage="complete",
         status="ready",
         percent=100,
-        detail="IA Local instalada e pronta",
+        detail="Creator Agent Desktop e IA Local prontos",
         model=model.ollama_model,
         estimated_download_mb=model.estimated_download_mb,
     )
-    print("[5/5] IA Local pronta. Serviço local verificado. Abrindo o Creator Agent...")
-    webbrowser.open(callback)
+    print("[5/5] IA Local pronta. Abrindo o Creator Agent Desktop...")
+    launch_desktop_process(executable)
     time.sleep(1.5)
     return 0
 
@@ -485,6 +499,7 @@ def self_test() -> int:
         "model_estimated_download_mb": model.estimated_download_mb if model else None,
         "hardware_probe": snapshot.to_dict(),
         "native_only_valid": CapabilityProfile.NATIVE_ONLY.value == "native_only",
+        "app_protocol": APP_PROTOCOL,
     }
     print(json.dumps(payload, ensure_ascii=False))
     return 0
@@ -493,10 +508,25 @@ def self_test() -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube Creator Agent Local AI")
     parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--desktop-self-test", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("protocol_url", nargs="?")
     args = parser.parse_args()
     if args.self_test:
         raise SystemExit(self_test())
+    if args.desktop_self_test:
+        import_runtime()
+        from local_ai.desktop import desktop_self_test
+
+        print(json.dumps(desktop_self_test(), ensure_ascii=False))
+        raise SystemExit(0)
+    if args.desktop:
+        import_runtime()
+        from local_ai.desktop import launch_desktop
+
+        launch_desktop()
+        return
     if args.serve:
         import_runtime()
         from local_ai.companion import serve
