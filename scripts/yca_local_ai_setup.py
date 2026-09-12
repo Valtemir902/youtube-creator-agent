@@ -23,8 +23,6 @@ def app_dir() -> Path:
 
 
 def repo_src_root() -> Path:
-    # PyInstaller one-file builds unpack modules transparently; regular Python
-    # execution keeps this script inside the repository.
     return Path(__file__).resolve().parents[1]
 
 
@@ -60,6 +58,12 @@ def download(url: str, destination: Path) -> None:
     req = urlrequest.Request(url, headers=headers)
     mode = "ab" if existing else "wb"
     with urlrequest.urlopen(req, timeout=60) as response, partial.open(mode) as stream:
+        # Some servers ignore Range and return the entire file. Restart instead
+        # of corrupting the installer by appending duplicate bytes.
+        if existing and getattr(response, "status", 200) != 206:
+            stream.close()
+            partial.unlink(missing_ok=True)
+            return download(url, destination)
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
@@ -78,7 +82,13 @@ def verify_ollama_signature(installer: Path) -> None:
         + "'; if($s.Status -ne 'Valid'){exit 2}; "
         + "$n=$s.SignerCertificate.Subject; if($n -notmatch 'Ollama'){exit 3}; Write-Output $n"
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", command], check=True, capture_output=True, text=True, timeout=30)
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
 
 
 def install_ollama() -> Path:
@@ -109,7 +119,12 @@ def ensure_ollama_running(ollama: Path) -> None:
     except Exception:
         pass
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen([str(ollama), "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+    subprocess.Popen(
+        [str(ollama), "serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
     time.sleep(3)
 
 
@@ -128,15 +143,30 @@ def installed_executable() -> Path:
 
 
 def create_startup(executable: Path) -> None:
-    startup = Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    startup = (
+        Path(os.environ.get("APPDATA", str(Path.home())))
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / "Startup"
+    )
     startup.mkdir(parents=True, exist_ok=True)
     launcher = startup / "YouTubeCreatorAgent-LocalAI.cmd"
-    launcher.write_text(f'@echo off\r\nstart "" /min "{executable}" --serve\r\n', encoding="utf-8")
+    launcher.write_text(
+        f'@echo off\r\nstart "" /min "{executable}" --serve\r\n',
+        encoding="utf-8",
+    )
 
 
 def launch_companion(executable: Path) -> None:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    subprocess.Popen([str(executable), "--serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+    subprocess.Popen(
+        [str(executable), "--serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
 
 
 def setup() -> int:
@@ -160,12 +190,14 @@ def setup() -> int:
     pull_model(ollama, model.ollama_model)
 
     config = ensure_config()
-    config.update({
-        "profile": profile.value,
-        "model": model.ollama_model,
-        "hardware": snapshot.to_dict(),
-        "installed_at": int(time.time()),
-    })
+    config.update(
+        {
+            "profile": profile.value,
+            "model": model.ollama_model,
+            "hardware": snapshot.to_dict(),
+            "installed_at": int(time.time()),
+        }
+    )
     save_config(config)
 
     executable = installed_executable()
@@ -178,12 +210,31 @@ def setup() -> int:
     return 0
 
 
+def self_test() -> int:
+    CapabilityProfile, classify_hardware, probe_hardware, _, _, model_for_profile = import_runtime()
+    snapshot = probe_hardware()
+    profile = classify_hardware(snapshot)
+    model = model_for_profile(profile)
+    payload = {
+        "ok": True,
+        "profile": profile.value,
+        "model": model.ollama_model if model else None,
+        "hardware_probe": snapshot.to_dict(),
+        "native_only_valid": CapabilityProfile.NATIVE_ONLY.value == "native_only",
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="YouTube Creator Agent Local AI")
     parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        raise SystemExit(self_test())
     if args.serve:
-        _, _, _, _, _, _, _ = import_runtime()
+        import_runtime()
         from local_ai.companion import serve
 
         serve()
