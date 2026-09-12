@@ -8,6 +8,8 @@ on:
     paths:
       - 'src/local_ai/**'
       - 'src/creator_service/local_ai_dashboard.py'
+      - 'src/creator_service/dashboard_intelligence_terms.py'
+      - 'src/creator_service/oauth_compat_app.py'
       - 'scripts/yca_local_ai_setup.py'
       - 'tests/test_local_ai_*.py'
       - '.github/workflows/local-ai-companion.yml'
