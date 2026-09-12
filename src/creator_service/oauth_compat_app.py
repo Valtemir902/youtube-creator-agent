@@ -7,6 +7,7 @@ from .ai_vault_ui import install_ai_vault_ui
 from .dashboard_activity_ux import install_dashboard_activity_ux
 from .dashboard_ai_experience import install_dashboard_ai_experience
 from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
+from .dashboard_connection_health import install_dashboard_connection_health
 from .dashboard_grounded_advice import install_grounded_strategy_service
 from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
 from .dashboard_native_first_policy import install_dashboard_native_first_policy
@@ -27,7 +28,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "professional-v1.8-native-first-no-passive-ai"
+DASHBOARD_UI_REVISION = "professional-v1.9-live-youtube-health-native-cache"
 
 
 def create_app():
@@ -59,8 +60,11 @@ def create_app():
     install_dashboard_activity_ux(app)
     install_local_ai_dashboard(app)
     install_dashboard_intelligence_terms(app)
-    # This must be the final dashboard presentation layer: merely configuring an
-    # external provider must never make passive channel reads look like AI calls.
+    # Passive dashboard presentation must stay native-first. Configuring an
+    # external provider must never be confused with actually invoking one.
     install_dashboard_native_first_policy(app)
+    # Final health layer verifies a real YouTube Data API read. Merely having an
+    # encrypted Google credential is no longer presented as proof of connectivity.
+    install_dashboard_connection_health(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
