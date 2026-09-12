@@ -146,7 +146,7 @@ def local_status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 class CompanionHandler(BaseHTTPRequestHandler):
-    server_version = "YCA-LocalAI/1.1"
+    server_version = "YCA-LocalAI/1.2"
 
     @property
     def config(self) -> dict[str, Any]:
@@ -160,6 +160,10 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if not origin:
             return True
         return origin in set(self.config.get("origins") or DEFAULT_ORIGINS)
+
+    def _trusted_browser_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        return bool(origin) and origin in set(self.config.get("origins") or DEFAULT_ORIGINS)
 
     def _authorized(self) -> bool:
         expected = str(self.config.get("token") or "")
@@ -209,6 +213,18 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if not self._origin_allowed():
             self._send(403, {"ok": False, "error": "origin_not_allowed"})
             return
+
+        if self.path == "/v1/pair":
+            if not self._trusted_browser_origin():
+                self._send(403, {"ok": False, "error": "pairing_origin_required"})
+                return
+            token = str(self.config.get("token") or "")
+            if not token:
+                self._send(503, {"ok": False, "error": "pairing_unavailable"})
+                return
+            self._send(200, {"ok": True, "service": "yca-local-ai", "token": token})
+            return
+
         if not self._authorized():
             self._send(401, {"ok": False, "error": "unauthorized"})
             return
