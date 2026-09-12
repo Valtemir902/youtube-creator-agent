@@ -2,7 +2,7 @@
 
 ## Windows
 
-O build Windows oficial agora e isolado e reproduzivel. Ele cria um ambiente virtual limpo somente para empacotamento, fixa PySide6/shiboken6 na mesma versao e so publica o EXE em `artifacts/windows/` se o binario gerado passar um smoke test real do runtime Qt.
+O build Windows oficial e isolado e reproduzivel. Ele cria um ambiente virtual limpo somente para empacotamento, fixa PySide6/shiboken6 na mesma versao e so publica o EXE em `artifacts/windows/` se o binario gerado passar um smoke test real do runtime Qt.
 
 Execute no Windows:
 
