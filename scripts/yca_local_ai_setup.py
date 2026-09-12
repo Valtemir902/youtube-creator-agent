@@ -215,7 +215,7 @@ def ensure_ollama_running(ollama: Path) -> None:
 
 
 def pull_model(ollama: Path, model: str, *, estimated_download_mb: int | None = None) -> None:
-    del ollama  # The local Ollama HTTP API provides structured progress more reliably than CLI text.
+    del ollama
     print(f"[4/5] Preparando modelo {model}. O download é feito uma única vez...")
     body = json.dumps({"name": model, "stream": True}).encode("utf-8")
     req = urlrequest.Request(
@@ -321,6 +321,24 @@ def setup() -> int:
         f"Modelo selecionado: {model.display_name} "
         f"(download estimado: {model.estimated_download_mb} MB; licença {model.license_name})."
     )
+
+    config = ensure_config()
+    config.update(
+        {
+            "profile": profile.value,
+            "model": model.ollama_model,
+            "hardware": snapshot.to_dict(),
+            "manifest_version": manifest_version,
+            "model_estimated_download_mb": model.estimated_download_mb,
+        }
+    )
+    save_config(config)
+
+    executable = installed_executable()
+    create_startup(executable)
+    launch_companion(executable)
+    time.sleep(1)
+
     write_install_state(
         stage="runtime_check",
         status="running",
@@ -333,22 +351,8 @@ def setup() -> int:
     ensure_ollama_running(ollama)
     pull_model(ollama, model.ollama_model, estimated_download_mb=model.estimated_download_mb)
 
-    config = ensure_config()
-    config.update(
-        {
-            "profile": profile.value,
-            "model": model.ollama_model,
-            "hardware": snapshot.to_dict(),
-            "manifest_version": manifest_version,
-            "model_estimated_download_mb": model.estimated_download_mb,
-            "installed_at": int(time.time()),
-        }
-    )
+    config["installed_at"] = int(time.time())
     save_config(config)
-
-    executable = installed_executable()
-    create_startup(executable)
-    launch_companion(executable)
     token = str(config.get("token") or "")
     callback = f"{DASHBOARD_URL}#local-ai-token={token}"
     write_install_state(
