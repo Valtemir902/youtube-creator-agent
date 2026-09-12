@@ -8,6 +8,7 @@ from .dashboard_activity_ux import install_dashboard_activity_ux
 from .dashboard_ai_experience import install_dashboard_ai_experience
 from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
 from .dashboard_grounded_advice import install_grounded_strategy_service
+from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
 from .dashboard_native_ux import install_dashboard_native_ux
 from .dashboard_overview_compat import install_dashboard_overview_compat
 from .dashboard_performance import install_dashboard_performance
@@ -53,9 +54,9 @@ def create_app():
     # Install performance after every dashboard route exists so the wrapper can
     # deduplicate all expensive read surfaces without changing their contracts.
     install_dashboard_performance(app)
-    # Activity UX sees server-side work first; local AI is installed last so it
-    # can observe the final browser surface and connect to the optional device bridge.
+    # Browser layers are installed last so they observe the complete surface.
     install_dashboard_activity_ux(app)
     install_local_ai_dashboard(app)
+    install_dashboard_intelligence_terms(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
