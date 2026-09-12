@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute
 
 
@@ -17,18 +17,20 @@ class _CacheEntry:
 
 
 class DashboardReadCache:
-    """Small per-process stale-while-revalidate cache for expensive dashboard reads.
+    """Per-process stale-while-revalidate cache with bounded cold reads.
 
-    The dashboard read endpoints ultimately call synchronous Google clients. Running
-    those coroutine endpoints directly on the ASGI event loop makes unrelated tabs
-    wait behind them. This cache executes cold reads in worker threads, deduplicates
-    identical in-flight requests and serves a recent stale value while refreshing it.
+    Dashboard endpoints ultimately use synchronous Google clients. Those calls are
+    moved off the ASGI loop, deduplicated, cached and, critically, time-bounded so a
+    slow upstream can never leave the dashboard spinning forever.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, cold_timeout_seconds: float = 12.0, fallback_seconds: float = 86400.0) -> None:
         self._entries: dict[tuple[Any, ...], _CacheEntry] = {}
         self._locks: dict[tuple[Any, ...], asyncio.Lock] = {}
         self._refreshing: set[tuple[Any, ...]] = set()
+        self._blocked_until: dict[tuple[Any, ...], float] = {}
+        self.cold_timeout_seconds = cold_timeout_seconds
+        self.fallback_seconds = fallback_seconds
 
     @staticmethod
     def _freeze(value: Any) -> Any:
@@ -54,23 +56,28 @@ class DashboardReadCache:
     @staticmethod
     def _key_contains_tenant(key: tuple[Any, ...], tenant_id: str) -> bool:
         needle = ("tenant", tenant_id)
+
         def visit(value: Any) -> bool:
             if value == needle:
                 return True
             if isinstance(value, tuple):
                 return any(visit(item) for item in value)
             return False
+
         return visit(key)
 
     async def _invoke(self, fn: Callable[..., Any], kwargs: dict[str, Any]) -> Any:
-        # Read handlers are async wrappers around synchronous google-api-python-client
-        # calls. Running the complete handler in a worker thread prevents those calls
-        # from freezing the main ASGI event loop.
         if inspect.iscoroutinefunction(fn):
             def runner() -> Any:
                 return asyncio.run(fn(**kwargs))
             return await asyncio.to_thread(runner)
         return await asyncio.to_thread(fn, **kwargs)
+
+    async def _invoke_bounded(self, fn: Callable[..., Any], kwargs: dict[str, Any]) -> Any:
+        return await asyncio.wait_for(
+            self._invoke(fn, kwargs),
+            timeout=self.cold_timeout_seconds,
+        )
 
     async def _refresh(
         self,
@@ -82,13 +89,21 @@ class DashboardReadCache:
             return
         self._refreshing.add(key)
         try:
-            value = await self._invoke(fn, kwargs)
+            value = await self._invoke_bounded(fn, kwargs)
             self._entries[key] = _CacheEntry(value=value, stored_at=time.monotonic())
+            self._blocked_until.pop(key, None)
         except Exception:
-            # A failed background refresh must not erase the last known-good value.
-            pass
+            self._blocked_until[key] = time.monotonic() + 30.0
         finally:
             self._refreshing.discard(key)
+
+    def _fallback(self, key: tuple[Any, ...], now: float) -> Any | None:
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        if now - entry.stored_at <= self.fallback_seconds:
+            return entry.value
+        return None
 
     async def get(
         self,
@@ -106,16 +121,40 @@ class DashboardReadCache:
             if age <= ttl_seconds:
                 return entry.value
             if age <= stale_seconds:
-                asyncio.create_task(self._refresh(key, fn, dict(kwargs)))
+                if now >= self._blocked_until.get(key, 0.0):
+                    asyncio.create_task(self._refresh(key, fn, dict(kwargs)))
                 return entry.value
+
+        if now < self._blocked_until.get(key, 0.0):
+            fallback = self._fallback(key, now)
+            if fallback is not None:
+                return fallback
+            raise HTTPException(
+                status_code=504,
+                detail="A fonte de dados está demorando para responder. Tente novamente em alguns segundos.",
+                headers={"Retry-After": "30"},
+            )
 
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
+            now = time.monotonic()
             entry = self._entries.get(key)
-            if entry is not None and time.monotonic() - entry.stored_at <= ttl_seconds:
+            if entry is not None and now - entry.stored_at <= ttl_seconds:
                 return entry.value
-            value = await self._invoke(fn, kwargs)
+            try:
+                value = await self._invoke_bounded(fn, kwargs)
+            except asyncio.TimeoutError as exc:
+                self._blocked_until[key] = time.monotonic() + 30.0
+                fallback = self._fallback(key, time.monotonic())
+                if fallback is not None:
+                    return fallback
+                raise HTTPException(
+                    status_code=504,
+                    detail="A atualização excedeu 12 segundos. O painel não ficará bloqueado; tente novamente em instantes.",
+                    headers={"Retry-After": "30"},
+                ) from exc
             self._entries[key] = _CacheEntry(value=value, stored_at=time.monotonic())
+            self._blocked_until.pop(key, None)
             return value
 
     def invalidate_tenant(self, tenant_id: str) -> None:
@@ -125,6 +164,7 @@ class DashboardReadCache:
         doomed = [key for key in self._entries if self._key_contains_tenant(key, tenant_id)]
         for key in doomed:
             self._entries.pop(key, None)
+            self._blocked_until.pop(key, None)
 
 
 _READ_POLICIES: dict[str, tuple[float, float]] = {
@@ -159,11 +199,7 @@ def _replace_call(route: APIRoute, replacement: Callable[..., Awaitable[Any]]) -
 
 
 def install_dashboard_performance(app: FastAPI) -> None:
-    """Install non-invasive acceleration around the existing dashboard API.
-
-    No YouTube write contract is changed. Successful dashboard mutations merely
-    invalidate cached read snapshots so subsequent readback remains trustworthy.
-    """
+    """Install bounded read acceleration without changing any write contract."""
     if getattr(app.state, "dashboard_performance_installed", False):
         return
 

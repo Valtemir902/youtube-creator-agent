@@ -2,6 +2,9 @@ import asyncio
 import time
 from dataclasses import dataclass
 
+import pytest
+from fastapi import HTTPException
+
 from creator_service.dashboard_performance import DashboardReadCache
 
 
@@ -83,5 +86,47 @@ def test_dashboard_read_cache_returns_stale_immediately_and_refreshes_in_backgro
         refreshed = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=1, stale_seconds=5)
         assert refreshed["version"] == 2
         assert calls["n"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_dashboard_read_cache_times_out_cold_read_instead_of_hanging():
+    async def scenario():
+        cache = DashboardReadCache(cold_timeout_seconds=0.03)
+
+        async def producer(*, tenant):
+            await asyncio.sleep(5)
+            return {"never": "reached"}
+
+        kwargs = {"tenant": Tenant("tenant-timeout")}
+        key = cache.key_for("/api/dashboard/channel", kwargs)
+        started = time.monotonic()
+        with pytest.raises(HTTPException) as error:
+            await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=1, stale_seconds=2)
+        elapsed = time.monotonic() - started
+        assert error.value.status_code == 504
+        assert elapsed < 0.5
+
+    asyncio.run(scenario())
+
+
+def test_dashboard_read_cache_uses_last_known_good_after_refresh_timeout():
+    async def scenario():
+        cache = DashboardReadCache(cold_timeout_seconds=0.03, fallback_seconds=60)
+        calls = {"n": 0}
+
+        async def producer(*, tenant):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"value": "good"}
+            await asyncio.sleep(5)
+            return {"value": "late"}
+
+        kwargs = {"tenant": Tenant("tenant-fallback")}
+        key = cache.key_for("/api/dashboard/playlists", kwargs)
+        first = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=0, stale_seconds=0)
+        assert first == {"value": "good"}
+        fallback = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=0, stale_seconds=0)
+        assert fallback == {"value": "good"}
 
     asyncio.run(scenario())

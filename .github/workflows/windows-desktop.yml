@@ -1,0 +1,55 @@
+name: Windows Desktop Release Smoke
+
+on:
+  pull_request:
+    branches: [feat/web-dashboard-v1]
+    paths:
+      - 'main.py'
+      - 'src/**'
+      - 'scripts/build_windows.py'
+      - 'desktop_windows.spec'
+      - 'requirements.txt'
+      - 'requirements-build-windows.txt'
+      - '.github/workflows/windows-desktop.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build and runtime-smoke packaged EXE
+        shell: pwsh
+        run: python scripts/build_windows.py
+
+      - name: Verify artifact, hash, and GUI self-test exit code
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path 'artifacts/windows/YouTube-Creator-Agent-Elite.exe').Path
+          $hashFile = "$exe.sha256"
+          if (!(Test-Path $exe)) { throw "EXE ausente" }
+          if (!(Test-Path $hashFile)) { throw "SHA256 ausente" }
+
+          $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          $expected = ((Get-Content -LiteralPath $hashFile -Raw).Trim().Split()[0]).ToLowerInvariant()
+          if ($actual -ne $expected) { throw "SHA256 divergente: atual=$actual esperado=$expected" }
+
+          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -Wait -PassThru -NoNewWindow
+          if ($process.ExitCode -ne 0) {
+            throw "Smoke test do EXE falhou com exit code $($process.ExitCode)"
+          }
+          Write-Host "EXE GUI self-test OK. ExitCode=$($process.ExitCode) SHA256=$actual"
+
+      - name: Upload verified Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yca-windows-desktop-verified
+          path: artifacts/windows/
+          if-no-files-found: error
