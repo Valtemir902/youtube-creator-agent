@@ -15,6 +15,12 @@ def test_dashboard_pairs_through_fragment_and_loopback_handshake():
     assert "localStorage.setItem('yca_local_ai_token'" in _SCRIPT
     assert "/v1/pair" in _SCRIPT
     assert "autoPair" in _SCRIPT
+    assert "legacy_companion" in _SCRIPT
+
+
+def test_dashboard_avoids_an_unnecessary_preflight_for_legacy_health_checks():
+    assert "if(opts.body!==undefined&&!headers['Content-Type'])" in _SCRIPT
+    assert "credentials:'omit'" in _SCRIPT
 
 
 def test_dashboard_uses_loopback_bridge_and_bearer_auth():

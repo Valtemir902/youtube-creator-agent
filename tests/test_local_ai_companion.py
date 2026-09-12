@@ -1,3 +1,4 @@
+import io
 from pathlib import Path
 
 from src.local_ai import companion
@@ -99,3 +100,30 @@ def test_pairing_requires_explicit_trusted_browser_origin():
     assert handler._trusted_browser_origin() is False
     handler.headers = {}
     assert handler._trusted_browser_origin() is False
+
+
+def test_private_network_access_is_requested_only_by_browser_preflight():
+    handler = object.__new__(companion.CompanionHandler)
+    handler.headers = {"Access-Control-Request-Private-Network": "true"}
+    assert handler._private_network_preflight_requested() is True
+    handler.headers = {"Access-Control-Request-Private-Network": "false"}
+    assert handler._private_network_preflight_requested() is False
+
+
+def test_private_network_access_header_is_limited_to_an_allowed_origin():
+    handler = object.__new__(companion.CompanionHandler)
+    handler.server = type(
+        "Server", (), {"config": {"origins": ["https://creator.silvadigitaltech.com"]}}
+    )()
+    handler.headers = {
+        "Origin": "https://creator.silvadigitaltech.com",
+        "Access-Control-Request-Private-Network": "true",
+    }
+    headers: dict[str, str] = {}
+    handler.send_response = lambda status: None
+    handler.send_header = lambda key, value: headers.__setitem__(key, value)
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    handler._send(204, {})
+    assert headers["Access-Control-Allow-Origin"] == "https://creator.silvadigitaltech.com"
+    assert headers["Access-Control-Allow-Private-Network"] == "true"
