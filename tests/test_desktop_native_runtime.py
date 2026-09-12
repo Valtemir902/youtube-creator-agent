@@ -37,8 +37,10 @@ def test_desktop_bootstrap_intercepts_reads_but_not_writes():
     assert "method!=='GET'" in script
     assert "8000" in script
     assert "12000" in script
-    assert "/api/dashboard/channel" in script
-    assert "/api/dashboard/status" not in script.split("cachePrefixes=", 1)[1].split("];", 1)[0]
+    assert "cacheablePath" in script
+    assert "'/api/dashboard/channel'" in script
+    assert "'/api/dashboard/channel/identity'" not in script
+    assert "/api/dashboard/status" not in script
     assert "desktop_native_timeout" in script
     assert "POST" in script  # local cache persistence only
 
@@ -49,3 +51,10 @@ def test_desktop_bootstrap_never_recursively_calls_refresh_all():
     assert "yca:desktop-cache-updated" in script
     assert "lastRefresh" in script
     assert "30000" in script
+
+
+def test_desktop_profile_forces_persistent_secure_cookie_storage():
+    source = Path("src/desktop_web_shell.py").read_text(encoding="utf-8")
+    assert "ForcePersistentCookies" in source
+    assert "DiskHttpCache" in source
+    assert "web-storage" in source

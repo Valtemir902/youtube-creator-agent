@@ -23,10 +23,20 @@ def dashboard_url() -> str:
 
 
 def configure_profile() -> QWebEngineProfile:
+    """Configure the per-Windows-user Chromium profile used by the shell.
+
+    The server session cookie is ``Secure`` and ``HttpOnly``.  Qt must still be
+    told to keep that cookie after the process exits; merely assigning a storage
+    directory does not force persistence on every QtWebEngine build.
+    """
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
     profile = QWebEngineProfile.defaultProfile()
     profile.setPersistentStoragePath(str(APP_DATA_DIR / "web-storage"))
     profile.setCachePath(str(APP_DATA_DIR / "web-cache"))
+    profile.setPersistentCookiesPolicy(
+        QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+    )
+    profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.DiskHttpCache)
     return profile
 
 

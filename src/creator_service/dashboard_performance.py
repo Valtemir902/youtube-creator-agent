@@ -226,6 +226,12 @@ def install_dashboard_performance(app: FastAPI) -> None:
                 if args:
                     bound = inspect.signature(__original).bind_partial(*args, **kwargs)
                     kwargs = dict(bound.arguments)
+                request = kwargs.get("request")
+                # A health probe asks for the current YouTube authorization,
+                # not a potentially stale dashboard snapshot.  It remains
+                # time-bounded and never changes any YouTube resource.
+                if request is not None and request.headers.get("X-YCA-Live-Probe") == "1":
+                    return await cache._invoke_bounded(__original, kwargs)
                 key = cache.key_for(__path, kwargs)
                 return await cache.get(
                     key=key,

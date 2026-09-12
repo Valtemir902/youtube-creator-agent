@@ -218,13 +218,18 @@ def desktop_fetch_bootstrap(native_base: str) -> str:
   const realFetch=window.fetch.bind(window);
   const memoryCache=new Map();
   const lastRefresh=new Map();
-  const cachePrefixes=['/api/dashboard/capabilities','/api/dashboard/channel','/api/dashboard/playlists','/api/dashboard/videos','/api/dashboard/evidence','/api/dashboard/audit','/api/dashboard/free/'];
+  // Identity is deliberately excluded.  It is the bounded, fresh YouTube API
+  // health probe and must never be satisfied by an old profile snapshot.
+  const cacheablePath=pathname=>[
+    '/api/dashboard/capabilities','/api/dashboard/channel','/api/dashboard/playlists',
+    '/api/dashboard/videos','/api/dashboard/evidence','/api/dashboard/audit'
+  ].includes(pathname)||pathname.startsWith('/api/dashboard/free/');
   const cacheable=(url,init)=>{{
     const method=String((init&&init.method)||'GET').toUpperCase();
     if(method!=='GET')return false;
     let u;try{{u=new URL(typeof url==='string'?url:url.url,location.href)}}catch{{return false}}
     if(u.origin!==location.origin)return false;
-    return cachePrefixes.some(p=>u.pathname.startsWith(p));
+    return cacheablePath(u.pathname);
   }};
   const keyFor=url=>{{const u=new URL(typeof url==='string'?url:url.url,location.href);return u.pathname+u.search}};
   const timeoutSignal=(ms,external)=>{{const c=new AbortController();const t=setTimeout(()=>c.abort('desktop-timeout'),ms);if(external)external.addEventListener('abort',()=>c.abort(external.reason),{{once:true}});return {{signal:c.signal,done:()=>clearTimeout(t)}}}};

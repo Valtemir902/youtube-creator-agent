@@ -390,7 +390,12 @@ def install_dashboard_routes(
         return {"ok": True, "channel": channel}
 
     @app.get("/api/dashboard/channel/identity")
-    async def dashboard_channel_identity(tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
+    async def dashboard_channel_identity(
+        request: Request,
+        tenant: DashboardTenant = Depends(readable),
+    ) -> dict[str, Any]:
+        # ``request`` intentionally keeps the live-probe header available to
+        # the bounded cache wrapper.  The endpoint itself remains read-only.
         service = service_for(tenant.tenant_id)
         service.context.validate_youtube()
         return channel_identity(service._youtube())
