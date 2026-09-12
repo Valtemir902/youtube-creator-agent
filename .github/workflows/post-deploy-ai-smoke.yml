@@ -1,0 +1,52 @@
+name: Post Deploy AI Smoke
+
+on:
+  workflow_run:
+    workflows: ["Deploy Production"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yca-post-deploy-ai-smoke
+  cancel-in-progress: false
+
+jobs:
+  ai-runtime-smoke:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Exercise configured AI runtime without YouTube writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -se' <<'REMOTE'
+          set -euo pipefail
+          cd "$HOME/apps/youtube-creator-agent"
+          docker compose -f deploy/docker-compose.oracle.yml exec -T onboarding \
+            python scripts/production_ai_runtime_smoke.py
+          REMOTE

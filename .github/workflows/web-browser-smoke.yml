@@ -1,0 +1,39 @@
+name: Web Browser Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/web-dashboard-v1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run live browser audit
+        env:
+          CREATOR_BASE_URL: https://creator.silvadigitaltech.com
+          AUTH_HOST: auth.silvadigitaltech.com
+        run: node tests/live_browser_smoke.js
+
+      - name: Upload screenshots and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-browser-smoke-artifacts
+          path: artifacts/
+          if-no-files-found: warn

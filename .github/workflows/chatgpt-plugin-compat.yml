@@ -1,0 +1,161 @@
+name: ChatGPT Plugin Compatibility
+
+on:
+  push:
+    branches: ["feat/**", main]
+    paths:
+      - "src/creator_service/cloud_auth.py"
+      - "src/creator_service/cloud_mcp_server.py"
+      - "src/creator_service/oauth_compat.py"
+      - "src/creator_service/oauth_compat_app.py"
+      - "tests/test_oauth_compat.py"
+      - "config/chatgpt_app.json"
+      - ".github/workflows/chatgpt-plugin-compat.yml"
+  workflow_dispatch:
+
+jobs:
+  public-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate app and OAuth discovery
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          p=json.load(open('config/chatgpt_app.json'))
+          assert p['mcp_url']=='https://mcp.silvadigitaltech.com/mcp'
+          assert p.get('authentication')=='oauth'
+          assert p.get('data_claims',{}).get('writes_require_explicit_confirmation') is True
+          print('APP_PACKAGE=ok')
+          PY
+          curl -fsS --max-time 20 https://creator.silvadigitaltech.com/.well-known/oauth-authorization-server -o /tmp/oauth.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/oauth.json'))
+          assert p['issuer'].rstrip('/')=='https://creator.silvadigitaltech.com', p
+          assert p['registration_endpoint']=='https://creator.silvadigitaltech.com/oauth/register', p
+          assert p['authorization_endpoint']=='https://auth.silvadigitaltech.com/realms/yca/protocol/openid-connect/auth', p
+          assert p['token_endpoint']=='https://auth.silvadigitaltech.com/realms/yca/protocol/openid-connect/token', p
+          assert {'openid','email','offline_access','yca:read'} <= set(p.get('scopes_supported') or []), p
+          assert 'S256' in set(p.get('code_challenge_methods_supported') or []), p
+          assert 'none' in set(p.get('token_endpoint_auth_methods_supported') or []), p
+          print('CREATOR_OAUTH_METADATA=ok')
+          PY
+
+      - name: Validate MCP protected resource metadata
+        run: |
+          set -euo pipefail
+          found=0
+          for url in https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource/mcp https://mcp.silvadigitaltech.com/.well-known/oauth-protected-resource; do
+            code="$(curl -sS --max-time 20 -o /tmp/resource.json -w '%{http_code}' "$url")"
+            if [ "$code" = "200" ]; then found=1; break; fi
+          done
+          test "$found" = 1
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/resource.json'))
+          servers={str(x).rstrip('/') for x in p.get('authorization_servers',[])}
+          assert 'https://creator.silvadigitaltech.com' in servers, p
+          assert 'yca:read' in set(p.get('scopes_supported') or []), p
+          print('MCP_OAUTH_ROUTING=ok')
+          PY
+
+      - name: Exact ChatGPT dynamic registration
+        run: |
+          set -euo pipefail
+          cat >/tmp/dcr-payload.json <<'JSON'
+          {"client_name":"ChatGPT exact compatibility probe","redirect_uris":["https://chatgpt.com/connector_platform_oauth_redirect"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":"openid email offline_access yca:read"}
+          JSON
+          code="$(curl -sS --max-time 20 -D /tmp/dcr.headers -o /tmp/dcr.json -w '%{http_code}' -H 'content-type: application/json' -H 'accept: application/json' --data @/tmp/dcr-payload.json https://creator.silvadigitaltech.com/oauth/register)"
+          echo "CHATGPT_DCR_HTTP=$code"
+          test "$code" = 201 -o "$code" = 200
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/dcr.json'))
+          assert p.get('client_id'), p
+          assert p.get('token_endpoint_auth_method','none')=='none', p
+          assert p.get('redirect_uris')==['https://chatgpt.com/connector_platform_oauth_redirect'], p
+          assert {'email','offline_access','yca:read'} <= set(str(p.get('scope') or '').split()), p
+          print('CHATGPT_DCR=ok')
+          PY
+
+      - name: Classify authorization redirect with exact MCP resource
+        run: |
+          set -euo pipefail
+          python - <<'PY' >/tmp/auth-url
+          import base64,hashlib,json,secrets,urllib.parse
+          m=json.load(open('/tmp/oauth.json')); c=json.load(open('/tmp/dcr.json'))
+          v=secrets.token_urlsafe(48)
+          challenge=base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).rstrip(b'=').decode()
+          q={'response_type':'code','client_id':c['client_id'],'redirect_uri':'https://chatgpt.com/connector_platform_oauth_redirect','scope':'openid email offline_access yca:read','state':secrets.token_urlsafe(24),'code_challenge':challenge,'code_challenge_method':'S256','resource':'https://mcp.silvadigitaltech.com/mcp'}
+          print(m['authorization_endpoint']+'?'+urllib.parse.urlencode(q))
+          PY
+          url="$(cat /tmp/auth-url)"
+          code="$(curl -sS --max-redirs 0 --max-time 20 -A 'Mozilla/5.0 ChatGPT-OAuth-Compatibility-Probe/1.0' -H 'Accept: text/html,application/xhtml+xml' -o /tmp/auth.body -D /tmp/auth.headers -w '%{http_code}' "$url" || true)"
+          echo "AUTH_FIRST_HTTP=$code"
+          python - <<'PY'
+          import re, urllib.parse
+          h=open('/tmp/auth.headers',errors='replace').read()
+          m=re.search(r'(?im)^location:\s*(\S+)',h)
+          if not m:
+              print('AUTH_LOCATION=none')
+          else:
+              u=urllib.parse.urlsplit(m.group(1))
+              q=urllib.parse.parse_qs(u.query)
+              print('AUTH_LOCATION_HOST='+u.netloc)
+              print('AUTH_LOCATION_PATH='+u.path)
+              print('AUTH_LOCATION_ERROR='+str((q.get('error') or [''])[0]))
+              if u.netloc=='chatgpt.com' and q.get('error'):
+                  raise SystemExit('authorization redirected OAuth error to ChatGPT callback')
+          PY
+          final="$(curl -sS -L --max-redirs 5 --max-time 20 -c /tmp/cookies -b /tmp/cookies -A 'Mozilla/5.0 ChatGPT-OAuth-Compatibility-Probe/1.0' -H 'Accept: text/html,application/xhtml+xml' -o /tmp/auth.final -w '%{http_code} %{url_effective}' "$url" || true)"
+          echo "AUTH_FINAL=$final" | sed -E 's/([?&](state|session_code|tab_id|code)=[^& ]+)/\1_REDACTED/g'
+          final_code="${final%% *}"
+          test "$final_code" = 200
+          if grep -Eqi '(invalid parameter|invalid redirect|client not found|invalid_client)' /tmp/auth.final; then exit 1; fi
+          grep -Eiq '(login|username|email|password|entrar)' /tmp/auth.final
+          echo 'CHATGPT_AUTH_LOGIN=ok'
+
+      - name: Verify token endpoint public-client semantics
+        run: |
+          set -euo pipefail
+          client_id="$(python -c "import json;print(json.load(open('/tmp/dcr.json'))['client_id'])")"
+          code="$(curl -sS --max-time 20 -o /tmp/token.json -w '%{http_code}' -H 'content-type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=authorization_code' --data-urlencode 'code=deliberately-invalid-code' --data-urlencode 'redirect_uri=https://chatgpt.com/connector_platform_oauth_redirect' --data-urlencode "client_id=$client_id" --data-urlencode 'code_verifier=deliberately-invalid-verifier-that-is-long-enough-for-a-probe' https://auth.silvadigitaltech.com/realms/yca/protocol/openid-connect/token || true)"
+          echo "TOKEN_PROBE_HTTP=$code"
+          test "$code" = 400
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/token.json'))
+          assert p.get('error') in {'invalid_grant','invalid_request'}, p
+          print('TOKEN_ENDPOINT=ok')
+          PY
+
+      - name: Verify MCP challenge advertises resource metadata
+        run: |
+          set -euo pipefail
+          cat >/tmp/mcp-init.json <<'JSON'
+          {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"oauth-smoke","version":"1"}}}
+          JSON
+          code="$(curl -sS --max-time 20 -D /tmp/mcp.headers -o /tmp/mcp.body -w '%{http_code}' -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' --data @/tmp/mcp-init.json https://mcp.silvadigitaltech.com/mcp || true)"
+          echo "MCP_UNAUTH_HTTP=$code"
+          test "$code" = 401
+          grep -Eiq '^www-authenticate:.*Bearer' /tmp/mcp.headers
+          grep -Eiq 'resource_metadata=' /tmp/mcp.headers
+          echo 'MCP_CHALLENGE=ok'
+
+      - name: Reject unsafe redirect and scan public package
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 20 -o /tmp/reject.json -w '%{http_code}' -H 'content-type: application/json' --data '{"redirect_uris":["https://evil.example/callback"],"token_endpoint_auth_method":"none"}' https://creator.silvadigitaltech.com/oauth/register || true)"
+          echo "UNSAFE_DCR_HTTP=$code"
+          test "$code" = 400
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/reject.json'))
+          assert p.get('error')=='invalid_redirect_uri', p
+          print('DCR_SECURITY=ok')
+          PY
+          ! grep -Eiq '(client_secret|api[_-]?key|refresh_token|access_token|AIza[0-9A-Za-z_-]{20,})' config/chatgpt_app.json
+          echo 'PUBLIC_PACKAGE_SECRET_SCAN=ok'

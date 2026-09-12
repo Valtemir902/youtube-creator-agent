@@ -4,6 +4,7 @@ import secrets
 from pathlib import Path
 from typing import Any
 
+from .base import AIProviderError
 from .credential_store import CredentialStore
 from .key_pool import APIKeyPoolStore
 from .registry import AIProviderRegistry
@@ -40,27 +41,44 @@ class AIRuntime:
             settings.auto_rotate_keys = self.key_pool.auto_rotate(settings.provider) or settings.auto_rotate_keys
         return settings
 
+    def validate_model_selection(
+        self,
+        settings: AISettings,
+        *,
+        api_key: str | None = None,
+        key_id: str | None = None,
+    ) -> None:
+        """Reject saved models that cannot be used by the provider's generation path."""
+        selected = str(settings.model or "").strip()
+        if not selected:
+            return
+        models = self.list_models(settings, api_key, key_id=key_id)
+        ids = {item.id for item in models}
+        if selected not in ids:
+            provider = settings.provider.strip().lower()
+            raise AIProviderError(
+                f"unsupported model: '{selected}' is not compatible with the configured {provider} generation endpoint."
+            )
+
     def save_settings(self, settings: AISettings, api_key: str | None = None) -> None:
         provider = settings.provider.strip().lower()
         settings.provider = provider
+
+        # Validate first so an incompatible model is never persisted. When a
+        # fresh key is supplied, use it directly for validation before storing it.
+        if provider != "ollama" and settings.model.strip():
+            self.validate_model_selection(settings, api_key=api_key)
+
         if provider != "ollama":
             self._migrate_legacy_key_if_needed(provider)
             self.key_pool.set_auto_rotate(provider, settings.auto_rotate_keys)
             if api_key:
-                self.add_api_key(
-                    provider,
-                    api_key,
-                    remember=settings.remember_api_key,
-                    make_active=True,
-                )
+                self.add_api_key(provider, api_key, remember=settings.remember_api_key, make_active=True)
         self.settings_store.save(settings)
 
     @staticmethod
     def _supports_named_credentials(store: Any) -> bool:
-        return all(
-            hasattr(store, name)
-            for name in ("save_named_key", "get_named_key", "delete_named_key")
-        )
+        return all(hasattr(store, name) for name in ("save_named_key", "get_named_key", "delete_named_key"))
 
     def _migrate_legacy_key_if_needed(self, provider: str) -> None:
         provider = (provider or "").strip().lower()
@@ -99,6 +117,8 @@ class AIRuntime:
             for record in self.key_pool.list(provider):
                 existing = self.credentials.get_named_key(provider, record.id)
                 if existing and secrets.compare_digest(existing, api_key):
+                    if label:
+                        self.key_pool.set_label(provider, record.id, label)
                     if make_active:
                         self.key_pool.set_active(provider, record.id)
                     return {**self.key_pool.export_public(provider)[self._record_index(provider, record.id)], "reused": True}
@@ -143,6 +163,30 @@ class AIRuntime:
         key = self._key_for_id(provider, key_id)
         if key:
             self.credentials.save_key(provider, key)
+
+    def update_api_key_metadata(
+        self,
+        provider: str,
+        key_id: str,
+        *,
+        label: str | None = None,
+        preferred_model: str | None = None,
+        enabled: bool | None = None,
+        make_active: bool | None = None,
+    ) -> dict:
+        provider = provider.strip().lower()
+        if self.key_pool.get(provider, key_id) is None:
+            raise KeyError("Chave não encontrada no pool.")
+        if label is not None:
+            self.key_pool.set_label(provider, key_id, label)
+        if preferred_model is not None:
+            self.key_pool.set_preferred_model(provider, key_id, preferred_model)
+        if enabled is not None:
+            self.key_pool.set_enabled(provider, key_id, enabled)
+        if make_active:
+            self.set_active_api_key(provider, key_id)
+        record = self.key_pool.get(provider, key_id)
+        return {**(self.key_pool.export_public(provider)[self._record_index(provider, key_id)]), "provider": provider}
 
     def set_api_key_enabled(self, provider: str, key_id: str, enabled: bool) -> None:
         self.key_pool.set_enabled(provider, key_id, enabled)
@@ -189,13 +233,7 @@ class AIRuntime:
             return key, ""
         raise RuntimeError(f"Nenhuma chave API configurada para {provider}.")
 
-    def _provider(
-        self,
-        settings: AISettings | None = None,
-        api_key: str | None = None,
-        *,
-        key_id: str | None = None,
-    ):
+    def _provider(self, settings: AISettings | None = None, api_key: str | None = None, *, key_id: str | None = None):
         settings = settings or self.load_settings()
         provider_name = settings.provider.strip().lower()
         if api_key is None:
@@ -212,22 +250,10 @@ class AIRuntime:
         )
         return self.registry.create(config)
 
-    def list_models(
-        self,
-        settings: AISettings | None = None,
-        api_key: str | None = None,
-        *,
-        key_id: str | None = None,
-    ) -> list[AIModel]:
+    def list_models(self, settings: AISettings | None = None, api_key: str | None = None, *, key_id: str | None = None) -> list[AIModel]:
         return self._provider(settings, api_key, key_id=key_id).list_models()
 
-    def validate(
-        self,
-        settings: AISettings | None = None,
-        api_key: str | None = None,
-        *,
-        key_id: str | None = None,
-    ) -> bool:
+    def validate(self, settings: AISettings | None = None, api_key: str | None = None, *, key_id: str | None = None) -> bool:
         provider = self._provider(settings, api_key, key_id=key_id)
         return provider.validate_connection()
 
@@ -239,7 +265,9 @@ class AIRuntime:
             selected_model = (model or "").strip()
             if selected_model:
                 if selected_model not in model_ids:
-                    raise RuntimeError(f"O modelo selecionado não está disponível para esta chave: {selected_model}")
+                    raise AIProviderError(
+                        f"unsupported model: '{selected_model}' is not compatible with the configured generation endpoint."
+                    )
                 provider_obj = self._provider(settings, key_id=key_id)
                 provider_obj.generate(
                     selected_model,
@@ -247,6 +275,7 @@ class AIRuntime:
                     temperature=0.0,
                     max_output_tokens=8,
                 )
+                self.key_pool.set_preferred_model(provider, key_id, selected_model)
             self.key_pool.mark_success(provider, key_id, model=selected_model)
             return {"ok": True, "models": model_ids, "count": len(model_ids), "tested_model": selected_model}
         except Exception as exc:
@@ -266,9 +295,15 @@ class AIRuntime:
             "401", "403", "unauthenticated", "invalid api key", "api key invalid",
             "api_key_invalid", "permission denied", "permission_denied",
         )
+        incompatible_model = (
+            "only supports interactions api", "not supported for generatecontent",
+            "unsupported model", "method is not supported", "not found for api version",
+        )
         if any(token in text for token in transient):
             return True, True
         if any(token in text for token in auth):
+            return False, True
+        if any(token in text for token in incompatible_model):
             return False, True
         return False, False
 
@@ -350,11 +385,12 @@ class AIRuntime:
         for index, key_id in enumerate(candidates):
             record = self.key_pool.get(provider_name, key_id)
             masked = record.masked if record else key_id
+            key_model = (record.preferred_model if record and record.preferred_model else selected_model).strip()
             try:
                 return self._generate_with_key(
                     settings=settings,
                     key_id=key_id,
-                    selected_model=selected_model,
+                    selected_model=key_model,
                     messages=messages,
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
@@ -362,7 +398,7 @@ class AIRuntime:
                 )
             except Exception as exc:
                 _warning, rotate = self._classify_failure(exc)
-                failures.append(f"{masked}: {str(exc)}")
+                failures.append(f"{masked}/{key_model}: {str(exc)}")
                 has_next = index + 1 < len(candidates)
                 if not rotation_enabled or not rotate or not has_next:
                     if rotation_enabled and not has_next and len(failures) > 1:

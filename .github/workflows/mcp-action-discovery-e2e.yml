@@ -1,0 +1,210 @@
+name: MCP Action Discovery E2E
+
+on:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - ".github/workflows/mcp-action-discovery-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discovery-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OAUTH_BASE: https://creator.silvadigitaltech.com
+      MCP_URL: https://mcp.silvadigitaltech.com/mcp
+      E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+      E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run exact authenticated initialize and tools/list probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$E2E_TEST_EMAIL"
+          test -n "$E2E_TEST_PASSWORD"
+          mkdir -p artifacts/mcp-discovery
+
+          node <<'NODE'
+          const { chromium } = require('playwright');
+          const crypto = require('crypto');
+          const fs = require('fs');
+
+          const oauthBase = process.env.OAUTH_BASE;
+          const mcpUrl = process.env.MCP_URL;
+          const email = process.env.E2E_TEST_EMAIL;
+          const password = process.env.E2E_TEST_PASSWORD;
+          const redirectUri = 'https://chatgpt.com/connector_platform_oauth_redirect';
+          const scope = 'openid email offline_access yca:read yca:write';
+          const out = { stages: {}, schemas: [] };
+
+          function b64url(buf) {
+            return Buffer.from(buf).toString('base64').replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_');
+          }
+          async function jsonFetch(url, options={}) {
+            const r = await fetch(url, options);
+            const text = await r.text();
+            let body = null;
+            try { body = JSON.parse(text); } catch { body = text; }
+            return { status:r.status, headers:Object.fromEntries(r.headers), body };
+          }
+          function safeRpcSummary(x) {
+            if (!x || typeof x !== 'object') return { type: typeof x };
+            const result = x.result || {};
+            return {
+              jsonrpc: x.jsonrpc,
+              id: x.id,
+              hasError: !!x.error,
+              errorCode: x.error?.code,
+              errorMessage: x.error?.message,
+              protocolVersion: result.protocolVersion,
+              serverName: result.serverInfo?.name,
+              toolsCount: Array.isArray(result.tools) ? result.tools.length : undefined,
+            };
+          }
+
+          (async()=>{
+            const metadata = await jsonFetch(`${oauthBase}/.well-known/oauth-authorization-server`);
+            if (metadata.status !== 200) throw new Error(`oauth metadata HTTP ${metadata.status}`);
+            out.stages.oauth_metadata = {status:metadata.status, issuer:metadata.body.issuer};
+
+            const dcr = await jsonFetch(metadata.body.registration_endpoint, {
+              method:'POST',
+              headers:{'content-type':'application/json','accept':'application/json'},
+              body:JSON.stringify({
+                client_name:'ChatGPT MCP action discovery E2E',
+                redirect_uris:[redirectUri],
+                grant_types:['authorization_code','refresh_token'],
+                response_types:['code'],
+                token_endpoint_auth_method:'none',
+                scope,
+              })
+            });
+            if (![200,201].includes(dcr.status) || !dcr.body?.client_id) throw new Error(`DCR failed HTTP ${dcr.status}: ${JSON.stringify(dcr.body)}`);
+            out.stages.dcr = {status:dcr.status, scope:dcr.body.scope, authMethod:dcr.body.token_endpoint_auth_method};
+
+            const verifier = b64url(crypto.randomBytes(64));
+            const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+            const state = b64url(crypto.randomBytes(24));
+            const auth = new URL(metadata.body.authorization_endpoint);
+            for (const [k,v] of Object.entries({
+              response_type:'code', client_id:dcr.body.client_id, redirect_uri:redirectUri,
+              scope, state, code_challenge:challenge, code_challenge_method:'S256', resource:mcpUrl,
+            })) auth.searchParams.set(k,v);
+
+            const browser = await chromium.launch({headless:true});
+            const ctx = await browser.newContext({locale:'pt-BR'});
+            const page = await ctx.newPage();
+            let callbackUrl = null;
+            page.on('request', req => {
+              const u = req.url();
+              if (u.startsWith(redirectUri)) callbackUrl = u;
+            });
+            await page.goto(auth.toString(), {waitUntil:'domcontentloaded',timeout:30000});
+            await page.locator('input[name="username"],input[type="email"]').first().fill(email);
+            await page.locator('input[type="password"]').first().fill(password);
+            await Promise.all([
+              page.locator('input[type="submit"],button[type="submit"]').first().click(),
+              page.waitForTimeout(1500),
+            ]);
+            for (let i=0; i<40 && !callbackUrl; i++) await page.waitForTimeout(250);
+            if (!callbackUrl && page.url().startsWith(redirectUri)) callbackUrl = page.url();
+            await page.screenshot({path:'artifacts/mcp-discovery/after-login.png',fullPage:true});
+            await browser.close();
+            if (!callbackUrl) throw new Error(`OAuth callback not observed; final URL=${page.url()}`);
+            const cb = new URL(callbackUrl);
+            if (cb.searchParams.get('state') !== state) throw new Error('OAuth state mismatch');
+            if (cb.searchParams.get('error')) throw new Error(`OAuth callback error=${cb.searchParams.get('error')}`);
+            const code = cb.searchParams.get('code');
+            if (!code) throw new Error('OAuth callback missing code');
+            out.stages.authorization = {ok:true, callbackHost:cb.hostname};
+
+            const tokenBody = new URLSearchParams({
+              grant_type:'authorization_code', code, redirect_uri:redirectUri,
+              client_id:dcr.body.client_id, code_verifier:verifier,
+            });
+            const tok = await jsonFetch(metadata.body.token_endpoint, {
+              method:'POST', headers:{'content-type':'application/x-www-form-urlencoded','accept':'application/json'}, body:tokenBody,
+            });
+            if (tok.status !== 200 || !tok.body?.access_token) throw new Error(`token exchange failed HTTP ${tok.status}: ${JSON.stringify(tok.body)}`);
+            const access = tok.body.access_token;
+            out.stages.token = {status:tok.status, tokenType:tok.body.token_type, scope:tok.body.scope, hasRefreshToken:!!tok.body.refresh_token};
+
+            async function rpc(id, method, params) {
+              return jsonFetch(mcpUrl, {
+                method:'POST',
+                headers:{
+                  'authorization':`Bearer ${access}`,
+                  'content-type':'application/json',
+                  'accept':'application/json, text/event-stream',
+                  'mcp-protocol-version':'2025-06-18',
+                },
+                body:JSON.stringify({jsonrpc:'2.0',id,method,params}),
+              });
+            }
+
+            const init = await rpc(1,'initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'ChatGPT-action-discovery-e2e',version:'1.0'}});
+            out.stages.initialize = {http:init.status, rpc:safeRpcSummary(init.body), contentType:init.headers['content-type']};
+            fs.writeFileSync('artifacts/mcp-discovery/initialize.json', JSON.stringify(init.body,null,2));
+            if (init.status !== 200 || init.body?.error || !init.body?.result) throw new Error(`initialize failed HTTP ${init.status}: ${JSON.stringify(init.body)}`);
+
+            const initialized = await jsonFetch(mcpUrl, {
+              method:'POST', headers:{'authorization':`Bearer ${access}`,'content-type':'application/json','accept':'application/json, text/event-stream','mcp-protocol-version':'2025-06-18'},
+              body:JSON.stringify({jsonrpc:'2.0',method:'notifications/initialized',params:{}}),
+            });
+            out.stages.initialized_notification = {http:initialized.status, contentType:initialized.headers['content-type']};
+
+            const tools = await rpc(2,'tools/list',{});
+            out.stages.tools_list = {http:tools.status, rpc:safeRpcSummary(tools.body), contentType:tools.headers['content-type']};
+            fs.writeFileSync('artifacts/mcp-discovery/tools-list.json', JSON.stringify(tools.body,null,2));
+            if (tools.status !== 200 || tools.body?.error || !Array.isArray(tools.body?.result?.tools)) throw new Error(`tools/list failed HTTP ${tools.status}: ${JSON.stringify(tools.body)}`);
+
+            const names = new Set();
+            for (const tool of tools.body.result.tools) {
+              const problems = [];
+              if (!tool || typeof tool !== 'object') problems.push('tool_not_object');
+              if (typeof tool?.name !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(tool.name)) problems.push('bad_name');
+              if (names.has(tool?.name)) problems.push('duplicate_name');
+              names.add(tool?.name);
+              if (!tool?.inputSchema || tool.inputSchema.type !== 'object') problems.push('input_schema_not_object');
+              try { JSON.stringify(tool?.inputSchema); } catch { problems.push('input_schema_not_serializable'); }
+              if (tool?.outputSchema) {
+                try { JSON.stringify(tool.outputSchema); } catch { problems.push('output_schema_not_serializable'); }
+              }
+              out.schemas.push({name:tool?.name,title:tool?.title,hasDescription:typeof tool?.description==='string',problems,inputSchema:tool?.inputSchema});
+            }
+            out.stages.schema_validation = {toolCount:tools.body.result.tools.length, invalidTools:out.schemas.filter(x=>x.problems.length).map(x=>({name:x.name,problems:x.problems}))};
+            fs.writeFileSync('artifacts/mcp-discovery/result.json', JSON.stringify(out,null,2));
+            console.log(JSON.stringify(out,null,2));
+            if (out.stages.schema_validation.invalidTools.length) throw new Error('One or more MCP tool schemas failed compatibility checks');
+          })().catch(err=>{
+            out.failure = String(err?.stack || err);
+            fs.writeFileSync('artifacts/mcp-discovery/result.json', JSON.stringify(out,null,2));
+            console.error(out.failure);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Upload redacted discovery diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-action-discovery-e2e
+          path: artifacts/mcp-discovery/
+          if-no-files-found: warn

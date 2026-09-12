@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from .ai_language_policy import install_ai_language_policy
+from .ai_runtime_policy import install_ai_runtime_policy
+from .ai_selection_api import install_ai_selection_api
+from .ai_vault_ui import install_ai_vault_ui
+from .dashboard_activity_ux import install_dashboard_activity_ux
+from .dashboard_ai_experience import install_dashboard_ai_experience
+from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
+from .dashboard_grounded_advice import install_grounded_strategy_service
+from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
+from .dashboard_native_first_policy import install_dashboard_native_first_policy
+from .dashboard_native_ux import install_dashboard_native_ux
+from .dashboard_overview_compat import install_dashboard_overview_compat
+from .dashboard_performance import install_dashboard_performance
+from .dashboard_pro_ui import install_dashboard_pro_ui
+from .extended_onboarding import create_app as create_extended_app
+from .free_channel_dashboard import install_free_channel_dashboard
+from .free_intelligence_dashboard import install_free_intelligence_dashboard
+from .free_intelligence_service import install_free_intelligence_service
+from .free_intelligence_workspace import install_free_intelligence_workspace
+from .free_performance_service import install_free_performance_service
+from .free_playlist_optimizer_service import install_free_playlist_optimizer_dashboard, install_free_playlist_optimizer_service
+from .handoff_routes import install_handoff_routes
+from .local_ai_dashboard import install_local_ai_dashboard
+from .oauth_compat import install_oauth_compat_routes
+from .pwa import install_pwa_routes
+
+
+DASHBOARD_UI_REVISION = "professional-v1.8-native-first-no-passive-ai"
+
+
+def create_app():
+    app = create_extended_app()
+    install_ai_runtime_policy()
+    install_grounded_strategy_service()
+    install_free_intelligence_service()
+    install_free_performance_service()
+    install_free_playlist_optimizer_service()
+    install_ai_language_policy()
+    install_ai_selection_api(app)
+    install_dashboard_ai_route_guard(app)
+    install_oauth_compat_routes(app)
+    install_handoff_routes(app)
+    install_pwa_routes(app)
+    install_ai_vault_ui(app)
+    install_dashboard_pro_ui(app)
+    install_dashboard_overview_compat(app)
+    install_dashboard_ai_experience(app)
+    install_free_intelligence_dashboard(app)
+    install_free_channel_dashboard(app)
+    install_free_playlist_optimizer_dashboard(app)
+    install_free_intelligence_workspace(app)
+    install_dashboard_native_ux(app)
+    # Install performance after every dashboard route exists so the wrapper can
+    # deduplicate all expensive read surfaces without changing their contracts.
+    install_dashboard_performance(app)
+    # Browser layers are installed last so they observe the complete surface.
+    install_dashboard_activity_ux(app)
+    install_local_ai_dashboard(app)
+    install_dashboard_intelligence_terms(app)
+    # This must be the final dashboard presentation layer: merely configuring an
+    # external provider must never make passive channel reads look like AI calls.
+    install_dashboard_native_first_policy(app)
+    app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
+    return app
