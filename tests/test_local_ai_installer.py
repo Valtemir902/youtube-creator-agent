@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from scripts import yca_local_ai_setup as setup
 from src.local_ai.capability import CapabilityProfile
 from src.local_ai.manifest import MANIFEST_VERSION, model_for_profile
@@ -59,6 +61,55 @@ def test_ensure_companion_running_launches_and_waits(monkeypatch, tmp_path: Path
     monkeypatch.setattr(setup.time, "sleep", lambda seconds: None)
     setup.ensure_companion_running(executable, timeout=1)
     assert launched == [executable]
+
+
+def test_replace_installed_executable_recovers_from_running_exe_lock(monkeypatch, tmp_path: Path):
+    source = tmp_path / "YCA-Local-AI-Setup.exe"
+    destination = tmp_path / "YCA-Local-AI.exe"
+    source.write_bytes(b"new-build")
+    destination.write_bytes(b"old-running-build")
+
+    stopped = []
+    real_replace = setup.os.replace
+    calls = {"replace": 0}
+
+    def flaky_replace(src, dst):
+        calls["replace"] += 1
+        if calls["replace"] == 1:
+            raise PermissionError(13, "Permission denied", str(dst))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(setup, "_stop_existing_companion", lambda exe: stopped.append(exe))
+    monkeypatch.setattr(setup.os, "replace", flaky_replace)
+    monkeypatch.setattr(setup.time, "sleep", lambda seconds: None)
+
+    setup._replace_installed_executable(source, destination, attempts=3, retry_delay=0)
+
+    assert destination.read_bytes() == b"new-build"
+    assert calls["replace"] == 2
+    assert stopped == [destination, destination]
+    assert not destination.with_suffix(".exe.new").exists()
+
+
+def test_replace_installed_executable_keeps_old_binary_when_lock_never_clears(monkeypatch, tmp_path: Path):
+    source = tmp_path / "YCA-Local-AI-Setup.exe"
+    destination = tmp_path / "YCA-Local-AI.exe"
+    source.write_bytes(b"new-build")
+    destination.write_bytes(b"known-good-old-build")
+
+    monkeypatch.setattr(setup, "_stop_existing_companion", lambda exe: None)
+    monkeypatch.setattr(
+        setup.os,
+        "replace",
+        lambda src, dst: (_ for _ in ()).throw(PermissionError(13, "Permission denied", str(dst))),
+    )
+    monkeypatch.setattr(setup.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(RuntimeError, match="Windows manteve YCA-Local-AI.exe bloqueado"):
+        setup._replace_installed_executable(source, destination, attempts=2, retry_delay=0)
+
+    assert destination.read_bytes() == b"known-good-old-build"
+    assert not destination.with_suffix(".exe.new").exists()
 
 
 def test_windows_release_workflow_requires_signed_tag_and_does_not_publish_on_branch_push():
