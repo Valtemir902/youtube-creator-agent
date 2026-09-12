@@ -23,7 +23,7 @@ def _desktop_self_test() -> int:
         from PySide6.QtWidgets import QApplication, QWidget
         from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript  # noqa: F401
         from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-        from desktop_native_runtime import start_native_server
+        from desktop_native_runtime import desktop_fetch_bootstrap, start_native_server
         from desktop_web_shell import DEFAULT_DASHBOARD_URL, dashboard_url
 
         app = QApplication.instance() or QApplication([])
@@ -43,6 +43,11 @@ def _desktop_self_test() -> int:
                     native_health = json.loads(response.read().decode("utf-8"))
                 if not native_health.get("ok") or native_health.get("external_ai_used") is not False:
                     raise RuntimeError(f"native runtime inválido: {native_health}")
+                bootstrap = desktop_fetch_bootstrap(native_base)
+                if "refreshAll()" in bootstrap:
+                    raise RuntimeError("desktop bootstrap contém refresh recursivo proibido")
+                if "8000" not in bootstrap or "yca:desktop-cache-updated" not in bootstrap:
+                    raise RuntimeError("desktop bootstrap não contém timeout/refresh guard esperado")
             finally:
                 native_server.shutdown()
                 native_server.server_close()
@@ -58,7 +63,8 @@ def _desktop_self_test() -> int:
             "qt_webengine": True,
             "desktop_native_python": True,
             "desktop_native_cache": True,
-            "desktop_remote_read_timeout_seconds": 12,
+            "desktop_remote_read_timeout_seconds": 8,
+            "desktop_refresh_loop_guard": True,
             "external_ai_called": False,
             "youtube_write_actions_executed": False,
         }
