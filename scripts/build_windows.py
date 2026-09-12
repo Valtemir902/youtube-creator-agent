@@ -74,10 +74,10 @@ def qt_preflight() -> dict[str, str | bool]:
         "import json, PySide6, shiboken6; "
         "from PySide6.QtCore import qVersion; "
         "from PySide6.QtWidgets import QApplication, QWidget; "
-        "from PySide6.QtWebEngineCore import QWebEngineProfile; "
+        "from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript; "
         "from PySide6.QtWebEngineWidgets import QWebEngineView; "
         "app=QApplication([]); w=QWidget(); w.close(); "
-        "print(json.dumps({'qt':qVersion(),'pyside':PySide6.__version__,'shiboken':shiboken6.__version__,'webengine':True}))"
+        "print(json.dumps({'qt':qVersion(),'pyside':PySide6.__version__,'shiboken':shiboken6.__version__,'webengine':True,'webengine_script':True}))"
     )
     env = os.environ.copy()
     env["QT_QPA_PLATFORM"] = "offscreen"
@@ -127,7 +127,14 @@ def smoke_test(exe: Path) -> tuple[float, dict[str, object]]:
         raise SystemExit(f"Build tentou publicar interface desktop legada: {payload}")
     if payload.get("qt_webengine") is not True:
         raise SystemExit(f"Qt WebEngine nao foi validado no EXE: {payload}")
-    print(f"EXE smoke test OK em {elapsed_ms:.0f} ms, UI={payload.get('desktop_ui')}")
+    if payload.get("desktop_native_python") is not True or payload.get("desktop_native_cache") is not True:
+        raise SystemExit(f"Motor Python local/cache nao foi validado no EXE: {payload}")
+    if payload.get("external_ai_called") is not False or payload.get("youtube_write_actions_executed") is not False:
+        raise SystemExit(f"Self-test violou politica passiva de seguranca: {payload}")
+    print(
+        f"EXE smoke test OK em {elapsed_ms:.0f} ms, UI={payload.get('desktop_ui')}, "
+        "motor=python_native_cache"
+    )
     return elapsed_ms, payload
 
 
@@ -167,6 +174,9 @@ def main() -> int:
         "smoke_test_ms": round(smoke_ms, 2),
         "desktop_ui": smoke_payload.get("desktop_ui"),
         "dashboard_url": smoke_payload.get("dashboard_url"),
+        "desktop_native_python": smoke_payload.get("desktop_native_python"),
+        "desktop_native_cache": smoke_payload.get("desktop_native_cache"),
+        "desktop_remote_read_timeout_seconds": smoke_payload.get("desktop_remote_read_timeout_seconds"),
         "qt": qt,
         "authenticode_signed": authenticode_status(ARTIFACT),
         "external_ai_called": False,
@@ -176,6 +186,7 @@ def main() -> int:
     print(f"\nARTEFATO OFICIAL: {ARTIFACT}")
     print(f"SHA256: {digest}")
     print("UI OFICIAL: modern_production_dashboard")
+    print("MOTOR LOCAL: python_native_cache")
     print("Somente este arquivo em artifacts/windows/ deve ser usado para teste.")
     return 0
 
