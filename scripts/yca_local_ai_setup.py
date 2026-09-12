@@ -251,12 +251,85 @@ def pull_model(ollama: Path, model: str, *, estimated_download_mb: int | None = 
     print()
 
 
+def _stop_existing_companion(executable: Path) -> None:
+    """Stop only the previously installed companion before replacing its EXE.
+
+    Windows locks a running executable. Older YCA installers left
+    YCA-Local-AI.exe running while a repair attempted shutil.copy2 over the
+    same path, which raises PermissionError [Errno 13]. Match the executable
+    path first and keep taskkill as a same-image fallback for legacy builds.
+    """
+    if os.name != "nt" or not executable.exists():
+        return
+
+    escaped = str(executable.resolve()).replace("'", "''")
+    command = (
+        "$target=[IO.Path]::GetFullPath('"
+        + escaped
+        + "'); "
+        + "Get-CimInstance Win32_Process | Where-Object { "
+        + "$_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $target, "
+        + "[StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { "
+        + "Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    subprocess.run(
+        ["taskkill", "/F", "/IM", executable.name],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def _replace_installed_executable(
+    source: Path,
+    destination: Path,
+    *,
+    attempts: int = 20,
+    retry_delay: float = 0.25,
+) -> None:
+    """Stage the new executable and atomically replace the old companion.
+
+    The staging file ensures a failed repair never truncates the working EXE.
+    Retrying also covers the short period where Windows/antivirus still owns a
+    file handle after the previous process exits.
+    """
+    staged = destination.with_suffix(destination.suffix + ".new")
+    staged.unlink(missing_ok=True)
+    shutil.copy2(source, staged)
+    last_error: PermissionError | None = None
+
+    try:
+        for _ in range(max(1, attempts)):
+            _stop_existing_companion(destination)
+            try:
+                os.replace(staged, destination)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(max(0.0, retry_delay))
+    finally:
+        staged.unlink(missing_ok=True)
+
+    raise RuntimeError(
+        "Não foi possível atualizar o companion local porque o Windows manteve "
+        "YCA-Local-AI.exe bloqueado. Feche o companion e execute Instalar / Reparar novamente."
+    ) from last_error
+
+
 def installed_executable() -> Path:
     destination = app_dir() / "YCA-Local-AI.exe"
     source = Path(sys.executable if getattr(sys, "frozen", False) else __file__)
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.resolve() != destination.resolve():
-        shutil.copy2(source, destination)
+        _replace_installed_executable(source, destination)
     return destination
 
 
