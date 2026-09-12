@@ -74,10 +74,9 @@ def qt_preflight() -> dict[str, str | bool]:
         "import json, PySide6, shiboken6; "
         "from PySide6.QtCore import qVersion; "
         "from PySide6.QtWidgets import QApplication, QWidget; "
-        "from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript; "
         "from PySide6.QtWebEngineWidgets import QWebEngineView; "
         "app=QApplication([]); w=QWidget(); w.close(); "
-        "print(json.dumps({'qt':qVersion(),'pyside':PySide6.__version__,'shiboken':shiboken6.__version__,'webengine':True,'webengine_script':True}))"
+        "print(json.dumps({'qt':qVersion(),'pyside':PySide6.__version__,'shiboken':shiboken6.__version__,'webengine':True}))"
     )
     env = os.environ.copy()
     env["QT_QPA_PLATFORM"] = "offscreen"
@@ -95,11 +94,8 @@ def build_exe() -> Path:
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     run([
-        str(PY), "-m", "PyInstaller",
-        "--noconfirm", "--clean",
-        "--distpath", str(DIST_DIR),
-        "--workpath", str(WORK_DIR),
-        str(SPEC),
+        str(PY), "-m", "PyInstaller", "--noconfirm", "--clean",
+        "--distpath", str(DIST_DIR), "--workpath", str(WORK_DIR), str(SPEC),
     ], timeout=3600)
     exe = DIST_DIR / "YouTube-Creator-Agent-Elite.exe"
     if not exe.is_file() or exe.stat().st_size < 1_000_000:
@@ -123,17 +119,29 @@ def smoke_test(exe: Path) -> tuple[float, dict[str, object]]:
         payload = json.loads(lines[-1])
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Payload do self-test invalido: {lines[-1]}") from exc
-    if payload.get("desktop_ui") != "modern_production_dashboard":
-        raise SystemExit(f"Build tentou publicar interface desktop legada: {payload}")
-    if payload.get("qt_webengine") is not True:
-        raise SystemExit(f"Qt WebEngine nao foi validado no EXE: {payload}")
-    if payload.get("desktop_native_python") is not True or payload.get("desktop_native_cache") is not True:
-        raise SystemExit(f"Motor Python local/cache nao foi validado no EXE: {payload}")
+    required_true = {
+        "desktop_local_first",
+        "youtube_oauth_local",
+        "qt_webengine",
+        "native_python_engine",
+        "local_fact_cache",
+    }
+    if payload.get("desktop_ui") != "professional_local_dashboard":
+        raise SystemExit(f"Build nao empacotou o dashboard profissional local: {payload}")
+    for field in required_true:
+        if payload.get(field) is not True:
+            raise SystemExit(f"Self-test local-first falhou em {field}: {payload}")
+    if payload.get("cloud_session_required") is not False:
+        raise SystemExit(f"EXE ainda depende de sessao cloud: {payload}")
+    if payload.get("youtube_api_transport") != "direct_from_pc":
+        raise SystemExit(f"YouTube nao esta ligado diretamente ao PC: {payload}")
+    if payload.get("local_ai_provider") != "ollama":
+        raise SystemExit(f"IA local nao foi validada: {payload}")
     if payload.get("external_ai_called") is not False or payload.get("youtube_write_actions_executed") is not False:
         raise SystemExit(f"Self-test violou politica passiva de seguranca: {payload}")
     print(
         f"EXE smoke test OK em {elapsed_ms:.0f} ms, UI={payload.get('desktop_ui')}, "
-        "motor=python_native_cache"
+        "motor=python_local_first, IA=ollama, cloud_session=false"
     )
     return elapsed_ms, payload
 
@@ -173,10 +181,13 @@ def main() -> int:
         "smoke_test": True,
         "smoke_test_ms": round(smoke_ms, 2),
         "desktop_ui": smoke_payload.get("desktop_ui"),
-        "dashboard_url": smoke_payload.get("dashboard_url"),
-        "desktop_native_python": smoke_payload.get("desktop_native_python"),
-        "desktop_native_cache": smoke_payload.get("desktop_native_cache"),
-        "desktop_remote_read_timeout_seconds": smoke_payload.get("desktop_remote_read_timeout_seconds"),
+        "desktop_local_first": smoke_payload.get("desktop_local_first"),
+        "cloud_session_required": smoke_payload.get("cloud_session_required"),
+        "youtube_oauth_local": smoke_payload.get("youtube_oauth_local"),
+        "youtube_api_transport": smoke_payload.get("youtube_api_transport"),
+        "native_python_engine": smoke_payload.get("native_python_engine"),
+        "local_ai_provider": smoke_payload.get("local_ai_provider"),
+        "local_fact_cache": smoke_payload.get("local_fact_cache"),
         "qt": qt,
         "authenticode_signed": authenticode_status(ARTIFACT),
         "external_ai_called": False,
@@ -185,8 +196,10 @@ def main() -> int:
     REPORT_FILE.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"\nARTEFATO OFICIAL: {ARTIFACT}")
     print(f"SHA256: {digest}")
-    print("UI OFICIAL: modern_production_dashboard")
-    print("MOTOR LOCAL: python_native_cache")
+    print("UI OFICIAL: professional_local_dashboard")
+    print("MOTOR LOCAL: python_local_first")
+    print("IA LOCAL: Ollama")
+    print("SESSAO CLOUD: nao utilizada")
     print("Somente este arquivo em artifacts/windows/ deve ser usado para teste.")
     return 0
 
