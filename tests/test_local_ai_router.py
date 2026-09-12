@@ -23,7 +23,7 @@ def test_auto_uses_local_only_when_runtime_is_ready():
     ready = decide_route(snapshot(6144), IntelligenceMode.AUTO, local_runtime_ready=True)
     assert ready.effective_mode == IntelligenceMode.LOCAL
     assert ready.model is not None
-    assert ready.model.ollama_model == "qwen2.5:3b"
+    assert ready.model.ollama_model == "qwen2.5:1.5b"
 
 
 def test_unsupported_hardware_never_forces_local():
