@@ -32,7 +32,7 @@ def test_grounded_ai_routes_install_without_replacing_existing_surface(tmp_path,
     assert "/api/dashboard/free/video/{video_id}/reach" in routes
     assert "/api/dashboard/free/video/{video_id}/retention" in routes
     assert "/api/dashboard/free/playlist/{playlist_id}/optimization" in routes
-    assert app.state.dashboard_ui_revision == "professional-v1.6-progressive-native"
+    assert app.state.dashboard_ui_revision == "professional-v1.7-adaptive-local-ai"
     assert app.state.free_intelligence_dashboard_installed is True
     assert app.state.free_channel_dashboard_installed is True
     assert app.state.free_playlist_optimizer_dashboard_installed is True
@@ -40,10 +40,8 @@ def test_grounded_ai_routes_install_without_replacing_existing_surface(tmp_path,
     assert app.state.dashboard_native_ux_installed is True
     assert app.state.dashboard_performance_installed is True
     assert app.state.dashboard_activity_ux_installed is True
+    assert app.state.local_ai_dashboard_installed is True
 
-    # Existing route contracts remain installed; the performance layer only wraps
-    # execution so expensive reads do not block the ASGI loop and successful writes
-    # invalidate cached snapshots.
     video_call = routes["/api/dashboard/video/{video_id}/ai-optimize"].dependant.call
     assert video_call.__name__.startswith("invalidate_")
     audit_call = routes["/api/dashboard/audit"].dependant.call
