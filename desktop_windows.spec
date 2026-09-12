@@ -8,14 +8,24 @@ SRC = ROOT / "src"
 datas = []
 binaries = []
 hiddenimports = [
-    "analista_metricas",
-    "publicador_youtube",
-    "tiktoken_ext.openai_public",
-    "tiktoken_ext",
+    "desktop_local_server",
+    "desktop_web_shell",
+    "desktop_native_runtime",
+    "local_ai.companion",
+    "local_ai.capability",
+    "local_ai.manifest",
+    "ai.ollama",
+    "google.auth.transport.requests",
+    "google_auth_oauthlib.flow",
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebEngineWidgets",
 ]
 
+# The desktop is a real local application. Its professional UI is shipped inside
+# the EXE and served from 127.0.0.1, not downloaded from the production VPS.
+datas += [
+    (str(SRC / "creator_service" / "web" / "dashboard.html"), "src/creator_service/web"),
+]
 datas += collect_data_files("googleapiclient")
 for package in ("imageio", "imageio-ffmpeg", "tqdm", "moviepy"):
     try:
