@@ -2,6 +2,15 @@ name: Local AI Companion
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - feat/web-dashboard-v1
+    paths:
+      - 'src/local_ai/**'
+      - 'src/creator_service/local_ai_dashboard.py'
+      - 'scripts/yca_local_ai_setup.py'
+      - 'tests/test_local_ai_*.py'
+      - '.github/workflows/local-ai-companion.yml'
   push:
     branches:
       - feat/web-dashboard-v1
@@ -68,7 +77,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish stable local AI release
-        if: github.ref == 'refs/heads/feat/web-dashboard-v1' || startsWith(github.ref, 'refs/tags/local-ai-v')
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/feat/web-dashboard-v1' || startsWith(github.ref, 'refs/tags/local-ai-v'))
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
