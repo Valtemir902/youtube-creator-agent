@@ -21,6 +21,14 @@ def test_dashboard_uses_loopback_bridge_and_bearer_auth():
     assert "Bearer ${token()}" in _SCRIPT
 
 
+def test_dashboard_polls_safe_install_progress_and_shows_model_size():
+    assert "/v1/install-status" in _SCRIPT
+    assert "state.install?.status==='running'" in _SCRIPT
+    assert "estimated_download_mb" in _SCRIPT
+    assert "Instalando" in _SCRIPT
+    assert "local-ai-progress-fill" in _SCRIPT
+
+
 def test_local_ai_is_grounded_on_native_evidence():
     assert "EVIDÊNCIAS NATIVAS" in _SCRIPT
     assert "Use SOMENTE os fatos" in _SCRIPT

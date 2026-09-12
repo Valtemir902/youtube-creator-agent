@@ -10,7 +10,7 @@ from typing import Any
 from urllib import request as urlrequest
 
 from .capability import classify_hardware, probe_hardware
-from .manifest import model_for_profile
+from .manifest import MANIFEST_VERSION, model_for_profile
 
 
 DEFAULT_PORT = 17823
@@ -35,6 +35,34 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     return json.loads(config_path.read_text(encoding="utf-8"))
 
 
+def load_install_state(path: Path | None = None) -> dict[str, Any]:
+    state_path = path or default_config_dir() / "install-state.json"
+    if not state_path.exists():
+        return {}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def public_install_status() -> dict[str, Any]:
+    state = load_install_state()
+    allowed = {
+        "stage",
+        "status",
+        "percent",
+        "detail",
+        "model",
+        "estimated_download_mb",
+        "updated_at",
+    }
+    public = {key: state.get(key) for key in allowed if key in state}
+    public["ok"] = True
+    public["service"] = "yca-local-ai"
+    return public
+
+
 def save_config(config: dict[str, Any], path: Path | None = None) -> Path:
     config_path = path or default_config_dir() / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +83,7 @@ def ensure_config() -> dict[str, Any]:
         "model": model.ollama_model if model else None,
         "port": DEFAULT_PORT,
         "origins": sorted(DEFAULT_ORIGINS),
+        "manifest_version": MANIFEST_VERSION,
         "created_at": int(time.time()),
     }
     save_config(config)
@@ -91,20 +120,33 @@ def local_status(config: dict[str, Any]) -> dict[str, Any]:
         pass
     model_name = config.get("model") or (selected.ollama_model if selected else None)
     model_ready = bool(model_name and any(name == model_name or name.startswith(f"{model_name}:") for name in installed_models))
+    repair_reasons: list[str] = []
+    if selected is not None and not ollama_ok:
+        repair_reasons.append("runtime_unavailable")
+    if selected is not None and ollama_ok and not model_ready:
+        repair_reasons.append("model_missing")
+    install_state = load_install_state()
     return {
         "ok": True,
         "service": "yca-local-ai",
+        "manifest_version": MANIFEST_VERSION,
         "profile": profile.value,
         "supported": selected is not None,
         "model": model_name,
+        "model_display_name": selected.display_name if selected else None,
+        "model_estimated_download_mb": selected.estimated_download_mb if selected else None,
+        "model_recommended_free_disk_mb": selected.recommended_free_disk_mb if selected else None,
         "model_ready": model_ready,
         "ollama_ready": ollama_ok,
+        "repair_needed": bool(repair_reasons),
+        "repair_reasons": repair_reasons,
+        "install_state": install_state,
         "hardware": snapshot.to_dict(),
     }
 
 
 class CompanionHandler(BaseHTTPRequestHandler):
-    server_version = "YCA-LocalAI/1.0"
+    server_version = "YCA-LocalAI/1.1"
 
     @property
     def config(self) -> dict[str, Any]:
@@ -151,6 +193,9 @@ class CompanionHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/health":
             self._send(200, {"ok": True, "service": "yca-local-ai"})
+            return
+        if self.path == "/v1/install-status":
+            self._send(200, public_install_status())
             return
         if not self._authorized():
             self._send(401, {"ok": False, "error": "unauthorized"})
