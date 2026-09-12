@@ -21,17 +21,23 @@ def test_no_supported_gpu_falls_back_to_native():
 
 def test_two_gb_gpu_selects_lite_when_system_ram_is_sufficient():
     assert classify_hardware(hw(vram=2048, ram=8192, cpu=4)) == CapabilityProfile.LOCAL_LITE
-    assert model_for_profile(CapabilityProfile.LOCAL_LITE).ollama_model == "qwen2.5:0.5b"
+    model = model_for_profile(CapabilityProfile.LOCAL_LITE)
+    assert model.ollama_model == "qwen2.5:0.5b"
+    assert model.license_name == "Apache-2.0"
 
 
 def test_rtx_3050_six_gb_classifies_as_standard():
     profile = classify_hardware(hw(vram=6144, ram=16384, cpu=8))
     assert profile == CapabilityProfile.LOCAL_STANDARD
-    assert model_for_profile(profile).ollama_model == "qwen2.5:3b"
+    model = model_for_profile(profile)
+    assert model.ollama_model == "qwen2.5:1.5b"
+    assert model.license_name == "Apache-2.0"
 
 
 def test_eight_gb_gpu_with_good_host_selects_pro():
-    assert classify_hardware(hw(vram=8192, ram=32768, cpu=12)) == CapabilityProfile.LOCAL_PRO
+    profile = classify_hardware(hw(vram=8192, ram=32768, cpu=12))
+    assert profile == CapabilityProfile.LOCAL_PRO
+    assert model_for_profile(profile).ollama_model == "qwen2.5:7b"
 
 
 def test_vram_alone_does_not_override_low_host_ram():
