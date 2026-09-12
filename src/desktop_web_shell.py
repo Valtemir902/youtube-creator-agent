@@ -1,48 +1,17 @@
 from __future__ import annotations
 
-import os
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication, QMainWindow
-from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript
+from PySide6.QtWebEngineCore import QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-from desktop_native_runtime import desktop_fetch_bootstrap, start_native_server
-
-DEFAULT_DASHBOARD_URL = "https://creator.silvadigitaltech.com/dashboard"
-APP_DATA_DIR = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "YouTubeCreatorAgent" / "Desktop"
-
-
-def dashboard_url() -> str:
-    value = (os.getenv("YCA_DESKTOP_URL") or DEFAULT_DASHBOARD_URL).strip()
-    if not value.lower().startswith("https://"):
-        raise ValueError("YCA_DESKTOP_URL deve usar HTTPS.")
-    return value
-
-
-def configure_profile() -> QWebEngineProfile:
-    APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    profile = QWebEngineProfile.defaultProfile()
-    profile.setPersistentStoragePath(str(APP_DATA_DIR / "web-storage"))
-    profile.setCachePath(str(APP_DATA_DIR / "web-cache"))
-    return profile
-
-
-def install_native_bootstrap(view: QWebEngineView, native_base: str) -> None:
-    """Inject the local Python cache before any dashboard JavaScript executes."""
-    script = QWebEngineScript()
-    script.setName("yca-desktop-native-cache-v1")
-    script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
-    script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
-    script.setRunsOnSubFrames(False)
-    script.setSourceCode(desktop_fetch_bootstrap(native_base))
-    view.page().scripts().insert(script)
+from desktop_local_server import app_data_dir, start_local_app_server
 
 
 class DesktopWindow(QMainWindow):
-    """Native Windows shell for the production dashboard with local Python acceleration."""
+    """Windows shell for the fully local Creator Agent control plane."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -50,20 +19,22 @@ class DesktopWindow(QMainWindow):
         self.resize(1440, 900)
         self.setMinimumSize(1080, 700)
 
-        configure_profile()
-        self.native_server, self.native_thread, self.native_base = start_native_server(
-            APP_DATA_DIR / "native-cache-v1.json"
-        )
+        profile_root = app_data_dir() / "web-profile"
+        profile_root.mkdir(parents=True, exist_ok=True)
+        profile = QWebEngineProfile.defaultProfile()
+        profile.setPersistentStoragePath(str(profile_root / "storage"))
+        profile.setCachePath(str(profile_root / "cache"))
 
+        self.local_server, self.local_thread, self.local_base = start_local_app_server()
         self.web = QWebEngineView(self)
-        install_native_bootstrap(self.web, self.native_base)
         self.setCentralWidget(self.web)
-        self.web.setUrl(QUrl(dashboard_url()))
+        self.web.setUrl(QUrl(self.local_base + "/dashboard"))
 
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
-            self.native_server.shutdown()
-            self.native_server.server_close()
+            self.local_server.shutdown()
+            self.local_server.server_close()
+            self.local_thread.join(timeout=3)
         finally:
             super().closeEvent(event)
 
