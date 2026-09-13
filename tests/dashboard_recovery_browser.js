@@ -70,8 +70,6 @@ function payload(path) {
   });
 
   await page.route('https://recovery.test/dashboard', route=>route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:html}));
-  // Local AI unavailable is a normal capability state. Return an offline payload
-  // without manufacturing a browser-level HTTP error that would pollute the audit.
   await page.route('http://127.0.0.1:17823/**', route=>route.fulfill({status:200,contentType:'application/json',body:'{"status":"offline","ollama_reachable":false,"model_ready":false}'}));
   await page.route('https://recovery.test/api/**', async route=>{
     const u = new URL(route.request().url());
@@ -126,8 +124,12 @@ function payload(path) {
   await page.waitForTimeout(250);
   await shot('09-configuracoes');
 
-  failPlaylists = true;
+  // Return to overview first and let any normal tab refresh settle. Only then
+  // inject one explicit playlist failure so the recovery assertion measures
+  // the card failure itself rather than navigation side effects.
   await page.evaluate(()=>setTab('overview'));
+  await page.waitForTimeout(500);
+  failPlaylists = true;
   await page.evaluate(()=>loadPlaylists());
   await page.waitForTimeout(550);
   const errorText = await page.locator('#playlistList').innerText();
