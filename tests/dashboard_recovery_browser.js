@@ -105,12 +105,15 @@ function payload(path) {
   await shot('04-kpis');
   await shot('05-playlists');
 
+  const bootCalls = calls.slice();
   const core = ['/api/dashboard/status','/api/dashboard/channel/identity','/api/dashboard/channels','/api/dashboard/capabilities','/api/dashboard/playlists','/api/dashboard/videos','/api/dashboard/channel'];
   for (const path of core) {
-    const count = calls.filter(x=>x.path===path).length;
+    const count = bootCalls.filter(x=>x.path===path).length;
     if (count !== 1) throw new Error(`${path} deveria ocorrer uma vez no boot; ocorreu ${count}.`);
   }
-  const forbiddenAuto = calls.filter(x=>/\/api\/dashboard\/(?:free|audit|evidence|strategy|research|live)(?:\/|$)/.test(x.path));
+  const aiKeyReads = bootCalls.filter(x=>x.path==='/api/ai/keys').length;
+  if (aiKeyReads !== 1) throw new Error(`/api/ai/keys deveria ocorrer uma vez no boot; ocorreu ${aiKeyReads}.`);
+  const forbiddenAuto = bootCalls.filter(x=>/\/api\/dashboard\/(?:free|audit|evidence|strategy|research|live)(?:\/|$)/.test(x.path));
   if (forbiddenAuto.length) throw new Error(`Chamadas pesadas/passivas no boot: ${forbiddenAuto.map(x=>x.path).join(', ')}`);
 
   await page.evaluate(()=>setTab('videos'));
@@ -124,9 +127,6 @@ function payload(path) {
   await page.waitForTimeout(250);
   await shot('09-configuracoes');
 
-  // Return to overview first and let any normal tab refresh settle. Only then
-  // inject one explicit playlist failure so the recovery assertion measures
-  // the card failure itself rather than navigation side effects.
   await page.evaluate(()=>setTab('overview'));
   await page.waitForTimeout(500);
   failPlaylists = true;
@@ -140,9 +140,28 @@ function payload(path) {
   await page.setViewportSize({width:390,height:844});
   failPlaylists = false;
   await page.evaluate(()=>setTab('overview'));
-  await page.waitForTimeout(100);
+  await page.evaluate(()=>loadPlaylists());
+  await page.waitForTimeout(550);
+  const mobilePlaylistText = await page.locator('#playlistList').innerText();
+  if (mobilePlaylistText.includes('Carregando')) throw new Error('Loader de playlists permaneceu após recuperação no mobile.');
+  if (!mobilePlaylistText.includes('Playlist somente leitura')) throw new Error('Playlists não se recuperaram antes do screenshot mobile.');
   const overflow = await page.evaluate(()=>document.documentElement.scrollWidth > document.documentElement.clientWidth + 2);
   if (overflow) throw new Error('Layout mobile possui overflow horizontal.');
+  const bottomNavOverlap = await page.evaluate(()=>{
+    const nav = document.querySelector('.bottom-nav,.mobile-bottom-nav,[data-bottom-nav]');
+    if (!nav) return false;
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    const navRect = nav.getBoundingClientRect();
+    const main = document.querySelector('main') || document.querySelector('.content') || document.body;
+    const children = [...main.querySelectorAll('section,.card,.panel')].filter(el=>{
+      const style=getComputedStyle(el); return style.display!=='none' && el.getBoundingClientRect().height>0;
+    });
+    const last = children[children.length-1];
+    if (!last) return false;
+    const r=last.getBoundingClientRect();
+    return r.bottom > navRect.top + 4 && r.top < navRect.bottom - 4;
+  });
+  if (bottomNavOverlap) throw new Error('Menu inferior mobile cobre conteúdo visível no fim da página.');
   await shot('11-mobile');
 
   const unexpectedHttpFailures = httpFailures.filter(x=>!(x.status===503 && x.url.includes('/api/dashboard/playlists')));
@@ -153,17 +172,20 @@ function payload(path) {
   if (pageErrors.length) throw new Error(`Erros JavaScript: ${pageErrors.join(' | ')}`);
   if (unexpectedConsoleErrors.length) throw new Error(`Erros de console inesperados: ${unexpectedConsoleErrors.join(' | ')}`);
 
-  const initialCalls = calls.slice(0, core.length);
   const report = {
     ok:true,
     revision:'professional-v1.12-single-read-boot',
-    initial_request_count:initialCalls.length,
-    initial_calls:initialCalls,
+    initial_request_count:bootCalls.length,
+    initial_calls:bootCalls,
+    core_reads:Object.fromEntries(core.map(path=>[path,bootCalls.filter(x=>x.path===path).length])),
+    ai_key_reads:aiKeyReads,
     all_calls:calls,
     expected_recoverable_http_failures:simulatedPlaylistFailures,
     console_errors:consoleErrors,
     page_errors:pageErrors,
     forbidden_auto_calls:forbiddenAuto,
+    mobile_horizontal_overflow:overflow,
+    mobile_bottom_nav_overlap:bottomNavOverlap,
   };
   fs.writeFileSync(`${out}/report.json`,JSON.stringify(report,null,2));
   await browser.close();
