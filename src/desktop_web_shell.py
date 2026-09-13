@@ -11,6 +11,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from creator_service.local_ai_dashboard import _CSS, _SCRIPT
 from desktop_local_server import app_data_dir, start_local_app_server
+from elite_v2_ui import elite_v2_webengine_source
 
 
 def _inner_tag_text(source: str, closing_tag: str) -> str:
@@ -61,6 +62,17 @@ def install_local_ai_webengine_script(web: QWebEngineView) -> None:
     _install_document_ready_script(web, "yca-local-ai-desktop", local_ai_webengine_source())
 
 
+def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
+    """Layer the V2 design system over the proven dashboard contract.
+
+    The existing DOM ids, API calls, Local AI bridge, write guards and desktop
+    control plane remain untouched. This is intentionally additive so the UI
+    can evolve without turning a visual refactor into a backend regression.
+    """
+
+    _install_document_ready_script(web, "yca-elite-v2-ui", elite_v2_webengine_source())
+
+
 class DesktopWindow(QMainWindow):
     """Windows shell for the fully local Creator Agent control plane.
 
@@ -85,6 +97,7 @@ class DesktopWindow(QMainWindow):
         self.local_server, self.local_thread, self.local_base = start_local_app_server()
         self.web = QWebEngineView(self)
         install_local_ai_webengine_script(self.web)
+        install_elite_v2_webengine_script(self.web)
         for name, source in extra_document_ready_scripts or ():
             _install_document_ready_script(self.web, name, source)
         self.setCentralWidget(self.web)
