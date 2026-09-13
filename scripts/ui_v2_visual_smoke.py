@@ -38,23 +38,64 @@ def pump(seconds: float) -> None:
         time.sleep(0.02)
 
 
+def js_value(window: DesktopWindow, source: str, timeout: float = 4.0):
+    result = {"done": False, "value": None}
+
+    def done(value) -> None:
+        result["value"] = value
+        result["done"] = True
+
+    window.web.page().runJavaScript(source, 0, done)
+    deadline = time.monotonic() + timeout
+    while not result["done"] and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.02)
+    if not result["done"]:
+        raise RuntimeError("Timeout ao validar o workspace visual via JavaScript")
+    return result["value"]
+
+
 def _tab_script(tab: str | None) -> list[tuple[str, str]]:
     if not tab:
         return []
-    # DocumentReady can run after DOMContentLoaded. Retrying against the actual
-    # nav element avoids the previous false-positive where every screenshot was
-    # silently captured on the Overview tab.
+    requested_tab = "overview" if tab == "playlists" else tab
     source = (
-        "(()=>{let attempts=0;const openTab=()=>{"
-        f"const b=document.querySelector('.nav button[data-tab=\"{tab}\"]');"
+        "(()=>{let attempts=0;const openTarget=()=>{"
+        f"const b=document.querySelector('.nav button[data-tab=\"{requested_tab}\"]');"
         "if(b){b.click();document.documentElement.dataset.v2VisualRequestedTab='"
         + tab
-        + "';return;}if(attempts++<60)setTimeout(openTab,100);};setTimeout(openTab,100);})();"
+        + "';"
+        + (
+            "setTimeout(()=>{const p=document.getElementById('playlistManager');if(p){p.scrollIntoView({block:'start'});document.documentElement.dataset.v2VisualTargetReady='playlists';}},900);"
+            if tab == "playlists"
+            else "document.documentElement.dataset.v2VisualTargetReady='tab';"
+        )
+        + "return;}if(attempts++<60)setTimeout(openTarget,100);};setTimeout(openTarget,100);})();"
     )
     return [(f"yca-v2-visual-tab-{tab}", source)]
 
 
-def capture(app: QApplication, out: Path, *, name: str, size: tuple[int, int], tab: str | None = None) -> Path:
+def _validate_visual_target(window: DesktopWindow, tab: str | None) -> dict:
+    if not tab:
+        source = "(()=>({requested:'overview',active:document.querySelector('.section.active')?.id||'',ready:true}))()"
+    elif tab == "playlists":
+        source = """(()=>{const p=document.getElementById('playlistManager');const r=p&&p.getBoundingClientRect();return {requested:'playlists',active:document.querySelector('.section.active')?.id||'',exists:!!p,visible:!!(p&&getComputedStyle(p).display!=='none'&&r&&r.bottom>0&&r.top<innerHeight),top:r?Math.round(r.top):null,ready:document.documentElement.dataset.v2VisualTargetReady||''};})()"""
+    else:
+        source = f"""(()=>({{requested:{json.dumps(tab)},active:document.querySelector('.section.active')?.id||'',ready:document.documentElement.dataset.v2VisualTargetReady||''}}))()"""
+    state = js_value(window, source)
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Estado visual inválido para {tab or 'overview'}: {state!r}")
+    if tab == "playlists":
+        if state.get("active") != "overview" or not state.get("exists") or not state.get("visible") or state.get("ready") != "playlists":
+            raise RuntimeError(f"Workspace de playlists não foi realmente aberto: {state}")
+    elif tab and (state.get("active") != tab or state.get("ready") != "tab"):
+        raise RuntimeError(f"Aba visual solicitada não está ativa: {state}")
+    elif not tab and state.get("active") != "overview":
+        raise RuntimeError(f"Visão geral não está ativa: {state}")
+    return state
+
+
+def capture(app: QApplication, out: Path, *, name: str, size: tuple[int, int], tab: str | None = None) -> tuple[Path, dict]:
     window = DesktopWindow(extra_document_ready_scripts=_tab_script(tab))
     window.setMinimumSize(0, 0)
     window.resize(*size)
@@ -71,6 +112,7 @@ def capture(app: QApplication, out: Path, *, name: str, size: tuple[int, int], t
         raise RuntimeError(f"Dashboard V2 não carregou para {name}: {loaded}")
 
     pump(2.7)
+    state = _validate_visual_target(window, tab)
     path = out / name
     if not window.grab().save(str(path)):
         window.close()
@@ -80,7 +122,7 @@ def capture(app: QApplication, out: Path, *, name: str, size: tuple[int, int], t
     app.processEvents()
     if not path.is_file() or path.stat().st_size < 20_000:
         raise RuntimeError(f"Screenshot inválido ou vazio: {path} ({path.stat().st_size if path.exists() else 0} bytes)")
-    return path
+    return path, state
 
 
 def main() -> int:
@@ -149,21 +191,24 @@ def main() -> int:
         raise RuntimeError("Design modular V2 incompleto")
 
     app = QApplication.instance() or QApplication([])
-    captures = [
-        capture(app, out, name="elite-v2-overview-desktop.png", size=(1440, 900)),
-        capture(app, out, name="elite-v2-overview-mobile.png", size=(430, 900)),
-        capture(app, out, name="elite-v2-content-hub-videos.png", size=(1440, 900), tab="videos"),
-        capture(app, out, name="elite-v2-content-hub-playlists.png", size=(1440, 900), tab="playlists"),
-        capture(app, out, name="elite-v2-growth-seo-reporting.png", size=(1440, 900), tab="strategy"),
-        capture(app, out, name="elite-v2-ai-management.png", size=(1440, 900), tab="settings"),
-        capture(app, out, name="elite-v2-activity-automation.png", size=(1440, 900), tab="audit"),
+    specs = [
+        ("elite-v2-overview-desktop.png", (1440, 900), None),
+        ("elite-v2-overview-mobile.png", (430, 900), None),
+        ("elite-v2-content-hub-videos.png", (1440, 900), "videos"),
+        ("elite-v2-content-hub-playlists.png", (1440, 900), "playlists"),
+        ("elite-v2-growth-seo-reporting.png", (1440, 900), "strategy"),
+        ("elite-v2-ai-management.png", (1440, 900), "settings"),
+        ("elite-v2-activity-automation.png", (1440, 900), "audit"),
     ]
+    results = [capture(app, out, name=name, size=size, tab=tab) for name, size, tab in specs]
+    captures = [item[0] for item in results]
+    visual_states = [item[1] for item in results]
     hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in captures]
     workspace_hashes = hashes[2:]
     if len(set(workspace_hashes)) != len(workspace_hashes):
         raise RuntimeError(
             "Prova visual inválida: duas áreas funcionais produziram screenshots idênticos; "
-            "o teste provavelmente não abriu a aba solicitada."
+            "o teste provavelmente não abriu o workspace solicitado."
         )
 
     payload = {
@@ -174,10 +219,12 @@ def main() -> int:
                 "path": str(path.relative_to(ROOT)),
                 "bytes": path.stat().st_size,
                 "sha256": digest,
+                "visual_state": state,
             }
-            for path, digest in zip(captures, hashes, strict=True)
+            for path, digest, state in zip(captures, hashes, visual_states, strict=True)
         ],
         "distinct_workspace_screenshots": len(set(workspace_hashes)),
+        "semantic_workspace_validation": True,
         "stable_dashboard_replaced": False,
         "reporting_called_at_boot": False,
         "external_ai_called_at_boot": False,
