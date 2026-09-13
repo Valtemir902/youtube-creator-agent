@@ -111,8 +111,19 @@ class EliteV2Handler(_Handler):
         if not self.runtime.connected():
             raise RuntimeError("YouTube não conectado neste computador.")
 
-    def _refresh_video_list_cache(self, client: LocalYouTubeClient) -> None:
-        self.runtime.force_read("/api/dashboard/videos?limit=30", lambda: client.videos(30))
+    def _refresh_video_list_cache_best_effort(self, client: LocalYouTubeClient) -> str | None:
+        """Refresh cache without turning a verified YouTube mutation into a fake failure.
+
+        A network/cache refresh happens *after* readback verification. If it fails,
+        the caller receives the refresh warning separately and must not retry the
+        already-verified write merely because the UI cache had a bad afternoon.
+        """
+
+        try:
+            self.runtime.force_read("/api/dashboard/videos?limit=30", lambda: client.videos(30))
+            return None
+        except Exception as exc:
+            return str(exc)[:500]
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -185,6 +196,22 @@ class EliteV2Handler(_Handler):
                     "description": current["description"] if payload.get("description") is None else str(payload.get("description")),
                     "tags": current["tags"] if payload.get("tags") is None else list(payload.get("tags") or []),
                 }
+                changed = {key: current.get(key) != proposed.get(key) for key in ("title", "description", "tags")}
+                if not any(changed.values()):
+                    self._json(
+                        HTTPStatus.OK,
+                        {
+                            "action_id": None,
+                            "current": current,
+                            "proposed": proposed,
+                            "changed": changed,
+                            "state": WriteState.PREVIEWED.value,
+                            "noop": True,
+                            "write_mode_enabled": self.write_gate.enabled,
+                            "youtube_write_performed": False,
+                        },
+                    )
+                    return
                 proposal, token = self.write_gateway.preview(
                     idempotency_key=f"metadata:{video_id}:{uuid4()}",
                     target_kind="video",
@@ -195,7 +222,6 @@ class EliteV2Handler(_Handler):
                     reversible=True,
                 )
                 self.approval_tokens[proposal.proposal_id] = token
-                changed = {key: key in proposal.diff for key in ("title", "description", "tags")}
                 self._json(
                     HTTPStatus.OK,
                     {
@@ -235,13 +261,14 @@ class EliteV2Handler(_Handler):
                 client = LocalYouTubeClient()
                 adapter = YouTubeVideoMetadataAdapter(client)
                 result = self.write_gateway.apply(action_id, adapter)
-                self._refresh_video_list_cache(client)
+                cache_refresh_error = self._refresh_video_list_cache_best_effort(client)
                 self._json(
                     HTTPStatus.OK,
                     {
                         "ok": True,
                         "state": result.state.value,
                         "readback_verified": result.state is WriteState.VERIFIED,
+                        "cache_refresh_error": cache_refresh_error,
                         "rollback_preview": {
                             "action_id": result.proposal_id,
                             "current": result.proposed,
@@ -263,15 +290,19 @@ class EliteV2Handler(_Handler):
                 if payload.get("confirmed") is not True:
                     raise ApprovalError("confirmação explícita ausente")
                 action_id = path.rsplit("/", 1)[-1]
+                proposal = self.write_gateway.get(action_id)
+                if proposal.state is not WriteState.VERIFIED:
+                    raise ApprovalError("rollback só é liberado para uma alteração previamente verificada")
                 client = LocalYouTubeClient()
                 adapter = YouTubeVideoMetadataAdapter(client)
                 result = self.write_gateway.rollback(action_id, adapter)
-                self._refresh_video_list_cache(client)
+                cache_refresh_error = self._refresh_video_list_cache_best_effort(client)
                 self._json(
                     HTTPStatus.OK,
                     {
                         "ok": True,
                         "state": result.state.value,
+                        "cache_refresh_error": cache_refresh_error,
                         "youtube_write_actions_executed": adapter.writes_performed,
                     },
                 )
