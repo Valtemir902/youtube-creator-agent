@@ -99,6 +99,8 @@ class SafeWriteGateway:
     This class is transport-agnostic. Nothing in it knows how to write to
     YouTube. A concrete adapter must be supplied explicitly, which keeps the
     desktop product from accidentally turning a UI button into a network write.
+    High-risk non-delete actions may also demand a target-specific confirmation
+    phrase supplied at preview time.
     """
 
     def __init__(self) -> None:
@@ -129,6 +131,7 @@ class SafeWriteGateway:
         current: dict[str, Any] | None,
         proposed: dict[str, Any] | None,
         reversible: bool = True,
+        confirmation_phrase: str | None = None,
     ) -> tuple[WriteProposal, str]:
         if not idempotency_key.strip():
             raise ValueError("idempotency_key é obrigatório")
@@ -144,8 +147,10 @@ class SafeWriteGateway:
         if op == "delete":
             reversible = False
             confirmation_phrase = f"EXCLUIR {target_kind.upper()} {target_id}"
-        else:
-            confirmation_phrase = None
+        elif confirmation_phrase is not None:
+            confirmation_phrase = " ".join(str(confirmation_phrase).strip().split())
+            if not confirmation_phrase:
+                raise ValueError("confirmation_phrase não pode ser vazia")
         token = secrets.token_urlsafe(32)
         proposal = WriteProposal(
             proposal_id=str(uuid4()),
@@ -164,7 +169,7 @@ class SafeWriteGateway:
         )
         self._proposals[proposal.proposal_id] = proposal
         self._by_idempotency[idempotency_key] = proposal.proposal_id
-        self._event(proposal, "preview_created", reversible=reversible)
+        self._event(proposal, "preview_created", reversible=reversible, confirmation_required=bool(confirmation_phrase))
         return proposal, token
 
     def get(self, proposal_id: str) -> WriteProposal:
@@ -181,9 +186,9 @@ class SafeWriteGateway:
         if not hmac.compare_digest(digest, proposal._approval_digest):
             raise ApprovalError("approval_token inválido")
         if proposal.confirmation_phrase and confirmation_text != proposal.confirmation_phrase:
-            raise ApprovalError("confirmação destrutiva não corresponde ao alvo exato")
+            raise ApprovalError("confirmação destrutiva ou de alto risco não corresponde ao alvo exato")
         proposal.state = WriteState.APPROVED
-        self._event(proposal, "approved", destructive=proposal.operation == "delete")
+        self._event(proposal, "approved", destructive=proposal.operation == "delete", high_risk=bool(proposal.confirmation_phrase))
         return proposal
 
     def apply(self, proposal_id: str, adapter: WriteAdapter) -> WriteProposal:
