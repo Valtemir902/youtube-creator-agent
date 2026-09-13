@@ -6,6 +6,8 @@ on:
     paths:
       - 'src/elite_v2_ui.py'
       - 'src/elite_v2_content_hub.py'
+      - 'src/elite_v2_growth.py'
+      - 'src/elite_v2_analytics.py'
       - 'src/desktop_web_shell.py'
       - 'src/desktop_local_server.py'
       - 'src/creator_service/web/dashboard.html'
@@ -57,7 +59,7 @@ jobs:
           if ($result.ui_version -ne 'elite-v2') { throw "Versão visual inesperada: $($result.ui_version)" }
           if ($result.stable_dashboard_replaced) { throw 'O teste detectou substituição indevida do dashboard estável' }
           if ($result.youtube_write_actions_executed) { throw 'Teste visual executou escrita no YouTube' }
-          if (-not $result.screenshots -or $result.screenshots.Count -lt 4) { throw 'Conjunto de screenshots V2 incompleto' }
+          if (-not $result.screenshots -or $result.screenshots.Count -lt 5) { throw 'Conjunto de screenshots V2 incompleto' }
           foreach ($shot in $result.screenshots) {
             if ([int64]$shot.bytes -lt 20000) { throw "Screenshot visual vazio ou inválido: $($shot.path)" }
           }
