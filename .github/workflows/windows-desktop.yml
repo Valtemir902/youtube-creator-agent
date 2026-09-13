@@ -47,6 +47,22 @@ jobs:
           }
           Write-Host "EXE GUI self-test OK. ExitCode=$($process.ExitCode) SHA256=$actual"
 
+      - name: Verify Local AI becomes active inside packaged EXE
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $exe = (Resolve-Path 'artifacts/windows/YouTube-Creator-Agent-Elite.exe').Path
+          & $exe --local-ai-ui-self-test | Tee-Object -FilePath artifacts/windows/local-ai-ui-e2e.json
+          if ($LASTEXITCODE -ne 0) { throw "Local AI UI E2E falhou com exit code $LASTEXITCODE" }
+          $result = Get-Content artifacts/windows/local-ai-ui-e2e.json -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Local AI UI E2E não retornou ok=true' }
+          if ($result.ui_status -ne 'Ativa neste dispositivo') { throw "Estado inesperado da IA Local: $($result.ui_status)" }
+          if (-not $result.paired -or -not $result.capabilities_ready) { throw 'Pareamento/capabilities da IA Local não ficaram prontos' }
+          if ($result.local_chat -ne 'LOCAL_AI_E2E_OK') { throw "Chat local não atravessou a interface: $($result.local_chat)" }
+          if ($result.youtube_write_actions_executed) { throw 'Teste de IA Local executou escrita no YouTube' }
+          Write-Host 'Local AI UI E2E OK: aguardando -> ativa -> chat local respondeu.'
+
       - name: Upload verified Windows artifact
         uses: actions/upload-artifact@v4
         with:
