@@ -12,6 +12,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from creator_service.local_ai_dashboard import _CSS, _SCRIPT
 from desktop_local_server import app_data_dir
 from elite_v2_activity_ui import activity_ui_webengine_source
+from elite_v2_ai_execution_ui import ai_execution_ui_webengine_source
 from elite_v2_ai_workspace import ai_workspace_webengine_source
 from elite_v2_content_hub import content_hub_webengine_source
 from elite_v2_final_server import start_elite_v2_final_server
@@ -77,6 +78,7 @@ def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
     _install_document_ready_script(web, "yca-elite-v2-reach", reach_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-seo", seo_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-ai-workspace", ai_workspace_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-ai-execution", ai_execution_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-write-ui", write_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-management-ui", management_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-activity", activity_ui_webengine_source())
