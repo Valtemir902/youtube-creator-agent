@@ -10,8 +10,10 @@ from PySide6.QtWebEngineCore import QWebEngineProfile, QWebEngineScript
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from creator_service.local_ai_dashboard import _CSS, _SCRIPT
-from desktop_local_server import app_data_dir, start_local_app_server
+from desktop_local_server import app_data_dir
+from elite_v2_analytics import start_elite_v2_local_app_server
 from elite_v2_content_hub import content_hub_webengine_source
+from elite_v2_growth import growth_webengine_source
 from elite_v2_ui import elite_v2_webengine_source
 
 
@@ -73,6 +75,7 @@ def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
 
     _install_document_ready_script(web, "yca-elite-v2-ui", elite_v2_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-content-hub", content_hub_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-growth", growth_webengine_source())
 
 
 class DesktopWindow(QMainWindow):
@@ -96,7 +99,7 @@ class DesktopWindow(QMainWindow):
         profile.setPersistentStoragePath(str(profile_root / "storage"))
         profile.setCachePath(str(profile_root / "cache"))
 
-        self.local_server, self.local_thread, self.local_base = start_local_app_server()
+        self.local_server, self.local_thread, self.local_base = start_elite_v2_local_app_server()
         self.web = QWebEngineView(self)
         install_local_ai_webengine_script(self.web)
         install_elite_v2_webengine_script(self.web)
