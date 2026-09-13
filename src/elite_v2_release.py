@@ -5,7 +5,8 @@ from __future__ import annotations
 # screenshots, Local AI regression, and the packaged Windows EXE smoke at the
 # same commit so evidence cannot be mixed across different heads.
 ELITE_V2_RELEASE = {
-    "version": "2.0.0-rc1",
+    "version": "2.0.0-rc2",
+    "certification": "final_candidate",
     "desktop_mode": "local_first",
     "ui": "professional_cards_images_real_charts",
     "content_hub": True,
@@ -34,5 +35,6 @@ ELITE_V2_RELEASE = {
     "external_ai_at_boot": False,
     "youtube_write_at_boot": False,
     "local_ai_required_semantic_state": "Ativa neste dispositivo",
+    "semantic_visual_validation": True,
     "stable_dashboard_replaced": False,
 }
