@@ -1,0 +1,63 @@
+name: Dashboard Recovery Browser
+
+on:
+  push:
+    branches: ["fix/dashboard-recovery-20260913"]
+  pull_request:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - "src/creator_service/**"
+      - "tests/dashboard_recovery_browser.js"
+      - "tests/render_recovery_dashboard.py"
+      - ".github/workflows/dashboard-recovery-browser.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  browser-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install dashboard runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "cryptography>=45,<51" \
+            "fastapi>=0.116,<1" \
+            "httpx>=0.28,<1" \
+            "requests>=2.32,<3" \
+            "google-api-python-client>=2.140,<3" \
+            "google-auth>=2.34,<3" \
+            "google-auth-oauthlib>=1.2,<2" \
+            "google-genai>=1.46,<2" \
+            "mcp>=2.0,<3"
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Render exact composed dashboard
+        env:
+          PYTHONPATH: src
+        run: python tests/render_recovery_dashboard.py
+
+      - name: Run desktop and mobile browser recovery audit
+        run: node tests/dashboard_recovery_browser.js
+
+      - name: Upload screenshots and request report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-recovery-browser-artifacts
+          path: artifacts/recovery-browser/
+          if-no-files-found: error
