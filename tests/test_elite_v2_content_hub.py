@@ -7,7 +7,7 @@ def test_content_hub_is_visual_read_only_extension() -> None:
     source = content_hub_webengine_source()
     for token in (
         "data-v2-content-tools",
-        "data-v2-content-guide",
+        "v2ContentGuide",
         "data-v2-video-search",
         "data-v2-video-privacy",
         "Cards visuais",
