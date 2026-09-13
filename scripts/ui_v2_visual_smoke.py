@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -157,14 +158,26 @@ def main() -> int:
         capture(app, out, name="elite-v2-ai-management.png", size=(1440, 900), tab="settings"),
         capture(app, out, name="elite-v2-activity-automation.png", size=(1440, 900), tab="audit"),
     ]
+    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in captures]
+    workspace_hashes = hashes[2:]
+    if len(set(workspace_hashes)) != len(workspace_hashes):
+        raise RuntimeError(
+            "Prova visual inválida: duas áreas funcionais produziram screenshots idênticos; "
+            "o teste provavelmente não abriu a aba solicitada."
+        )
 
     payload = {
         "ok": True,
         "ui_version": "elite-v2",
         "screenshots": [
-            {"path": str(path.relative_to(ROOT)), "bytes": path.stat().st_size}
-            for path in captures
+            {
+                "path": str(path.relative_to(ROOT)),
+                "bytes": path.stat().st_size,
+                "sha256": digest,
+            }
+            for path, digest in zip(captures, hashes, strict=True)
         ],
+        "distinct_workspace_screenshots": len(set(workspace_hashes)),
         "stable_dashboard_replaced": False,
         "reporting_called_at_boot": False,
         "external_ai_called_at_boot": False,
