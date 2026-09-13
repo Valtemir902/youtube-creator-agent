@@ -18,6 +18,11 @@ from elite_v2_growth import growth_webengine_source
 from elite_v2_ui import elite_v2_webengine_source
 from elite_v2_write_ui import write_ui_webengine_source
 
+# Keep the proven local-first shell contract name stable while the V2 server
+# extends it with additive routes. Tests and callers that assert localhost boot
+# should not need to care which additive server version owns the same contract.
+start_local_app_server = start_elite_v2_local_app_server
+
 
 def _inner_tag_text(source: str, closing_tag: str) -> str:
     start = source.find(">")
@@ -28,14 +33,7 @@ def _inner_tag_text(source: str, closing_tag: str) -> str:
 
 
 def local_ai_webengine_source() -> str:
-    """Build the Local AI UI bootstrap injected only into the local desktop page.
-
-    The dashboard HTML remains the same local-first asset used by the desktop
-    server. Qt injects the Local AI presentation/bridge in the main JS world so
-    the page can pair with the loopback companion without any cloud shell.
-    Headless Windows E2E runs use an explicit software-rendering environment in
-    GitHub Actions; normal desktop users keep the native Qt/WebEngine defaults.
-    """
+    """Build the Local AI UI bootstrap injected only into the local desktop page."""
 
     css = _inner_tag_text(_CSS, "</style>")
     script = _inner_tag_text(_SCRIPT, "</script>")
@@ -68,12 +66,7 @@ def install_local_ai_webengine_script(web: QWebEngineView) -> None:
 
 
 def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
-    """Layer V2 modules over the proven dashboard contract.
-
-    Existing DOM ids, stable API calls, Local AI bridge and write guards remain
-    intact. Each module has an isolated contract so visual evolution cannot
-    quietly mutate the YouTube control plane.
-    """
+    """Layer V2 modules over the proven dashboard contract."""
 
     _install_document_ready_script(web, "yca-elite-v2-ui", elite_v2_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-content-hub", content_hub_webengine_source())
@@ -83,13 +76,7 @@ def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
 
 
 class DesktopWindow(QMainWindow):
-    """Windows shell for the fully local Creator Agent control plane.
-
-    ``extra_document_ready_scripts`` exists for diagnostics/E2E only. Production
-    callers omit it, preserving the exact runtime behavior. The hook lets tests
-    observe the browser from inside Chromium instead of calling runJavaScript
-    back through PySide, which has proved unstable on Windows headless runners.
-    """
+    """Windows shell for the fully local Creator Agent control plane."""
 
     def __init__(self, extra_document_ready_scripts: Iterable[tuple[str, str]] | None = None) -> None:
         super().__init__()
@@ -103,7 +90,7 @@ class DesktopWindow(QMainWindow):
         profile.setPersistentStoragePath(str(profile_root / "storage"))
         profile.setCachePath(str(profile_root / "cache"))
 
-        self.local_server, self.local_thread, self.local_base = start_elite_v2_local_app_server()
+        self.local_server, self.local_thread, self.local_base = start_local_app_server()
         self.web = QWebEngineView(self)
         install_local_ai_webengine_script(self.web)
         install_elite_v2_webengine_script(self.web)
