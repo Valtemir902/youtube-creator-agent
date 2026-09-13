@@ -15,6 +15,7 @@ from elite_v2_activity_ui import activity_ui_webengine_source
 from elite_v2_ai_workspace import ai_workspace_webengine_source
 from elite_v2_content_hub import content_hub_webengine_source
 from elite_v2_growth import growth_webengine_source
+from elite_v2_management_ui import management_ui_webengine_source
 from elite_v2_reach_ui import reach_ui_webengine_source
 from elite_v2_seo_ui import seo_ui_webengine_source
 from elite_v2_server import start_elite_v2_product_server
@@ -77,6 +78,7 @@ def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
     _install_document_ready_script(web, "yca-elite-v2-seo", seo_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-ai-workspace", ai_workspace_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-write-ui", write_ui_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-management-ui", management_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-activity", activity_ui_webengine_source())
 
 
