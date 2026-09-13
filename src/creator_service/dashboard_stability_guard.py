@@ -82,12 +82,16 @@ _SESSION_REDIRECT_OLD = "if(r.status===401){location.href='/onboarding/session-e
 _SESSION_REDIRECT_NEW = "if(r.status===401){if(!window.__ycaSessionRedirecting){window.__ycaSessionRedirecting=true;setTimeout(()=>location.replace('/onboarding/session-expired'),0)}throw new Error('Sessão expirada')}"
 _CONNECTION_LABEL_OLD = "if(label)label.textContent=s.youtube_connected?'Conectado':'Desconectado';"
 _CONNECTION_LABEL_NEW = "if(label)label.textContent=s.youtube_connected?'Credencial disponível':'Desconectado';"
+_LEGACY_AI_VAULT_AUTOLOAD = "setTimeout(loadAiKeyPool,150);"
 
 
 def _apply_fast_boot_policy(source: str) -> str:
-    """Remove passive heavy boot work while keeping user-triggered refresh intact."""
+    """Remove passive duplicate/heavy boot work while preserving explicit actions."""
     source = source.replace(_SESSION_REDIRECT_OLD, _SESSION_REDIRECT_NEW, 1)
     source = source.replace(_CONNECTION_LABEL_OLD, _CONNECTION_LABEL_NEW, 1)
+    # AI vault v2 owns its own bounded initial read. The legacy injected manager
+    # remains available for explicit controls but must not perform a second GET.
+    source = source.replace(_LEGACY_AI_VAULT_AUTOLOAD, "", 1)
     marker = "refreshAll();\n</script>"
     if marker in source:
         source = source.replace(marker, _FAST_BOOT + "\n</script>", 1)
