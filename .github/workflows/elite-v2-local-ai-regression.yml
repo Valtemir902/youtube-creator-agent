@@ -1,0 +1,73 @@
+name: Elite V2 Local AI Regression
+
+on:
+  push:
+    branches: [feat/elite-v2-ui-system]
+    paths:
+      - 'main.py'
+      - 'scripts/local_ai_ui_browser_e2e.py'
+      - 'src/desktop_web_shell.py'
+      - 'src/desktop_local_server.py'
+      - 'src/elite_v2_*.py'
+      - 'src/creator_service/local_ai_dashboard.py'
+      - '.github/workflows/elite-v2-local-ai-regression.yml'
+  workflow_dispatch:
+
+jobs:
+  local-ai-regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_OPENGL: software
+      QT_QUICK_BACKEND: software
+      QTWEBENGINE_DISABLE_SANDBOX: '1'
+      QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --no-sandbox'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Local AI regression dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install `
+            'PySide6==6.7.3' `
+            'PySide6-Essentials==6.7.3' `
+            'PySide6-Addons==6.7.3' `
+            'shiboken6==6.7.3' `
+            'fastapi>=0.116,<1' `
+            'google-auth>=2.34,<3' `
+            'google-auth-oauthlib>=1.2,<2'
+
+      - name: Prove Elite V2 preserves Local AI active state and chat
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/elite-v2-local-ai | Out-Null
+          $output = 'artifacts/elite-v2-local-ai/output.log'
+          python scripts/local_ai_ui_browser_e2e.py 2>&1 | Tee-Object -FilePath $output
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0) { throw "Elite V2 Local AI regression falhou com exit code $exitCode" }
+          $jsonLine = Get-Content $output | Where-Object { $_ -match '^\{"ok"\s*:' } | Select-Object -Last 1
+          if (-not $jsonLine) { throw 'Elite V2 Local AI regression terminou sem JSON final' }
+          $result = $jsonLine | ConvertFrom-Json
+          if (-not $result.ok) { throw "Local AI não retornou ok=true: $($result.error)" }
+          if ($result.ui_status -ne 'Ativa neste dispositivo') { throw "Estado inesperado da IA Local: $($result.ui_status)" }
+          if (-not $result.explicit_recheck) { throw 'Reavaliação explícita da IA Local não foi comprovada' }
+          if (-not $result.paired -or -not $result.capabilities_ready) { throw 'Pareamento/capabilities da IA Local falharam sob Elite V2' }
+          if ($result.local_chat -ne 'LOCAL_AI_E2E_OK') { throw "Chat local falhou sob Elite V2: $($result.local_chat)" }
+          if ($result.cloud_session_required) { throw 'Elite V2 passou a exigir sessão cloud indevidamente' }
+          if ($result.youtube_write_actions_executed) { throw 'Regressão da IA Local executou escrita no YouTube' }
+          Write-Host 'Elite V2 Local AI regression OK: aguardando -> ativa -> chat local, sem escrita no YouTube.'
+
+      - name: Upload Elite V2 Local AI diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elite-v2-local-ai-regression
+          path: artifacts/elite-v2-local-ai/
+          if-no-files-found: warn
