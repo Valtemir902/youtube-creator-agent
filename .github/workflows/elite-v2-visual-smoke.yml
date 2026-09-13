@@ -5,6 +5,7 @@ on:
     branches: [feat/elite-v2-ui-system]
     paths:
       - 'src/elite_v2_ui.py'
+      - 'src/elite_v2_content_hub.py'
       - 'src/desktop_web_shell.py'
       - 'src/desktop_local_server.py'
       - 'src/creator_service/web/dashboard.html'
@@ -44,7 +45,7 @@ jobs:
             'google-auth>=2.34,<3' `
             'google-auth-oauthlib>=1.2,<2'
 
-      - name: Capture desktop and mobile screenshots
+      - name: Capture key Elite V2 workspace screenshots
         shell: pwsh
         run: |
           python scripts/ui_v2_visual_smoke.py | Tee-Object -FilePath artifacts/ui-v2/visual-smoke.log
@@ -56,8 +57,11 @@ jobs:
           if ($result.ui_version -ne 'elite-v2') { throw "Versão visual inesperada: $($result.ui_version)" }
           if ($result.stable_dashboard_replaced) { throw 'O teste detectou substituição indevida do dashboard estável' }
           if ($result.youtube_write_actions_executed) { throw 'Teste visual executou escrita no YouTube' }
-          if ($result.desktop_bytes -lt 20000 -or $result.mobile_bytes -lt 20000) { throw 'Screenshot visual vazio ou inválido' }
-          Write-Host "Elite V2 visual smoke OK. Desktop=$($result.desktop_bytes) bytes Mobile=$($result.mobile_bytes) bytes"
+          if (-not $result.screenshots -or $result.screenshots.Count -lt 4) { throw 'Conjunto de screenshots V2 incompleto' }
+          foreach ($shot in $result.screenshots) {
+            if ([int64]$shot.bytes -lt 20000) { throw "Screenshot visual vazio ou inválido: $($shot.path)" }
+          }
+          Write-Host "Elite V2 visual smoke OK. Screenshots=$($result.screenshots.Count)"
 
       - name: Upload screenshots and visual diagnostics
         if: always()
