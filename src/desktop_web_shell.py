@@ -16,6 +16,7 @@ from elite_v2_analytics import start_elite_v2_local_app_server
 from elite_v2_content_hub import content_hub_webengine_source
 from elite_v2_growth import growth_webengine_source
 from elite_v2_ui import elite_v2_webengine_source
+from elite_v2_write_ui import write_ui_webengine_source
 
 
 def _inner_tag_text(source: str, closing_tag: str) -> str:
@@ -78,6 +79,7 @@ def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
     _install_document_ready_script(web, "yca-elite-v2-content-hub", content_hub_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-growth", growth_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-ai-workspace", ai_workspace_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-write-ui", write_ui_webengine_source())
 
 
 class DesktopWindow(QMainWindow):
