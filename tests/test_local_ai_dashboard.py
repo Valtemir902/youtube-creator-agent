@@ -29,12 +29,19 @@ def test_dashboard_uses_loopback_bridge_and_bearer_auth():
     assert "Bearer ${token()}" in _SCRIPT
 
 
-def test_dashboard_polls_install_and_recovers_after_companion_appears():
+def test_dashboard_only_polls_while_an_explicit_install_is_running():
     assert "/v1/install-status" in _SCRIPT
-    assert "state.install?.status==='running'" in _SCRIPT
-    assert "else if(!state.connected)delay=3000" in _SCRIPT
+    assert "state.install?.status==='running'?1500:0" in _SCRIPT
+    assert "else if(!state.connected)delay=3000" not in _SCRIPT
+    assert "else delay=12000" not in _SCRIPT
     assert "estimated_download_mb" in _SCRIPT
     assert "local-ai-progress-fill" in _SCRIPT
+
+
+def test_dashboard_does_not_probe_local_ai_on_passive_boot():
+    assert "function boot(){consumePairToken();installCard();installCommandCenter();installDrawerRow();installContextButtons();render()}" in _SCRIPT
+    assert "installContextButtons();refresh()}" not in _SCRIPT
+    assert "A IA Local só é consultada quando você pedir." in _SCRIPT
 
 
 def test_dashboard_embeds_professional_local_ai_command_center():
