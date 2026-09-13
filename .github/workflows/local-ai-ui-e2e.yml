@@ -21,6 +21,8 @@ jobs:
       QT_QUICK_BACKEND: software
       QTWEBENGINE_DISABLE_SANDBOX: '1'
       QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --no-sandbox'
+      YCA_E2E_TRACE_PATH: local-ai-ui-e2e-trace.jsonl
+      YCA_E2E_FAULT_PATH: local-ai-ui-e2e-faulthandler.log
     steps:
       - uses: actions/checkout@v4
 
@@ -45,9 +47,29 @@ jobs:
       - name: Verify explicit recheck activates Local AI UI
         shell: pwsh
         run: |
-          python main.py --local-ai-ui-self-test | Tee-Object -FilePath local-ai-ui-e2e.json
-          if ($LASTEXITCODE -ne 0) { throw "Local AI UI E2E falhou com exit code $LASTEXITCODE" }
-          $result = Get-Content local-ai-ui-e2e.json -Raw | ConvertFrom-Json
+          $output = 'local-ai-ui-e2e-output.log'
+          python main.py --local-ai-ui-self-test 2>&1 | Tee-Object -FilePath $output
+          $exitCode = $LASTEXITCODE
+
+          if (Test-Path 'local-ai-ui-e2e-trace.jsonl') {
+            Write-Host '===== E2E TRACE ====='
+            Get-Content 'local-ai-ui-e2e-trace.jsonl'
+          }
+          if (Test-Path 'local-ai-ui-e2e-faulthandler.log') {
+            $fault = Get-Content 'local-ai-ui-e2e-faulthandler.log' -Raw
+            if ($fault.Trim()) {
+              Write-Host '===== PYTHON FAULTHANDLER ====='
+              Write-Host $fault
+            }
+          }
+
+          if ($exitCode -ne 0) {
+            throw "Local AI UI E2E falhou com exit code $exitCode. Consulte E2E TRACE para o último boundary concluído."
+          }
+
+          $jsonLine = Get-Content $output | Where-Object { $_ -match '^\{"ok"\s*:' } | Select-Object -Last 1
+          if (-not $jsonLine) { throw 'Local AI UI E2E terminou sem payload JSON final' }
+          $result = $jsonLine | ConvertFrom-Json
           if (-not $result.ok) { throw 'Local AI UI E2E não retornou ok=true' }
           if ($result.ui_status -ne 'Ativa neste dispositivo') { throw "Estado inesperado: $($result.ui_status)" }
           if (-not $result.explicit_recheck) { throw 'O E2E não comprovou a reavaliação explícita' }
@@ -55,3 +77,14 @@ jobs:
           if ($result.local_chat -ne 'LOCAL_AI_E2E_OK') { throw "Chat local falhou: $($result.local_chat)" }
           if ($result.youtube_write_actions_executed) { throw 'O E2E executou escrita no YouTube' }
           Write-Host 'Local AI UI E2E OK: explicit recheck -> ativa -> chat local respondeu.'
+
+      - name: Upload Local AI E2E diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-ai-ui-e2e-diagnostics
+          path: |
+            local-ai-ui-e2e-output.log
+            local-ai-ui-e2e-trace.jsonl
+            local-ai-ui-e2e-faulthandler.log
+          if-no-files-found: warn
