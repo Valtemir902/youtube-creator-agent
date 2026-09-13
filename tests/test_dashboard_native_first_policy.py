@@ -3,7 +3,7 @@ from pathlib import Path
 from creator_service.dashboard_native_first_policy import _SCRIPT
 
 
-def test_passive_dashboard_policy_never_labels_configured_external_ai_as_active():
+def test_legacy_native_first_browser_copy_never_labels_external_ai_as_active():
     assert "◆ Inteligência Nativa ativa" in _SCRIPT
     assert "motor Python · dados reais" in _SCRIPT
     assert "IA externa sob demanda" in _SCRIPT
@@ -29,13 +29,12 @@ def test_native_engine_status_exposes_explicit_ai_invocation_policy():
     assert '"passive_external_ai_calls": 0' in source
 
 
-def test_native_first_policy_precedes_final_stability_guard_without_auto_health_probe():
+def test_single_read_boot_uses_stability_guard_without_legacy_native_first_browser_layer():
     source = Path("src/creator_service/oauth_compat_app.py").read_text(encoding="utf-8")
-    assert 'DASHBOARD_UI_REVISION = "professional-v1.11-fast-independent-boot"' in source
+    assert 'DASHBOARD_UI_REVISION = "professional-v1.12-single-read-boot"' in source
     intelligence_terms_pos = source.index("install_dashboard_intelligence_terms(app)")
-    policy_pos = source.index("install_dashboard_native_first_policy(app)")
     stability_pos = source.index("install_dashboard_stability_guard(app)")
-    assert policy_pos > intelligence_terms_pos
-    assert stability_pos > policy_pos
+    assert stability_pos > intelligence_terms_pos
+    assert "install_dashboard_native_first_policy(app)" not in source
     assert "install_dashboard_connection_health(app)" not in source
     assert "install_dashboard_activity_ux(app)" not in source
