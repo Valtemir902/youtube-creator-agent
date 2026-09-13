@@ -8,7 +8,6 @@ from .dashboard_ai_experience import install_dashboard_ai_experience
 from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
 from .dashboard_grounded_advice import install_grounded_strategy_service
 from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
-from .dashboard_native_first_policy import install_dashboard_native_first_policy
 from .dashboard_performance import install_dashboard_performance
 from .dashboard_stability_guard import install_dashboard_stability_guard
 from .extended_onboarding import create_app as create_extended_app
@@ -24,7 +23,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "professional-v1.11-fast-independent-boot"
+DASHBOARD_UI_REVISION = "professional-v1.12-single-read-boot"
 
 
 def create_app():
@@ -54,9 +53,9 @@ def create_app():
     install_dashboard_performance(app)
     install_local_ai_dashboard(app)
     install_dashboard_intelligence_terms(app)
-    install_dashboard_native_first_policy(app)
-    # Final browser guard: one bounded GET wrapper, independent card failures,
-    # fast startup, and no automatic API health probe or external-AI invocation.
+    # Native-first/external-AI policy is enforced by backend routes and status.
+    # Do not install the legacy browser policy: its only live effect without the
+    # removed Pro UI was a duplicate /status read plus a document-wide observer.
     install_dashboard_stability_guard(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
