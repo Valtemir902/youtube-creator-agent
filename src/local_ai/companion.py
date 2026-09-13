@@ -8,6 +8,7 @@ import secrets
 import time
 from typing import Any
 from urllib import request as urlrequest
+from urllib.parse import urlparse
 
 from .capability import classify_hardware, probe_hardware
 from .manifest import MANIFEST_VERSION, model_for_profile
@@ -19,6 +20,30 @@ DEFAULT_ORIGINS = {
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 }
+
+
+def _loopback_browser_origin(origin: str) -> bool:
+    """Allow only HTTP loopback origins, including the desktop app's ephemeral port."""
+    try:
+        parsed = urlparse(origin)
+    except Exception:
+        return False
+    if parsed.scheme != "http" or parsed.username or parsed.password:
+        return False
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        return False
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return port is not None and 1 <= port <= 65535 and not parsed.path.strip("/") and not parsed.query and not parsed.fragment
+
+
+def origin_allowed(origin: str | None, configured: list[str] | set[str] | tuple[str, ...] | None = None) -> bool:
+    if not origin:
+        return True
+    allowed = set(configured or DEFAULT_ORIGINS)
+    return origin in allowed or _loopback_browser_origin(origin)
 
 
 def default_config_dir() -> Path:
@@ -146,7 +171,7 @@ def local_status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 class CompanionHandler(BaseHTTPRequestHandler):
-    server_version = "YCA-LocalAI/1.2"
+    server_version = "YCA-LocalAI/1.3"
 
     @property
     def config(self) -> dict[str, Any]:
@@ -156,22 +181,14 @@ class CompanionHandler(BaseHTTPRequestHandler):
         return
 
     def _origin_allowed(self) -> bool:
-        origin = self.headers.get("Origin")
-        if not origin:
-            return True
-        return origin in set(self.config.get("origins") or DEFAULT_ORIGINS)
+        return origin_allowed(self.headers.get("Origin"), self.config.get("origins"))
 
     def _trusted_browser_origin(self) -> bool:
         origin = self.headers.get("Origin")
-        return bool(origin) and origin in set(self.config.get("origins") or DEFAULT_ORIGINS)
+        return bool(origin) and origin_allowed(origin, self.config.get("origins"))
 
     def _private_network_preflight_requested(self) -> bool:
-        """Whether a trusted browser explicitly requests loopback access.
-
-        Chromium sends this header when a public HTTPS page reaches a loopback
-        service.  The response is still restricted by the existing exact-origin
-        allow-list in ``_send``.
-        """
+        """Whether a trusted browser explicitly requests loopback access."""
         return self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true"
 
     def _authorized(self) -> bool:

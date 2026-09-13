@@ -35,6 +35,7 @@ def install_free_performance_service() -> None:
             "plan_policy_version": FreePremiumPolicy.VERSION,
             "thumbnail_ctr_source": "youtube_reporting_api",
             "thumbnail_ctr_estimated": False,
+            "reporting_api_boot_policy": "on_demand_only",
         })
         result["free_intelligence"] = free
         return result
@@ -65,7 +66,19 @@ def install_free_performance_service() -> None:
     def free_video_reach(self, video_id: str) -> dict[str, Any]:
         self.context.validate_youtube()
         self._owned_video_item(video_id, part="snippet")
-        return YouTubeReachReporting(str(self.context.token_file)).fetch_latest(video_id=str(video_id))
+        try:
+            return YouTubeReachReporting(str(self.context.token_file)).fetch_latest(video_id=str(video_id))
+        except Exception as exc:
+            return {
+                "engine": YouTubeReachReporting.VERSION,
+                "source": "youtube_reporting_api",
+                "video_id": str(video_id),
+                "data_available": False,
+                "pending": False,
+                "recoverable": True,
+                "blocked_reason": f"YouTube Reporting API indisponível nesta leitura: {str(exc)[:300]}",
+                "writes_performed": 0,
+            }
 
     def free_video_performance(self, video_id: str, *, period_days: int = 28) -> dict[str, Any]:
         errors = []
@@ -74,11 +87,9 @@ def install_free_performance_service() -> None:
         except Exception as exc:
             retention = {"engine": FreeRetentionIntelligence.VERSION, "data_available": False, "writes_performed": 0}
             errors.append({"source": "retention", "error": str(exc)[:500]})
-        try:
-            reach = free_video_reach(self, video_id)
-        except Exception as exc:
-            reach = {"engine": YouTubeReachReporting.VERSION, "data_available": False, "writes_performed": 0}
-            errors.append({"source": "reach", "error": str(exc)[:500]})
+        reach = free_video_reach(self, video_id)
+        if reach.get("recoverable"):
+            errors.append({"source": "reach", "error": str(reach.get("blocked_reason") or "Reporting API unavailable")[:500]})
         ctr = reach.get("ctr") if reach.get("data_available") else None
         impressions = reach.get("impressions") if reach.get("data_available") else None
         baseline = reach.get("channel_ctr_baseline") if reach.get("data_available") else None

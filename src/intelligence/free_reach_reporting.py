@@ -9,6 +9,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 REACH_REPORT_TYPES = ("channel_reach_basic_a1", "channel_reach_combined_a1")
+REPORT_DOWNLOAD_TIMEOUT_SECONDS = 8
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -40,7 +41,7 @@ class ReachMetric:
 class YouTubeReachReporting:
     """Read-only reach adapter. Missing reports remain missing, never estimated."""
 
-    VERSION = "youtube-reach-reporting-v2"
+    VERSION = "youtube-reach-reporting-v3"
 
     def __init__(self, token_file: str, reporting_client=None):
         self.token_file = token_file
@@ -55,20 +56,52 @@ class YouTubeReachReporting:
         self._reporting = build("youtubereporting", "v1", credentials=creds, cache_discovery=False)
         return self._reporting
 
-    def ensure_reach_job(self) -> dict[str, Any]:
+    def reach_job_state(self) -> dict[str, Any]:
+        """Inspect Reporting API readiness without creating or mutating jobs."""
         client = self._client()
         jobs = client.jobs().list(pageSize=50).execute().get("jobs", []) or []
         for report_type in REACH_REPORT_TYPES:
             for job in jobs:
                 if str(job.get("reportTypeId")) == report_type:
-                    return {"job": job, "created": False}
+                    return {"job": job, "created": False, "write_required": False}
         report_types = client.reportTypes().list(includeSystemManaged=False).execute().get("reportTypes", []) or []
         supported = {str(item.get("id")) for item in report_types}
         chosen = next((item for item in REACH_REPORT_TYPES if item in supported), None)
         if not chosen:
-            return {"job": None, "created": False, "blocked_reason": "Nenhum report type de alcance do canal está disponível para esta conta.", "supported_report_types": sorted(supported)}
+            return {
+                "job": None,
+                "created": False,
+                "write_required": False,
+                "blocked_reason": "Nenhum report type de alcance do canal está disponível para esta conta.",
+                "supported_report_types": sorted(supported),
+            }
+        return {
+            "job": None,
+            "created": False,
+            "write_required": True,
+            "report_type": chosen,
+            "blocked_reason": "A YouTube Reporting API está disponível, mas ainda não existe um job de alcance. A leitura não cria jobs automaticamente.",
+        }
+
+    def create_reach_job(self, report_type: str | None = None) -> dict[str, Any]:
+        """Explicit administrative action. Never called by normal read paths."""
+        client = self._client()
+        state = self.reach_job_state()
+        if state.get("job"):
+            return {"job": state["job"], "created": False}
+        chosen = str(report_type or state.get("report_type") or "")
+        if chosen not in REACH_REPORT_TYPES:
+            return {
+                "job": None,
+                "created": False,
+                "blocked_reason": state.get("blocked_reason", "Nenhum report type de alcance disponível."),
+            }
         job = client.jobs().create(body={"reportTypeId": chosen, "name": "YCA reach metrics"}).execute()
         return {"job": job, "created": True}
+
+    # Backward-compatible name retained, but normal reads remain read-only.
+    def ensure_reach_job(self) -> dict[str, Any]:
+        return self.reach_job_state()
 
     def latest_report_descriptor(self, job_id: str) -> dict[str, Any] | None:
         response = self._client().jobs().reports().list(jobId=job_id, pageSize=50).execute()
@@ -124,13 +157,33 @@ class YouTubeReachReporting:
         }
 
     def fetch_latest(self, *, video_id: str | None = None, opener=None) -> dict[str, Any]:
-        state = self.ensure_reach_job()
+        state = self.reach_job_state()
         job = state.get("job")
         if not job:
-            return {"engine": self.VERSION, "source": "youtube_reporting_api", "data_available": False, "job_created": False, "pending": False, "blocked_reason": state.get("blocked_reason", "Reach report unavailable."), "writes_performed": 0}
+            return {
+                "engine": self.VERSION,
+                "source": "youtube_reporting_api",
+                "data_available": False,
+                "job_created": False,
+                "pending": False,
+                "write_required": bool(state.get("write_required")),
+                "report_type": state.get("report_type"),
+                "blocked_reason": state.get("blocked_reason", "Reach report unavailable."),
+                "writes_performed": 0,
+            }
         descriptor = self.latest_report_descriptor(str(job.get("id")))
         if descriptor is None:
-            return {"engine": self.VERSION, "source": "youtube_reporting_api", "data_available": False, "job_created": bool(state.get("created")), "pending": True, "job_id": str(job.get("id")), "report_type": str(job.get("reportTypeId")), "blocked_reason": "O job de alcance existe, mas o Google ainda não publicou um arquivo de relatório.", "writes_performed": 0}
+            return {
+                "engine": self.VERSION,
+                "source": "youtube_reporting_api",
+                "data_available": False,
+                "job_created": False,
+                "pending": True,
+                "job_id": str(job.get("id")),
+                "report_type": str(job.get("reportTypeId")),
+                "blocked_reason": "O job de alcance existe, mas o Google ainda não publicou um arquivo de relatório.",
+                "writes_performed": 0,
+            }
         download_url = str(descriptor.get("downloadUrl"))
         if opener is None:
             from google.oauth2.credentials import Credentials
@@ -138,10 +191,10 @@ class YouTubeReachReporting:
             creds = Credentials.from_authorized_user_file(self.token_file, ["https://www.googleapis.com/auth/yt-analytics.readonly"])
             creds.refresh(GoogleRequest())
             request = Request(download_url, headers={"Authorization": f"Bearer {creds.token}"})
-            with urlopen(request, timeout=30) as response:
+            with urlopen(request, timeout=REPORT_DOWNLOAD_TIMEOUT_SECONDS) as response:
                 text = response.read().decode("utf-8-sig", errors="replace")
         else:
             text = opener(download_url)
         result = self.summarize(self.parse_csv(text), video_id=video_id)
-        result.update({"job_created": bool(state.get("created")), "pending": False, "job_id": str(job.get("id")), "report_type": str(job.get("reportTypeId")), "report_start_time": descriptor.get("startTime"), "report_end_time": descriptor.get("endTime")})
+        result.update({"job_created": False, "pending": False, "job_id": str(job.get("id")), "report_type": str(job.get("reportTypeId")), "report_start_time": descriptor.get("startTime"), "report_end_time": descriptor.get("endTime")})
         return result
