@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterable
 
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication, QMainWindow
@@ -46,20 +47,30 @@ def local_ai_webengine_source() -> str:
     )
 
 
-def install_local_ai_webengine_script(web: QWebEngineView) -> None:
+def _install_document_ready_script(web: QWebEngineView, name: str, source: str) -> None:
     script = QWebEngineScript()
-    script.setName("yca-local-ai-desktop")
+    script.setName(name)
     script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
     script.setRunsOnSubFrames(False)
     script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
-    script.setSourceCode(local_ai_webengine_source())
+    script.setSourceCode(source)
     web.page().scripts().insert(script)
 
 
-class DesktopWindow(QMainWindow):
-    """Windows shell for the fully local Creator Agent control plane."""
+def install_local_ai_webengine_script(web: QWebEngineView) -> None:
+    _install_document_ready_script(web, "yca-local-ai-desktop", local_ai_webengine_source())
 
-    def __init__(self) -> None:
+
+class DesktopWindow(QMainWindow):
+    """Windows shell for the fully local Creator Agent control plane.
+
+    ``extra_document_ready_scripts`` exists for diagnostics/E2E only. Production
+    callers omit it, preserving the exact runtime behavior. The hook lets tests
+    observe the browser from inside Chromium instead of calling runJavaScript
+    back through PySide, which has proved unstable on Windows headless runners.
+    """
+
+    def __init__(self, extra_document_ready_scripts: Iterable[tuple[str, str]] | None = None) -> None:
         super().__init__()
         self.setWindowTitle("YouTube Creator Agent Elite")
         self.resize(1440, 900)
@@ -74,6 +85,8 @@ class DesktopWindow(QMainWindow):
         self.local_server, self.local_thread, self.local_base = start_local_app_server()
         self.web = QWebEngineView(self)
         install_local_ai_webengine_script(self.web)
+        for name, source in extra_document_ready_scripts or ():
+            _install_document_ready_script(self.web, name, source)
         self.setCentralWidget(self.web)
         self.web.setUrl(QUrl(self.local_base + "/dashboard"))
 
