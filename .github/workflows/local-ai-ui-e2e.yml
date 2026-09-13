@@ -1,0 +1,53 @@
+name: Local AI UI E2E
+
+on:
+  push:
+    branches: [feat/desktop-local-first-v1]
+    paths:
+      - 'main.py'
+      - 'src/desktop_web_shell.py'
+      - 'src/desktop_local_server.py'
+      - 'src/creator_service/local_ai_dashboard.py'
+      - '.github/workflows/local-ai-ui-e2e.yml'
+  workflow_dispatch:
+
+jobs:
+  local-ai-ui-e2e:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install only Local AI UI E2E dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install `
+            PySide6==6.7.3 `
+            PySide6-Essentials==6.7.3 `
+            PySide6-Addons==6.7.3 `
+            shiboken6==6.7.3 `
+            fastapi>=0.116,<1 `
+            google-auth>=2.34,<3 `
+            google-auth-oauthlib>=1.2,<2
+
+      - name: Verify explicit recheck activates Local AI UI
+        shell: pwsh
+        run: |
+          python main.py --local-ai-ui-self-test | Tee-Object -FilePath local-ai-ui-e2e.json
+          if ($LASTEXITCODE -ne 0) { throw "Local AI UI E2E falhou com exit code $LASTEXITCODE" }
+          $result = Get-Content local-ai-ui-e2e.json -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Local AI UI E2E não retornou ok=true' }
+          if ($result.ui_status -ne 'Ativa neste dispositivo') { throw "Estado inesperado: $($result.ui_status)" }
+          if (-not $result.explicit_recheck) { throw 'O E2E não comprovou a reavaliação explícita' }
+          if (-not $result.paired -or -not $result.capabilities_ready) { throw 'Pareamento/capabilities não ficaram prontos' }
+          if ($result.local_chat -ne 'LOCAL_AI_E2E_OK') { throw "Chat local falhou: $($result.local_chat)" }
+          if ($result.youtube_write_actions_executed) { throw 'O E2E executou escrita no YouTube' }
+          Write-Host 'Local AI UI E2E OK: explicit recheck -> ativa -> chat local respondeu.'
