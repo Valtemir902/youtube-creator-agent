@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
+import creator_service.extended_onboarding as extended
 import creator_service.oauth_compat_app as composed
-from creator_service.onboarding_api import create_app as create_base_app
 
 
 class FakeDB:
@@ -19,7 +19,7 @@ class FakeDB:
 
 
 class FakeResolver:
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         self.db = FakeDB()
 
     def resolve(self, tenant_id: str):
@@ -27,18 +27,24 @@ class FakeResolver:
 
 
 class FakeVerifier:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
     async def verify_token(self, token: str):
         return SimpleNamespace(
             subject="browser-fixture",
-            scopes=["yca:read"],
+            scopes=["yca:read", "yca:write"],
             claims={"tenant_id": "fixture-tenant"},
         )
 
 
 class FakeSessionStore:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
     def resolve(self, token: str):
         if token == "browser-fixture":
-            return SimpleNamespace(tenant_id="fixture-tenant", scopes=("yca:read",))
+            return SimpleNamespace(tenant_id="fixture-tenant", scopes=("yca:read", "yca:write"))
         return None
 
     def exchange_launch(self, token: str):
@@ -52,20 +58,22 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     output = root / "artifacts" / "recovery-dashboard.html"
     output.parent.mkdir(parents=True, exist_ok=True)
+    fixture_root = root / ".browser-fixture"
+    fixture_root.mkdir(parents=True, exist_ok=True)
 
-    os.environ.setdefault("YCA_ROOT", str(root / ".browser-fixture"))
-    os.environ.setdefault("YCA_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
-    os.environ.setdefault("YCA_SECURE_COOKIES", "0")
+    os.environ["YCA_ROOT"] = str(fixture_root)
+    os.environ["YCA_DATA_ENCRYPTION_KEY"] = Fernet.generate_key().decode("ascii")
+    os.environ["YCA_TENANT_DB_PATH"] = str(fixture_root / "tenants.sqlite3")
+    os.environ["YCA_SECURE_COOKIES"] = "0"
 
-    def fake_extended_app():
-        return create_base_app(
-            resolver=FakeResolver(),
-            verifier=FakeVerifier(),
-            session_store=FakeSessionStore(),
-        )
-
-    original = composed.create_extended_app
-    composed.create_extended_app = fake_extended_app
+    originals = (
+        extended.CloudTenantResolver,
+        extended.IntrospectionTokenVerifier,
+        extended.OnboardingSessionStore,
+    )
+    extended.CloudTenantResolver = FakeResolver
+    extended.IntrospectionTokenVerifier = FakeVerifier
+    extended.OnboardingSessionStore = FakeSessionStore
     try:
         app = composed.create_app()
         client = TestClient(app)
@@ -75,7 +83,11 @@ def main() -> None:
             raise SystemExit(f"dashboard fixture returned HTTP {response.status_code}")
         html = response.text
     finally:
-        composed.create_extended_app = original
+        (
+            extended.CloudTenantResolver,
+            extended.IntrospectionTokenVerifier,
+            extended.OnboardingSessionStore,
+        ) = originals
 
     required = [
         "data-yca-stability-guard",
