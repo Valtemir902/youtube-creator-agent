@@ -16,6 +16,7 @@ from elite_v2_ai_execution_ui import ai_execution_ui_webengine_source
 from elite_v2_ai_workspace import ai_workspace_webengine_source
 from elite_v2_automation_ui import automation_ui_webengine_source
 from elite_v2_content_hub import content_hub_webengine_source
+from elite_v2_contextual_management import contextual_management_webengine_source
 from elite_v2_final_server import start_elite_v2_final_server
 from elite_v2_growth import growth_webengine_source
 from elite_v2_management_ui import management_ui_webengine_source
@@ -82,6 +83,7 @@ def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
     _install_document_ready_script(web, "yca-elite-v2-ai-execution", ai_execution_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-write-ui", write_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-management-ui", management_ui_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-contextual-management", contextual_management_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-activity", activity_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-automation", automation_ui_webengine_source())
 
