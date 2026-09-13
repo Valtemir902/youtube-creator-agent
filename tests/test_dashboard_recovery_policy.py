@@ -11,6 +11,7 @@ def test_active_dashboard_composition_does_not_install_passive_probe_layers():
     assert "install_dashboard_activity_ux" not in source
     assert "install_dashboard_pro_ui" not in source
     assert "install_dashboard_native_ux" not in source
+    assert "install_dashboard_native_first_policy" not in source
     assert "install_dashboard_overview_compat" not in source
     assert "install_dashboard_stability_guard(app)" in source
 
@@ -26,6 +27,12 @@ def test_stability_guard_replaces_automatic_full_refresh_with_independent_boot()
     assert "loadChannel()" in result
     assert "loadLive()" not in result
     assert "\nrefreshAll();\n</script>" not in result
+
+
+def test_stability_guard_removes_legacy_duplicate_ai_vault_autoload():
+    source = "<script>setTimeout(loadAiKeyPool,150);</script>"
+    result = _apply_fast_boot_policy(source)
+    assert "setTimeout(loadAiKeyPool,150);" not in result
 
 
 def test_stability_guard_prevents_repeated_session_redirects():
