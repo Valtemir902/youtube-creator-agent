@@ -160,12 +160,12 @@ class _FakeLocalAiHandler(BaseHTTPRequestHandler):
 
 
 def _desktop_local_ai_ui_self_test() -> int:
-    """Verify the packaged EXE can move Local AI from waiting to active.
+    """Verify an explicit Local AI recheck moves the desktop UI to ready.
 
-    This is intentionally read-only with respect to YouTube. A loopback-only
-    fake companion stands in for an already-installed Ollama/model so the Qt
-    WebEngine UI, pairing flow, CORS/PNA path, ready-state rendering and local
-    chat transport are all exercised inside the packaged executable.
+    The production dashboard intentionally does not probe Local AI on startup.
+    This E2E mirrors the user's explicit "Reavaliar dispositivo" action, then
+    validates pairing, capabilities and local chat end to end. It remains fully
+    read-only with respect to YouTube.
     """
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -217,14 +217,45 @@ def _desktop_local_ai_ui_self_test() -> int:
                 raise RuntimeError(f"JavaScript não respondeu: {code[:80]}")
             return box["value"]
 
-        deadline = time.monotonic() + 12
+        # Production boot is intentionally passive. Wait for the injected bridge,
+        # then exercise the same explicit refresh behind "Reavaliar dispositivo".
+        bridge_deadline = time.monotonic() + 8
+        bridge_ready = False
+        while time.monotonic() < bridge_deadline:
+            app.processEvents()
+            bridge_ready = bool(js("!!(window.ycaLocalAI && window.ycaLocalAI.refresh)", 1500))
+            if bridge_ready:
+                break
+            time.sleep(0.1)
+        if not bridge_ready:
+            raise RuntimeError("bridge da IA Local não ficou disponível no WebEngine")
+
+        js(
+            "window.__ycaLocalAiRefreshE2E='pending';"
+            "window.ycaLocalAI.refresh()"
+            ".then(()=>window.__ycaLocalAiRefreshE2E='done')"
+            ".catch(e=>window.__ycaLocalAiRefreshE2E='ERR:'+e.message);"
+        )
+
+        refresh_deadline = time.monotonic() + 12
+        refresh_result = "pending"
+        while time.monotonic() < refresh_deadline:
+            app.processEvents()
+            refresh_result = str(js("window.__ycaLocalAiRefreshE2E || ''", 1500) or "")
+            if refresh_result != "pending":
+                break
+            time.sleep(0.1)
+        if refresh_result != "done":
+            raise RuntimeError(f"reavaliação explícita da IA Local falhou: {refresh_result}")
+
+        deadline = time.monotonic() + 8
         status_text = ""
         while time.monotonic() < deadline:
             app.processEvents()
             status_text = str(js("document.getElementById('localAiStatus')?.innerText || ''", 1500) or "")
             if "Ativa neste dispositivo" in status_text:
                 break
-            time.sleep(0.15)
+            time.sleep(0.1)
         if "Ativa neste dispositivo" not in status_text:
             raise RuntimeError(f"IA Local não mudou para ativa. Estado final: {status_text[:500]}")
 
@@ -254,6 +285,7 @@ def _desktop_local_ai_ui_self_test() -> int:
                 {
                     "ok": True,
                     "ui_status": "Ativa neste dispositivo",
+                    "explicit_recheck": True,
                     "paired": True,
                     "capabilities_ready": True,
                     "local_chat": chat_result,
