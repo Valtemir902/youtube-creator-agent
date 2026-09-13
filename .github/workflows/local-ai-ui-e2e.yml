@@ -17,6 +17,10 @@ jobs:
     timeout-minutes: 15
     env:
       QT_QPA_PLATFORM: offscreen
+      QT_OPENGL: software
+      QT_QUICK_BACKEND: software
+      QTWEBENGINE_DISABLE_SANDBOX: '1'
+      QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --no-sandbox'
     steps:
       - uses: actions/checkout@v4
 
