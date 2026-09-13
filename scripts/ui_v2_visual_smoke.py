@@ -38,21 +38,27 @@ def pump(seconds: float) -> None:
         time.sleep(0.02)
 
 
-def js_value(window: DesktopWindow, source: str, timeout: float = 4.0):
+def js_json(window: DesktopWindow, expression: str, timeout: float = 4.0):
     result = {"done": False, "value": None}
 
     def done(value) -> None:
         result["value"] = value
         result["done"] = True
 
-    window.web.page().runJavaScript(source, 0, done)
+    window.web.page().runJavaScript(f"JSON.stringify({expression})", 0, done)
     deadline = time.monotonic() + timeout
     while not result["done"] and time.monotonic() < deadline:
         QCoreApplication.processEvents()
         time.sleep(0.02)
     if not result["done"]:
         raise RuntimeError("Timeout ao validar o workspace visual via JavaScript")
-    return result["value"]
+    raw = result["value"]
+    if not isinstance(raw, str) or not raw:
+        raise RuntimeError(f"WebEngine não retornou JSON visual válido: {raw!r}")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"JSON visual inválido: {raw!r}") from exc
 
 
 def _tab_script(tab: str | None) -> list[tuple[str, str]]:
@@ -82,7 +88,7 @@ def _validate_visual_target(window: DesktopWindow, tab: str | None) -> dict:
         source = """(()=>{const p=document.getElementById('playlistManager');const r=p&&p.getBoundingClientRect();return {requested:'playlists',active:document.querySelector('.section.active')?.id||'',exists:!!p,visible:!!(p&&getComputedStyle(p).display!=='none'&&r&&r.bottom>0&&r.top<innerHeight),top:r?Math.round(r.top):null,ready:document.documentElement.dataset.v2VisualTargetReady||''};})()"""
     else:
         source = f"""(()=>({{requested:{json.dumps(tab)},active:document.querySelector('.section.active')?.id||'',ready:document.documentElement.dataset.v2VisualTargetReady||''}}))()"""
-    state = js_value(window, source)
+    state = js_json(window, source)
     if not isinstance(state, dict):
         raise RuntimeError(f"Estado visual inválido para {tab or 'overview'}: {state!r}")
     if tab == "playlists":
