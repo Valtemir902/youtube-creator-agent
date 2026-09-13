@@ -11,6 +11,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from creator_service.local_ai_dashboard import _CSS, _SCRIPT
 from desktop_local_server import app_data_dir, start_local_app_server
+from elite_v2_content_hub import content_hub_webengine_source
 from elite_v2_ui import elite_v2_webengine_source
 
 
@@ -63,14 +64,15 @@ def install_local_ai_webengine_script(web: QWebEngineView) -> None:
 
 
 def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
-    """Layer the V2 design system over the proven dashboard contract.
+    """Layer V2 presentation modules over the proven dashboard contract.
 
-    The existing DOM ids, API calls, Local AI bridge, write guards and desktop
-    control plane remain untouched. This is intentionally additive so the UI
-    can evolve without turning a visual refactor into a backend regression.
+    Existing DOM ids, API calls, Local AI bridge, write guards and the desktop
+    control plane remain untouched. New V2 modules are additive and independently
+    testable, so a visual feature does not get to quietly become a backend bug.
     """
 
     _install_document_ready_script(web, "yca-elite-v2-ui", elite_v2_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-content-hub", content_hub_webengine_source())
 
 
 class DesktopWindow(QMainWindow):
