@@ -1,6 +1,16 @@
 name: Windows Desktop Release Smoke
 
 on:
+  push:
+    branches: [feat/elite-v2-ui-system]
+    paths:
+      - 'main.py'
+      - 'src/**'
+      - 'scripts/build_windows.py'
+      - 'desktop_windows.spec'
+      - 'requirements.txt'
+      - 'requirements-build-windows.txt'
+      - '.github/workflows/windows-desktop.yml'
   pull_request:
     branches: [feat/web-dashboard-v1]
     paths:
