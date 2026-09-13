@@ -20,6 +20,7 @@ from desktop_web_shell import DesktopWindow
 from elite_v2_activity_ui import ACTIVITY_CSS, ACTIVITY_JS
 from elite_v2_ai_execution_ui import AI_EXEC_CSS, AI_EXEC_JS
 from elite_v2_ai_workspace import AI_WORKSPACE_CSS, AI_WORKSPACE_JS
+from elite_v2_automation_ui import AUTOMATION_UI_CSS, AUTOMATION_UI_JS
 from elite_v2_content_hub import CONTENT_HUB_CSS, CONTENT_HUB_JS
 from elite_v2_growth import GROWTH_CSS, GROWTH_JS
 from elite_v2_management_ui import MANAGEMENT_UI_CSS, MANAGEMENT_UI_JS
@@ -121,6 +122,9 @@ def main() -> int:
     for contract in ["data-v2-activity", "/api/v2/activity", "Activity & Audit"]:
         if contract not in ACTIVITY_JS:
             raise RuntimeError(f"Contrato Activity UI ausente: {contract}")
+    for contract in ["data-v2-automation", "/api/v2/automation/approve/", "Write Gateway"]:
+        if contract not in AUTOMATION_UI_JS:
+            raise RuntimeError(f"Contrato Automation UI ausente: {contract}")
     if any(
         token not in css
         for css, token in (
@@ -133,6 +137,7 @@ def main() -> int:
             (WRITE_UI_CSS, ".v2-write-control"),
             (MANAGEMENT_UI_CSS, ".v2-manage"),
             (ACTIVITY_CSS, ".v2-activity"),
+            (AUTOMATION_UI_CSS, ".v2-automation"),
         )
     ):
         raise RuntimeError("Design modular V2 incompleto")
@@ -145,7 +150,7 @@ def main() -> int:
         capture(app, out, name="elite-v2-content-hub-playlists.png", size=(1440, 900), tab="playlists"),
         capture(app, out, name="elite-v2-growth-seo-reporting.png", size=(1440, 900), tab="strategy"),
         capture(app, out, name="elite-v2-ai-management.png", size=(1440, 900), tab="settings"),
-        capture(app, out, name="elite-v2-activity-audit.png", size=(1440, 900), tab="audit"),
+        capture(app, out, name="elite-v2-activity-automation.png", size=(1440, 900), tab="audit"),
     ]
 
     payload = {
