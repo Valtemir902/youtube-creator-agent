@@ -1,8 +1,11 @@
 # Reproducible Windows desktop packaging pins.
 # Keep the Qt family on the exact same version. A mixed PySide6/shiboken6 set can
 # build successfully and still fail at runtime with "procedure could not be found".
+# FastAPI is required because the shared Local AI dashboard module is imported by
+# the desktop WebEngine shell to inject the local AI UI assets.
 PyInstaller==6.16.0
 PySide6==6.7.3
 PySide6-Essentials==6.7.3
 PySide6-Addons==6.7.3
 shiboken6==6.7.3
+fastapi>=0.116,<1
