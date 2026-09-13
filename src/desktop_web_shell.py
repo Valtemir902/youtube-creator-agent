@@ -14,17 +14,17 @@ from desktop_local_server import app_data_dir
 from elite_v2_activity_ui import activity_ui_webengine_source
 from elite_v2_ai_workspace import ai_workspace_webengine_source
 from elite_v2_content_hub import content_hub_webengine_source
+from elite_v2_final_server import start_elite_v2_final_server
 from elite_v2_growth import growth_webengine_source
 from elite_v2_management_ui import management_ui_webengine_source
 from elite_v2_reach_ui import reach_ui_webengine_source
 from elite_v2_seo_ui import seo_ui_webengine_source
-from elite_v2_server import start_elite_v2_product_server
 from elite_v2_ui import elite_v2_webengine_source
 from elite_v2_write_ui import write_ui_webengine_source
 
 # Preserve the stable localhost boot contract name while routing to the additive
-# V2 product server. The dashboard remains local and no production URL is used.
-start_local_app_server = start_elite_v2_product_server
+# final V2 product server. The dashboard remains local and no production URL is used.
+start_local_app_server = start_elite_v2_final_server
 
 
 def _inner_tag_text(source: str, closing_tag: str) -> str:
