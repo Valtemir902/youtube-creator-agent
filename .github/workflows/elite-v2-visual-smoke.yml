@@ -4,14 +4,9 @@ on:
   push:
     branches: [feat/elite-v2-ui-system]
     paths:
-      - 'src/elite_v2_ui.py'
-      - 'src/elite_v2_content_hub.py'
-      - 'src/elite_v2_growth.py'
-      - 'src/elite_v2_analytics.py'
-      - 'src/elite_v2_ai_workspace.py'
-      - 'src/elite_v2_write_ui.py'
-      - 'src/elite_v2_write_gateway.py'
-      - 'src/elite_v2_youtube_writes.py'
+      - 'src/elite_v2_*.py'
+      - 'src/ai/**'
+      - 'src/intelligence/free_reach_reporting.py'
       - 'src/desktop_web_shell.py'
       - 'src/desktop_local_server.py'
       - 'src/creator_service/web/dashboard.html'
@@ -23,7 +18,7 @@ on:
 jobs:
   visual-smoke:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       QT_QPA_PLATFORM: offscreen
       QT_OPENGL: software
@@ -49,9 +44,11 @@ jobs:
             'shiboken6==6.7.3' `
             'fastapi>=0.116,<1' `
             'google-auth>=2.34,<3' `
-            'google-auth-oauthlib>=1.2,<2'
+            'google-auth-oauthlib>=1.2,<2' `
+            'google-api-python-client>=2.149,<3' `
+            'keyring>=25,<26'
 
-      - name: Capture key Elite V2 workspace screenshots
+      - name: Capture final Elite V2 workspace screenshots
         shell: pwsh
         run: |
           python scripts/ui_v2_visual_smoke.py | Tee-Object -FilePath artifacts/ui-v2/visual-smoke.log
@@ -63,7 +60,9 @@ jobs:
           if ($result.ui_version -ne 'elite-v2') { throw "Versão visual inesperada: $($result.ui_version)" }
           if ($result.stable_dashboard_replaced) { throw 'O teste detectou substituição indevida do dashboard estável' }
           if ($result.youtube_write_actions_executed) { throw 'Teste visual executou escrita no YouTube' }
-          if (-not $result.screenshots -or $result.screenshots.Count -lt 5) { throw 'Conjunto de screenshots V2 incompleto' }
+          if ($result.reporting_called_at_boot) { throw 'Reporting API foi chamada automaticamente no boot' }
+          if ($result.external_ai_called_at_boot) { throw 'IA externa foi chamada automaticamente no boot' }
+          if (-not $result.screenshots -or $result.screenshots.Count -lt 7) { throw 'Conjunto final de screenshots V2 incompleto' }
           foreach ($shot in $result.screenshots) {
             if ([int64]$shot.bytes -lt 20000) { throw "Screenshot visual vazio ou inválido: $($shot.path)" }
           }
