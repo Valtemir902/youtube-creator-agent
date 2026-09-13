@@ -18,6 +18,19 @@ class EliteV2ProductHandler(EliteV2Handler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/v2/activity":
+            limit = max(1, min(int(self._query(parsed, "limit", "100") or 100), 500))
+            events = list(reversed(self.write_gateway.audit[-limit:]))
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "events": events,
+                    "event_count": len(events),
+                    "source": "local_write_gateway_audit",
+                    "youtube_write_performed": False,
+                },
+            )
+            return
         if not path.startswith("/api/v2/seo/video/"):
             super().do_GET()
             return
@@ -38,20 +51,13 @@ class EliteV2ProductHandler(EliteV2Handler):
                 raise ValueError("video_id é obrigatório")
             details = LocalYouTubeClient().video_details(video_id)
             snippet = details.get("snippet") or {}
-            facts = analyze_metadata_facts(
-                {
-                    "title": snippet.get("title") or "",
-                    "description": snippet.get("description") or "",
-                    "tags": snippet.get("tags") or [],
-                }
-            )
-            context = build_seo_context(
-                {
-                    "title": snippet.get("title") or "",
-                    "description": snippet.get("description") or "",
-                    "tags": snippet.get("tags") or [],
-                }
-            )
+            video = {
+                "title": snippet.get("title") or "",
+                "description": snippet.get("description") or "",
+                "tags": snippet.get("tags") or [],
+            }
+            facts = analyze_metadata_facts(video)
+            context = build_seo_context(video)
             self._json(
                 HTTPStatus.OK,
                 {
