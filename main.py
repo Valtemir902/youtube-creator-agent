@@ -210,7 +210,7 @@ def _desktop_local_ai_ui_self_test() -> int:
                 box["value"] = value
                 loop.quit()
 
-            window.web.page().runJavaScript(code, done)
+            window.web.page().runJavaScript(code, 0, done)
             QTimer.singleShot(timeout_ms, loop.quit)
             loop.exec()
             if not box["done"]:
