@@ -9,10 +9,7 @@ from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
 from .dashboard_grounded_advice import install_grounded_strategy_service
 from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
 from .dashboard_native_first_policy import install_dashboard_native_first_policy
-from .dashboard_native_ux import install_dashboard_native_ux
-from .dashboard_overview_compat import install_dashboard_overview_compat
 from .dashboard_performance import install_dashboard_performance
-from .dashboard_pro_ui import install_dashboard_pro_ui
 from .dashboard_stability_guard import install_dashboard_stability_guard
 from .extended_onboarding import create_app as create_extended_app
 from .free_channel_dashboard import install_free_channel_dashboard
@@ -27,7 +24,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "professional-v1.10-stable-no-auto-health"
+DASHBOARD_UI_REVISION = "professional-v1.11-fast-independent-boot"
 
 
 def create_app():
@@ -44,21 +41,22 @@ def create_app():
     install_handoff_routes(app)
     install_pwa_routes(app)
     install_ai_vault_ui(app)
-    install_dashboard_pro_ui(app)
-    install_dashboard_overview_compat(app)
+    # Keep feature-specific surfaces, but do not install presentation layers that
+    # start passive YouTube/Analytics/intelligence calls on page load. The base
+    # dashboard already owns navigation and cards; network work is controlled by
+    # the bounded boot policy installed last.
     install_dashboard_ai_experience(app)
     install_free_intelligence_dashboard(app)
     install_free_channel_dashboard(app)
     install_free_playlist_optimizer_dashboard(app)
     install_free_intelligence_workspace(app)
-    install_dashboard_native_ux(app)
-    # Deduplicate/cache expensive read surfaces without changing write flows.
+    # Deduplicate/cache expensive reads without changing any write contract.
     install_dashboard_performance(app)
     install_local_ai_dashboard(app)
     install_dashboard_intelligence_terms(app)
     install_dashboard_native_first_policy(app)
-    # Keep the dashboard usable even when a YouTube read stalls. This guard does
-    # not probe the API automatically and never touches mutable requests.
+    # Final browser guard: one bounded GET wrapper, independent card failures,
+    # fast startup, and no automatic API health probe or external-AI invocation.
     install_dashboard_stability_guard(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
