@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import faulthandler
 import json
 import os
 import sys
@@ -72,8 +71,18 @@ def _desktop_self_test() -> int:
         print(json.dumps(payload, ensure_ascii=False), flush=True)
         return 0
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False), file=sys.stderr, flush=True)
+        print(
+            json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False),
+            file=sys.stderr,
+            flush=True,
+        )
         return 97
+
+
+class _LocalAiE2EState:
+    event = threading.Event()
+    report: dict | None = None
+    requests: list[dict] = []
 
 
 class _FakeLocalAiHandler(BaseHTTPRequestHandler):
@@ -81,6 +90,11 @@ class _FakeLocalAiHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         return
+
+    def _record(self, method: str) -> None:
+        _LocalAiE2EState.requests.append(
+            {"method": method, "path": self.path, "origin": self.headers.get("Origin")}
+        )
 
     def _send(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -99,9 +113,11 @@ class _FakeLocalAiHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        self._record("OPTIONS")
         self._send(204, {})
 
     def do_GET(self) -> None:  # noqa: N802
+        self._record("GET")
         if self.path == "/v1/health":
             self._send(200, {"ok": True, "service": "yca-local-ai"})
             return
@@ -128,13 +144,20 @@ class _FakeLocalAiHandler(BaseHTTPRequestHandler):
                     "repair_needed": False,
                     "repair_reasons": [],
                     "install_state": {"status": "ready"},
-                    "hardware": {"gpu_name": "Windows CI GPU", "vram_mb": 6144, "ram_mb": 16384},
+                    "hardware": {
+                        "gpu_name": "Windows CI GPU",
+                        "vram_mb": 6144,
+                        "ram_mb": 16384,
+                    },
                 },
             )
             return
         self._send(404, {"ok": False, "error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        self._record("POST")
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length) if length else b""
         if self.path == "/v1/pair":
             self._send(200, {"ok": True, "service": "yca-local-ai", "token": self.token})
             return
@@ -142,243 +165,236 @@ class _FakeLocalAiHandler(BaseHTTPRequestHandler):
             if self.headers.get("Authorization") != f"Bearer {self.token}":
                 self._send(401, {"ok": False, "error": "unauthorized"})
                 return
-            self._send(200, {"ok": True, "provider": "local", "model": "qwen2.5:1.5b", "text": "LOCAL_AI_E2E_OK", "elapsed_ms": 5})
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "provider": "local",
+                    "model": "qwen2.5:1.5b",
+                    "text": "LOCAL_AI_E2E_OK",
+                    "elapsed_ms": 5,
+                },
+            )
+            return
+        if self.path == "/v1/e2e-report":
+            try:
+                _LocalAiE2EState.report = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                _LocalAiE2EState.report = {
+                    "ok": False,
+                    "stage": "report_decode",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            _LocalAiE2EState.event.set()
+            self._send(200, {"ok": True})
             return
         self._send(404, {"ok": False, "error": "not_found"})
 
 
-def _desktop_local_ai_ui_self_test() -> int:
-    """Verify explicit Local AI recheck, with crash-safe diagnostics.
+def _browser_driven_local_ai_probe() -> str:
+    """Run the complete Local AI UI proof inside Chromium, not via PySide callbacks.
 
-    The harness intentionally avoids nested QEventLoop.exec() calls around
-    QWebEnginePage.runJavaScript. Nested event loops are a known high-risk shape
-    for lifecycle/reentrancy bugs in Qt WebEngine, especially on headless CI.
-    Each native boundary is persisted to local-ai-ui-e2e-trace.jsonl before and
-    after it, so even an access violation leaves the last completed checkpoint.
+    QWebEnginePage.runJavaScript(..., callback) crashes natively on the Windows
+    headless runner used by the packaged EXE test. The production UI itself is
+    healthy. This probe is injected at DocumentReady and performs the same user
+    path entirely in the browser, then reports the result over loopback HTTP.
+    """
+
+    return r"""
+(async()=>{
+  const report = async (payload) => {
+    try {
+      await fetch('http://127.0.0.1:17823/v1/e2e-report', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+    } catch (_) {}
+  };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  try {
+    const bridgeDeadline = Date.now() + 8000;
+    while (!(window.ycaLocalAI && typeof window.ycaLocalAI.refresh === 'function')) {
+      if (Date.now() > bridgeDeadline) throw new Error('bridge_timeout');
+      await sleep(50);
+    }
+
+    await window.ycaLocalAI.refresh();
+
+    const statusDeadline = Date.now() + 8000;
+    let status = '';
+    while (Date.now() < statusDeadline) {
+      status = document.getElementById('localAiStatus')?.innerText || '';
+      if (status.includes('Ativa neste dispositivo')) break;
+      await sleep(50);
+    }
+
+    const state = window.ycaLocalAI.state || null;
+    if (!status.includes('Ativa neste dispositivo')) {
+      throw new Error('ui_not_active:' + status.slice(0,300));
+    }
+    if (!state || !state.ready) throw new Error('bridge_not_ready');
+
+    const chat = await window.ycaLocalAI.chat([{role:'user', content:'ping'}]);
+    if (!chat || chat.text !== 'LOCAL_AI_E2E_OK') {
+      throw new Error('chat_failed:' + JSON.stringify(chat));
+    }
+
+    await report({
+      ok: true,
+      stage: 'complete',
+      ui_status: 'Ativa neste dispositivo',
+      explicit_recheck: true,
+      paired: true,
+      capabilities_ready: true,
+      local_chat: chat.text,
+      cloud_session_required: false,
+      youtube_write_actions_executed: false
+    });
+  } catch (e) {
+    await report({
+      ok: false,
+      stage: 'browser_probe',
+      error: String(e && (e.stack || e.message) || e)
+    });
+  }
+})();
+"""
+
+
+def _desktop_local_ai_ui_self_test() -> int:
+    """Verify the Local AI user path inside the packaged desktop executable.
+
+    The test deliberately avoids Python callbacks from QWebEnginePage JavaScript.
+    The browser executes recheck, pairing, capability validation, UI-state check
+    and local chat, then reports over loopback HTTP. This is the same strategy as
+    the focused E2E workflow that proved stable on Windows Server 2025.
     """
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    trace_path = Path(os.environ.get("YCA_E2E_TRACE_PATH", "local-ai-ui-e2e-trace.jsonl"))
-    crash_path = Path(os.environ.get("YCA_E2E_FAULT_PATH", "local-ai-ui-e2e-faulthandler.log"))
     fake = None
     fake_thread = None
     window = None
-    fault_file = None
-
-    def checkpoint(stage: str, **details) -> None:
-        record = {"ts": time.time(), "stage": stage, **details}
-        line = json.dumps(record, ensure_ascii=False)
-        with trace_path.open("a", encoding="utf-8") as fp:
-            fp.write(line + "\n")
-            fp.flush()
-            try:
-                os.fsync(fp.fileno())
-            except OSError:
-                pass
-        print(f"E2E_CHECKPOINT {line}", flush=True)
+    render_termination: dict[str, object] = {"seen": False, "status": None, "exit_code": None}
 
     try:
-        trace_path.unlink(missing_ok=True)
-        crash_path.unlink(missing_ok=True)
-        fault_file = crash_path.open("w", encoding="utf-8")
-        faulthandler.enable(file=fault_file, all_threads=True)
-        checkpoint("python_start", pid=os.getpid(), platform=sys.platform)
-
         from PySide6.QtCore import QCoreApplication
         from PySide6.QtWidgets import QApplication
         from desktop_web_shell import DesktopWindow, local_ai_webengine_source
 
-        checkpoint("imports_ok")
         source = local_ai_webengine_source()
-        checkpoint("bundle_built", chars=len(source), has_active_label="Ativa neste dispositivo" in source)
         if "Ativa neste dispositivo" not in source:
             raise RuntimeError("bundle desktop não contém o estado ativo da IA Local")
 
+        _LocalAiE2EState.event.clear()
+        _LocalAiE2EState.report = None
+        _LocalAiE2EState.requests = []
+
         fake = ThreadingHTTPServer(("127.0.0.1", 17823), _FakeLocalAiHandler)
-        fake_thread = threading.Thread(target=fake.serve_forever, name="yca-fake-local-ai", daemon=True)
+        fake_thread = threading.Thread(
+            target=fake.serve_forever,
+            name="yca-packaged-local-ai-e2e",
+            daemon=True,
+        )
         fake_thread.start()
-        checkpoint("fake_companion_started", port=17823)
 
         app = QApplication.instance() or QApplication([])
-        checkpoint("qapplication_ready")
-
-        window = DesktopWindow()
-        checkpoint("desktop_window_constructed", local_base=window.local_base)
-
-        page = window.web.page()
-        render_termination = {"seen": False, "status": None, "exit_code": None}
+        window = DesktopWindow(
+            extra_document_ready_scripts=(
+                ("yca-packaged-local-ai-browser-e2e", _browser_driven_local_ai_probe()),
+            )
+        )
 
         def on_render_terminated(status, exit_code: int) -> None:
-            render_termination.update(seen=True, status=str(status), exit_code=int(exit_code))
-            checkpoint("render_process_terminated", status=str(status), exit_code=int(exit_code))
+            render_termination.update(
+                seen=True,
+                status=str(status),
+                exit_code=int(exit_code),
+            )
+            _LocalAiE2EState.event.set()
 
-        page.renderProcessTerminated.connect(on_render_terminated)
-        checkpoint("render_termination_hooked")
-
-        loaded = {"done": False, "ok": False}
-
-        def on_loaded(ok: bool) -> None:
-            loaded["done"] = True
-            loaded["ok"] = bool(ok)
-            checkpoint("load_finished_signal", ok=bool(ok), url=window.web.url().toString())
-
-        window.web.loadFinished.connect(on_loaded)
-        checkpoint("load_signal_hooked")
+        window.web.page().renderProcessTerminated.connect(on_render_terminated)
         window.show()
-        checkpoint("window_shown")
 
-        def pump_until(predicate, timeout_s: float, stage: str) -> bool:
-            deadline = time.monotonic() + timeout_s
-            while time.monotonic() < deadline:
-                QCoreApplication.processEvents()
-                if predicate():
-                    return True
-                time.sleep(0.01)
-            checkpoint(stage + "_timeout")
-            return False
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline and not _LocalAiE2EState.event.is_set():
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
 
-        if not pump_until(lambda: loaded["done"], 15, "page_load"):
-            raise RuntimeError("dashboard local não terminou de carregar no WebEngine")
-        if not loaded["ok"]:
-            raise RuntimeError("dashboard local emitiu loadFinished(false)")
-        checkpoint("page_load_ok")
+        if render_termination["seen"]:
+            payload = {
+                "ok": False,
+                "stage": "renderer_terminated",
+                "error": (
+                    "Qt WebEngine renderer terminated: "
+                    f"status={render_termination['status']} exit_code={render_termination['exit_code']}"
+                ),
+                "requests": _LocalAiE2EState.requests,
+            }
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+            return 98
 
-        js_counter = {"value": 0}
+        if not _LocalAiE2EState.event.is_set():
+            payload = {
+                "ok": False,
+                "stage": "python_wait",
+                "error": "browser_report_timeout",
+                "requests": _LocalAiE2EState.requests,
+            }
+            print(json.dumps(payload, ensure_ascii=False), flush=True)
+            return 98
 
-        def js(code: str, timeout_ms: int = 4000):
-            js_counter["value"] += 1
-            call_id = js_counter["value"]
-            box = {"done": False, "value": None}
-            checkpoint("js_before", call_id=call_id, code=code[:120])
+        report = dict(_LocalAiE2EState.report or {})
+        report["requests"] = _LocalAiE2EState.requests
+        print(json.dumps(report, ensure_ascii=False), flush=True)
 
-            def done(value):
-                box["done"] = True
-                box["value"] = value
-                checkpoint("js_callback", call_id=call_id, value_type=type(value).__name__)
+        if not report.get("ok"):
+            return 98
 
-            page.runJavaScript(code, 0, done)
-            checkpoint("js_submitted", call_id=call_id)
-            ok = pump_until(lambda: box["done"] or render_termination["seen"], timeout_ms / 1000, f"js_{call_id}")
-            if render_termination["seen"]:
-                raise RuntimeError(
-                    "renderer do Qt WebEngine terminou durante JavaScript: "
-                    f"status={render_termination['status']} exit_code={render_termination['exit_code']} call_id={call_id}"
-                )
-            if not ok or not box["done"]:
-                raise RuntimeError(f"JavaScript não respondeu: call_id={call_id} code={code[:80]}")
-            checkpoint("js_after", call_id=call_id)
-            return box["value"]
-
-        checkpoint("bridge_probe_start")
-        bridge_deadline = time.monotonic() + 8
-        bridge_ready = False
-        while time.monotonic() < bridge_deadline:
-            bridge_ready = bool(js("!!(window.ycaLocalAI && window.ycaLocalAI.refresh)", 1500))
-            if bridge_ready:
-                break
-            time.sleep(0.05)
-        checkpoint("bridge_probe_done", ready=bridge_ready)
-        if not bridge_ready:
-            raise RuntimeError("bridge da IA Local não ficou disponível no WebEngine")
-
-        checkpoint("refresh_submit_start")
-        js(
-            "window.__ycaLocalAiRefreshE2E='pending';"
-            "window.ycaLocalAI.refresh()"
-            ".then(()=>window.__ycaLocalAiRefreshE2E='done')"
-            ".catch(e=>window.__ycaLocalAiRefreshE2E='ERR:'+e.message);"
-        )
-        checkpoint("refresh_submit_done")
-
-        refresh_deadline = time.monotonic() + 12
-        refresh_result = "pending"
-        while time.monotonic() < refresh_deadline:
-            refresh_result = str(js("window.__ycaLocalAiRefreshE2E || ''", 1500) or "")
-            if refresh_result != "pending":
-                break
-            time.sleep(0.05)
-        checkpoint("refresh_result", result=refresh_result)
-        if refresh_result != "done":
-            raise RuntimeError(f"reavaliação explícita da IA Local falhou: {refresh_result}")
-
-        deadline = time.monotonic() + 8
-        status_text = ""
-        while time.monotonic() < deadline:
-            status_text = str(js("document.getElementById('localAiStatus')?.innerText || ''", 1500) or "")
-            if "Ativa neste dispositivo" in status_text:
-                break
-            time.sleep(0.05)
-        checkpoint("ui_status", value=status_text[:500])
-        if "Ativa neste dispositivo" not in status_text:
-            raise RuntimeError(f"IA Local não mudou para ativa. Estado final: {status_text[:500]}")
-
-        state = js("window.ycaLocalAI ? window.ycaLocalAI.state : null")
-        checkpoint("bridge_state", state=state)
-        if not isinstance(state, dict) or not state.get("ready"):
-            raise RuntimeError(f"estado JS da IA Local não ficou pronto: {state}")
-
-        checkpoint("chat_submit_start")
-        js(
-            "window.__ycaLocalAiE2E='pending';"
-            "window.ycaLocalAI.chat([{role:'user',content:'ping'}])"
-            ".then(r=>window.__ycaLocalAiE2E=r.text)"
-            ".catch(e=>window.__ycaLocalAiE2E='ERR:'+e.message);"
-        )
-        deadline = time.monotonic() + 8
-        chat_result = "pending"
-        while time.monotonic() < deadline:
-            chat_result = str(js("window.__ycaLocalAiE2E || ''", 1500) or "")
-            if chat_result != "pending":
-                break
-            time.sleep(0.05)
-        checkpoint("chat_result", result=chat_result)
-        if chat_result != "LOCAL_AI_E2E_OK":
-            raise RuntimeError(f"chat local não respondeu pelo bridge da interface: {chat_result}")
-
-        payload = {
-            "ok": True,
+        required = {
             "ui_status": "Ativa neste dispositivo",
             "explicit_recheck": True,
             "paired": True,
             "capabilities_ready": True,
-            "local_chat": chat_result,
+            "local_chat": "LOCAL_AI_E2E_OK",
             "cloud_session_required": False,
             "youtube_write_actions_executed": False,
-            "diagnostic_trace": str(trace_path),
         }
-        checkpoint("success")
-        print(json.dumps(payload, ensure_ascii=False), flush=True)
+        for key, expected in required.items():
+            if report.get(key) != expected:
+                validation = {
+                    "ok": False,
+                    "stage": "python_validation",
+                    "error": f"{key}={report.get(key)!r} esperado={expected!r}",
+                    "requests": _LocalAiE2EState.requests,
+                }
+                print(json.dumps(validation, ensure_ascii=False), flush=True)
+                return 98
+
         return 0
     except Exception as exc:
-        try:
-            checkpoint("python_exception", error=f"{type(exc).__name__}: {exc}")
-        except Exception:
-            pass
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}", "diagnostic_trace": str(trace_path)}, ensure_ascii=False), file=sys.stderr, flush=True)
+        payload = {
+            "ok": False,
+            "stage": "python_exception",
+            "error": f"{type(exc).__name__}: {exc}",
+            "requests": _LocalAiE2EState.requests,
+        }
+        print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
         return 98
     finally:
         if window is not None:
             try:
-                checkpoint("window_close_start")
                 window.close()
-                checkpoint("window_close_done")
-            except Exception as exc:
-                try:
-                    checkpoint("window_close_error", error=str(exc))
-                except Exception:
-                    pass
+                from PySide6.QtCore import QCoreApplication
+
+                QCoreApplication.processEvents()
+            except Exception:
+                pass
         if fake is not None:
             fake.shutdown()
             fake.server_close()
         if fake_thread is not None:
             fake_thread.join(timeout=3)
-        if fault_file is not None:
-            try:
-                faulthandler.disable()
-                fault_file.flush()
-                fault_file.close()
-            except Exception:
-                pass
 
 
 def main() -> int:
