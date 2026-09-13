@@ -80,9 +80,8 @@ def main() -> None:
     required = [
         "data-yca-stability-guard",
         "ycaInitialLoad();",
-        "professional-v1.11-fast-independent-boot",
+        "professional-v1.12-single-read-boot",
     ]
-    # The revision lives in Python state rather than HTML, so assert it directly.
     if app.state.dashboard_ui_revision != required[-1]:
         raise SystemExit(f"unexpected dashboard revision: {app.state.dashboard_ui_revision}")
     for marker in required[:-1]:
@@ -92,6 +91,7 @@ def main() -> None:
     forbidden = [
         "data-yca-pro-dashboard",
         "data-yca-native-ux",
+        "data-yca-native-first-policy",
         "data-yca-connection-health",
         "data-yca-activity-ux",
         "Verificando YouTube API",
