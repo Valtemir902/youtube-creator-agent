@@ -9,6 +9,8 @@ on:
       - 'src/desktop_web_shell.py'
       - 'src/desktop_local_server.py'
       - 'src/elite_v2_*.py'
+      - 'src/ai/**'
+      - 'src/intelligence/free_reach_reporting.py'
       - 'src/creator_service/local_ai_dashboard.py'
       - '.github/workflows/elite-v2-local-ai-regression.yml'
   workflow_dispatch:
@@ -16,7 +18,7 @@ on:
 jobs:
   local-ai-regression:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       QT_QPA_PLATFORM: offscreen
       QT_OPENGL: software
@@ -42,7 +44,9 @@ jobs:
             'shiboken6==6.7.3' `
             'fastapi>=0.116,<1' `
             'google-auth>=2.34,<3' `
-            'google-auth-oauthlib>=1.2,<2'
+            'google-auth-oauthlib>=1.2,<2' `
+            'google-api-python-client>=2.149,<3' `
+            'keyring>=25,<26'
 
       - name: Prove Elite V2 preserves Local AI active state and chat
         shell: pwsh
