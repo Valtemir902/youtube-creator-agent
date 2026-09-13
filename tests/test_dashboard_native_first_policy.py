@@ -29,11 +29,13 @@ def test_native_engine_status_exposes_explicit_ai_invocation_policy():
     assert '"passive_external_ai_calls": 0' in source
 
 
-def test_native_first_policy_precedes_final_live_connection_health_layer():
+def test_native_first_policy_precedes_final_stability_guard_without_auto_health_probe():
     source = Path("src/creator_service/oauth_compat_app.py").read_text(encoding="utf-8")
-    assert 'DASHBOARD_UI_REVISION = "professional-v1.9-live-youtube-health-native-cache"' in source
+    assert 'DASHBOARD_UI_REVISION = "professional-v1.11-fast-independent-boot"' in source
     intelligence_terms_pos = source.index("install_dashboard_intelligence_terms(app)")
     policy_pos = source.index("install_dashboard_native_first_policy(app)")
-    health_pos = source.index("install_dashboard_connection_health(app)")
+    stability_pos = source.index("install_dashboard_stability_guard(app)")
     assert policy_pos > intelligence_terms_pos
-    assert health_pos > policy_pos
+    assert stability_pos > policy_pos
+    assert "install_dashboard_connection_health(app)" not in source
+    assert "install_dashboard_activity_ux(app)" not in source
