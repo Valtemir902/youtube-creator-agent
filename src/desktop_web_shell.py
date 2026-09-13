@@ -12,16 +12,16 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from creator_service.local_ai_dashboard import _CSS, _SCRIPT
 from desktop_local_server import app_data_dir
 from elite_v2_ai_workspace import ai_workspace_webengine_source
-from elite_v2_analytics import start_elite_v2_local_app_server
 from elite_v2_content_hub import content_hub_webengine_source
 from elite_v2_growth import growth_webengine_source
+from elite_v2_seo_ui import seo_ui_webengine_source
+from elite_v2_server import start_elite_v2_product_server
 from elite_v2_ui import elite_v2_webengine_source
 from elite_v2_write_ui import write_ui_webengine_source
 
-# Keep the proven local-first shell contract name stable while the V2 server
-# extends it with additive routes. Tests and callers that assert localhost boot
-# should not need to care which additive server version owns the same contract.
-start_local_app_server = start_elite_v2_local_app_server
+# Preserve the stable localhost boot contract name while routing to the additive
+# V2 product server. The dashboard remains local and no production URL is used.
+start_local_app_server = start_elite_v2_product_server
 
 
 def _inner_tag_text(source: str, closing_tag: str) -> str:
@@ -66,11 +66,12 @@ def install_local_ai_webengine_script(web: QWebEngineView) -> None:
 
 
 def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
-    """Layer V2 modules over the proven dashboard contract."""
+    """Layer independently-tested V2 modules over the stable dashboard DOM."""
 
     _install_document_ready_script(web, "yca-elite-v2-ui", elite_v2_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-content-hub", content_hub_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-growth", growth_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-seo", seo_ui_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-ai-workspace", ai_workspace_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-write-ui", write_ui_webengine_source())
 
