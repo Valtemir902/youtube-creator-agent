@@ -26,6 +26,8 @@ def local_ai_webengine_source() -> str:
     The dashboard HTML remains the same local-first asset used by the desktop
     server. Qt injects the Local AI presentation/bridge in the main JS world so
     the page can pair with the loopback companion without any cloud shell.
+    Headless Windows E2E runs use an explicit software-rendering environment in
+    GitHub Actions; normal desktop users keep the native Qt/WebEngine defaults.
     """
 
     css = _inner_tag_text(_CSS, "</style>")
