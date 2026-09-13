@@ -59,13 +59,20 @@ function payload(path) {
   const page = await context.newPage();
   const calls = [];
   const consoleErrors = [];
+  const pageErrors = [];
+  const httpFailures = [];
   let failPlaylists = false;
 
   page.on('console', msg=>{ if(msg.type()==='error') consoleErrors.push(msg.text()); });
-  page.on('pageerror', err=>consoleErrors.push(err.message));
+  page.on('pageerror', err=>pageErrors.push(err.message));
+  page.on('response', response=>{
+    if(response.status() >= 400) httpFailures.push({url:response.url(),status:response.status()});
+  });
 
   await page.route('https://recovery.test/dashboard', route=>route.fulfill({status:200,contentType:'text/html; charset=utf-8',body:html}));
-  await page.route('http://127.0.0.1:17823/**', route=>route.fulfill({status:503,contentType:'application/json',body:'{"detail":"local ai offline fixture"}'}));
+  // Local AI unavailable is a normal capability state. Return an offline payload
+  // without manufacturing a browser-level HTTP error that would pollute the audit.
+  await page.route('http://127.0.0.1:17823/**', route=>route.fulfill({status:200,contentType:'application/json',body:'{"status":"offline","ollama_reachable":false,"model_ready":false}'}));
   await page.route('https://recovery.test/api/**', async route=>{
     const u = new URL(route.request().url());
     const started = Date.now();
@@ -136,6 +143,14 @@ function payload(path) {
   if (overflow) throw new Error('Layout mobile possui overflow horizontal.');
   await shot('11-mobile');
 
+  const unexpectedHttpFailures = httpFailures.filter(x=>!(x.status===503 && x.url.includes('/api/dashboard/playlists')));
+  const unexpectedConsoleErrors = consoleErrors.filter(x=>!x.includes('server responded with a status of 503'));
+  const simulatedPlaylistFailures = httpFailures.filter(x=>x.status===503 && x.url.includes('/api/dashboard/playlists'));
+  if (simulatedPlaylistFailures.length !== 1) throw new Error(`Esperava exatamente uma falha 503 simulada de playlists; houve ${simulatedPlaylistFailures.length}.`);
+  if (unexpectedHttpFailures.length) throw new Error(`Falhas HTTP inesperadas: ${JSON.stringify(unexpectedHttpFailures)}`);
+  if (pageErrors.length) throw new Error(`Erros JavaScript: ${pageErrors.join(' | ')}`);
+  if (unexpectedConsoleErrors.length) throw new Error(`Erros de console inesperados: ${unexpectedConsoleErrors.join(' | ')}`);
+
   const initialCalls = calls.slice(0, core.length);
   const report = {
     ok:true,
@@ -143,11 +158,12 @@ function payload(path) {
     initial_request_count:initialCalls.length,
     initial_calls:initialCalls,
     all_calls:calls,
+    expected_recoverable_http_failures:simulatedPlaylistFailures,
     console_errors:consoleErrors,
+    page_errors:pageErrors,
     forbidden_auto_calls:forbiddenAuto,
   };
   fs.writeFileSync(`${out}/report.json`,JSON.stringify(report,null,2));
-  if (consoleErrors.length) throw new Error(`Erros de console: ${consoleErrors.join(' | ')}`);
   await browser.close();
   console.log(JSON.stringify(report,null,2));
 })().catch(err=>{console.error(err.stack||err);process.exit(1);});
