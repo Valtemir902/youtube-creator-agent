@@ -40,10 +40,15 @@ def pump(seconds: float) -> None:
 def _tab_script(tab: str | None) -> list[tuple[str, str]]:
     if not tab:
         return []
+    # DocumentReady can run after DOMContentLoaded. Retrying against the actual
+    # nav element avoids the previous false-positive where every screenshot was
+    # silently captured on the Overview tab.
     source = (
-        "window.addEventListener('DOMContentLoaded',()=>setTimeout(()=>{"
-        f"document.querySelector('.nav button[data-tab=\"{tab}\"]')?.click();"
-        "},900),{once:true});"
+        "(()=>{let attempts=0;const openTab=()=>{"
+        f"const b=document.querySelector('.nav button[data-tab=\"{tab}\"]');"
+        "if(b){b.click();document.documentElement.dataset.v2VisualRequestedTab='"
+        + tab
+        + "';return;}if(attempts++<60)setTimeout(openTab,100);};setTimeout(openTab,100);})();"
     )
     return [(f"yca-v2-visual-tab-{tab}", source)]
 
