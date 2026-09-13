@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QApplication
 
 from desktop_web_shell import DesktopWindow
 from elite_v2_content_hub import CONTENT_HUB_CSS, CONTENT_HUB_JS
+from elite_v2_growth import GROWTH_CSS, GROWTH_JS
 from elite_v2_ui import V2_CSS, V2_JS, elite_v2_webengine_source
 
 
@@ -89,14 +90,18 @@ def main() -> int:
     for contract in ["data-v2-content-tools", "data-v2-video-search", "data-v2-video-privacy"]:
         if contract not in CONTENT_HUB_JS:
             raise RuntimeError(f"Contrato do Content Hub ausente: {contract}")
-    if ".v2-content-tools" not in CONTENT_HUB_CSS:
-        raise RuntimeError("Design do Content Hub ausente")
+    for contract in ["data-v2-growth-workspace", "/api/v2/analytics/timeseries", "Fonte oficial, sem estimativas"]:
+        if contract not in GROWTH_JS:
+            raise RuntimeError(f"Contrato Growth Analytics ausente: {contract}")
+    if ".v2-content-tools" not in CONTENT_HUB_CSS or ".v2-timeseries-line" not in GROWTH_CSS:
+        raise RuntimeError("Design modular V2 incompleto")
 
     app = QApplication.instance() or QApplication([])
     captures = [
         capture(app, out, name="elite-v2-overview-desktop.png", size=(1440, 900)),
         capture(app, out, name="elite-v2-overview-mobile.png", size=(430, 900)),
         capture(app, out, name="elite-v2-content-hub-desktop.png", size=(1440, 900), tab="videos"),
+        capture(app, out, name="elite-v2-growth-desktop.png", size=(1440, 900), tab="strategy"),
         capture(app, out, name="elite-v2-ai-workspace-desktop.png", size=(1440, 900), tab="settings"),
     ]
 
