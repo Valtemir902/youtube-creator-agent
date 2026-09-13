@@ -17,9 +17,12 @@ from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 
 from desktop_web_shell import DesktopWindow
+from elite_v2_ai_workspace import AI_WORKSPACE_CSS, AI_WORKSPACE_JS
 from elite_v2_content_hub import CONTENT_HUB_CSS, CONTENT_HUB_JS
 from elite_v2_growth import GROWTH_CSS, GROWTH_JS
+from elite_v2_seo_ui import SEO_UI_CSS, SEO_UI_JS
 from elite_v2_ui import V2_CSS, V2_JS, elite_v2_webengine_source
+from elite_v2_write_ui import WRITE_UI_CSS, WRITE_UI_JS
 
 
 def pump(seconds: float) -> None:
@@ -93,7 +96,25 @@ def main() -> int:
     for contract in ["data-v2-growth-workspace", "/api/v2/analytics/timeseries", "Fonte oficial, sem estimativas"]:
         if contract not in GROWTH_JS:
             raise RuntimeError(f"Contrato Growth Analytics ausente: {contract}")
-    if ".v2-content-tools" not in CONTENT_HUB_CSS or ".v2-timeseries-line" not in GROWTH_CSS:
+    for contract in ["data-v2-seo-lab", "SEO & Strategy Lab", "/api/v2/seo/video/"]:
+        if contract not in SEO_UI_JS:
+            raise RuntimeError(f"Contrato SEO Lab ausente: {contract}")
+    for contract in ["data-v2-ai-controls", "Motor preferido", "Supervisionado", "Write Gateway"]:
+        if contract not in AI_WORKSPACE_JS:
+            raise RuntimeError(f"Contrato AI Workspace ausente: {contract}")
+    for contract in ["data-v2-write-control", "Ativar gerenciamento", "/api/v2/write-mode", "Readback obrigatório"]:
+        if contract not in WRITE_UI_JS:
+            raise RuntimeError(f"Contrato Write Gateway UI ausente: {contract}")
+    if any(
+        token not in css
+        for css, token in (
+            (CONTENT_HUB_CSS, ".v2-content-tools"),
+            (GROWTH_CSS, ".v2-timeseries-line"),
+            (SEO_UI_CSS, ".v2-seo-lab"),
+            (AI_WORKSPACE_CSS, ".v2-ai-controls"),
+            (WRITE_UI_CSS, ".v2-write-control"),
+        )
+    ):
         raise RuntimeError("Design modular V2 incompleto")
 
     app = QApplication.instance() or QApplication([])
@@ -101,8 +122,8 @@ def main() -> int:
         capture(app, out, name="elite-v2-overview-desktop.png", size=(1440, 900)),
         capture(app, out, name="elite-v2-overview-mobile.png", size=(430, 900)),
         capture(app, out, name="elite-v2-content-hub-desktop.png", size=(1440, 900), tab="videos"),
-        capture(app, out, name="elite-v2-growth-desktop.png", size=(1440, 900), tab="strategy"),
-        capture(app, out, name="elite-v2-ai-workspace-desktop.png", size=(1440, 900), tab="settings"),
+        capture(app, out, name="elite-v2-growth-seo-desktop.png", size=(1440, 900), tab="strategy"),
+        capture(app, out, name="elite-v2-ai-write-workspace-desktop.png", size=(1440, 900), tab="settings"),
     ]
 
     payload = {
