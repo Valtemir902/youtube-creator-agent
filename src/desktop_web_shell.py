@@ -11,6 +11,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 from creator_service.local_ai_dashboard import _CSS, _SCRIPT
 from desktop_local_server import app_data_dir
+from elite_v2_ai_workspace import ai_workspace_webengine_source
 from elite_v2_analytics import start_elite_v2_local_app_server
 from elite_v2_content_hub import content_hub_webengine_source
 from elite_v2_growth import growth_webengine_source
@@ -66,16 +67,17 @@ def install_local_ai_webengine_script(web: QWebEngineView) -> None:
 
 
 def install_elite_v2_webengine_script(web: QWebEngineView) -> None:
-    """Layer V2 presentation modules over the proven dashboard contract.
+    """Layer V2 modules over the proven dashboard contract.
 
-    Existing DOM ids, API calls, Local AI bridge, write guards and the desktop
-    control plane remain untouched. New V2 modules are additive and independently
-    testable, so a visual feature does not get to quietly become a backend bug.
+    Existing DOM ids, stable API calls, Local AI bridge and write guards remain
+    intact. Each module has an isolated contract so visual evolution cannot
+    quietly mutate the YouTube control plane.
     """
 
     _install_document_ready_script(web, "yca-elite-v2-ui", elite_v2_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-content-hub", content_hub_webengine_source())
     _install_document_ready_script(web, "yca-elite-v2-growth", growth_webengine_source())
+    _install_document_ready_script(web, "yca-elite-v2-ai-workspace", ai_workspace_webengine_source())
 
 
 class DesktopWindow(QMainWindow):
