@@ -51,6 +51,10 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
+          QT_OPENGL: software
+          QT_QUICK_BACKEND: software
+          QTWEBENGINE_DISABLE_SANDBOX: '1'
+          QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --no-sandbox'
         run: |
           $exe = (Resolve-Path 'artifacts/windows/YouTube-Creator-Agent-Elite.exe').Path
           & $exe --local-ai-ui-self-test | Tee-Object -FilePath artifacts/windows/local-ai-ui-e2e.json
