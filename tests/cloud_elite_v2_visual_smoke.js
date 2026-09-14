@@ -77,8 +77,13 @@ async function verifyRevoked(browser) {
   const context = await browser.newContext({ viewport:{width:430,height:900}, locale:'pt-BR' });
   const page = await context.newPage();
   const errors=[];
+  const expected409=[];
   page.on('pageerror', e=>errors.push(e.message));
-  page.on('console', m=>{ if(m.type()==='error') errors.push(m.text()); });
+  page.on('console', m=>{
+    if(m.type()!=='error') return;
+    const text=m.text();
+    if(text.includes('409 (Conflict)')) expected409.push(text); else errors.push(text);
+  });
   await installRoutes(page, true);
   await page.goto('https://cloud-v2.test/dashboard', { waitUntil:'networkidle' });
   await page.waitForTimeout(900);
@@ -87,8 +92,9 @@ async function verifyRevoked(browser) {
   const text = await banner.innerText();
   if (!text.includes('Reconecte o YouTube') || !text.includes('Reconectar agora')) throw new Error('Reconnect guidance is incomplete');
   if ((await page.locator('body').innerText()).includes('Erro HTTP 500')) throw new Error('Raw HTTP 500 leaked into recoverable revoked-token state');
+  if (!expected409.length) throw new Error('Revoked-token scenario did not exercise the expected HTTP 409 contract');
   await page.screenshot({ path:`${out}/cloud-elite-v2-reconnect-mobile.png`, fullPage:true });
-  if (errors.length) throw new Error(`Browser errors: ${errors.join(' | ')}`);
+  if (errors.length) throw new Error(`Unexpected browser errors: ${errors.join(' | ')}`);
   await context.close();
 }
 
