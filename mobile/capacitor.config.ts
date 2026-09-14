@@ -5,7 +5,12 @@ const config: CapacitorConfig = {
   appName: 'YouTube Creator Agent Elite',
   webDir: 'www',
   server: {
-    androidScheme: 'https'
+    url: 'https://creator.silvadigitaltech.com',
+    androidScheme: 'https',
+    cleartext: false
+  },
+  android: {
+    allowMixedContent: false
   }
 };
 
