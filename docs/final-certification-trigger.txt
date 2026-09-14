@@ -1,0 +1,1 @@
+Cross-platform certification trigger: web + Android APK + Windows EXE.
