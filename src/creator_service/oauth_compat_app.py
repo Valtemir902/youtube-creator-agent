@@ -24,7 +24,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "elite-v2-cloud-reconnect-v1"
+DASHBOARD_UI_REVISION = "professional-v1.12-single-read-boot"
 
 
 def create_app():
