@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -67,10 +68,20 @@ def _channel_snapshot_from_raw(raw: str) -> dict[str, Any]:
 
 
 def capture_current_channel(db, tenant_id: str) -> dict[str, Any] | None:
+    """Persist a snapshot of the currently authorized channel when possible.
+
+    A revoked/expired refresh token is intentionally treated as a stale snapshot,
+    not as a fatal condition. This function is called immediately before starting
+    a fresh Google OAuth flow; letting invalid_grant escape would make reconnection
+    impossible precisely when reconnection is needed most.
+    """
     raw = db.get_secret(tenant_id, GOOGLE_SECRET_NAME)
     if not raw:
         return None
-    snapshot = _channel_snapshot_from_raw(raw)
+    try:
+        snapshot = _channel_snapshot_from_raw(raw)
+    except RefreshError:
+        return None
     channel_id = str(snapshot["id"])
     db.put_secret(tenant_id, _credential_name(channel_id), raw)
     registry = _load_registry(db, tenant_id)
