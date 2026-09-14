@@ -9,6 +9,7 @@ from google.auth.exceptions import RefreshError
 
 from elite_v2_ui import elite_v2_webengine_source
 
+HOTFIX_REVISION = "revoked-token-recovery-v1"
 
 _RECONNECT_JS = r'''
 (()=>{
