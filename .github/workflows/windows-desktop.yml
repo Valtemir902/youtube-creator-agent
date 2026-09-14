@@ -2,11 +2,12 @@ name: Windows Desktop Release Smoke
 
 on:
   push:
-    branches: [feat/elite-v2-ui-system]
+    branches: [feat/elite-v2-ui-system, feat/web-dashboard-v1]
     paths:
       - 'main.py'
       - 'src/**'
       - 'scripts/build_windows.py'
+      - 'scripts/ui_v2_visual_smoke.py'
       - 'desktop_windows.spec'
       - 'requirements.txt'
       - 'requirements-build-windows.txt'
@@ -17,6 +18,7 @@ on:
       - 'main.py'
       - 'src/**'
       - 'scripts/build_windows.py'
+      - 'scripts/ui_v2_visual_smoke.py'
       - 'desktop_windows.spec'
       - 'requirements.txt'
       - 'requirements-build-windows.txt'
@@ -77,9 +79,28 @@ jobs:
           if ($result.youtube_write_actions_executed) { throw 'Teste de IA Local executou escrita no YouTube' }
           Write-Host 'Local AI UI E2E OK: aguardando -> ativa -> chat local respondeu.'
 
-      - name: Upload verified Windows artifact
+      - name: Capture Elite V2 desktop and mobile screenshots
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QT_OPENGL: software
+          QT_QUICK_BACKEND: software
+          QTWEBENGINE_DISABLE_SANDBOX: '1'
+          QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --no-sandbox'
+        run: |
+          python scripts/ui_v2_visual_smoke.py | Tee-Object -FilePath artifacts/windows/ui-v2-visual-smoke.json
+          if ($LASTEXITCODE -ne 0) { throw "Elite V2 visual smoke falhou com exit code $LASTEXITCODE" }
+          $line = Get-Content artifacts/windows/ui-v2-visual-smoke.json | Where-Object { $_ -match '^\{"ok"' } | Select-Object -Last 1
+          if (-not $line) { throw 'Elite V2 visual smoke não gerou payload final' }
+          $result = $line | ConvertFrom-Json
+          if (-not $result.ok -or -not $result.semantic_workspace_validation) { throw 'Elite V2 visual smoke não foi validado semanticamente' }
+          if ($result.youtube_write_actions_executed) { throw 'Visual smoke executou escrita no YouTube' }
+
+      - name: Upload verified Windows artifact and screenshots
         uses: actions/upload-artifact@v4
         with:
           name: yca-windows-desktop-verified
-          path: artifacts/windows/
+          path: |
+            artifacts/windows/
+            artifacts/ui-v2/
           if-no-files-found: error
