@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from cryptography.fernet import Fernet
@@ -55,6 +57,29 @@ def test_oauth_state_is_one_time_and_expires(tmp_path):
     db.save_oauth_state("cliente-a", "state-2", now - 1)
     with pytest.raises(TenantStoreError, match="expirou"):
         db.consume_oauth_state("state-2", now)
+
+
+def test_oauth_state_concurrent_callbacks_only_one_consumes(tmp_path):
+    db = _db(tmp_path)
+    now = int(time.time())
+    db.save_oauth_state("cliente-a", "state-race", now + 60)
+    barrier = threading.Barrier(2)
+
+    def consume():
+        barrier.wait(timeout=5)
+        try:
+            return ("ok", db.consume_oauth_state("state-race", now))
+        except TenantStoreError as exc:
+            return ("error", str(exc))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: consume(), range(2)))
+
+    successes = [value for status, value in results if status == "ok"]
+    failures = [value for status, value in results if status == "error"]
+    assert successes == ["cliente-a"]
+    assert len(failures) == 1
+    assert "já foi utilizado" in failures[0]
 
 
 def test_tenant_id_rejects_path_traversal():

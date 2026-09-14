@@ -150,6 +150,10 @@ class TenantDatabase:
     def consume_oauth_state(self, state: str, now: int) -> str:
         digest = self.state_hash(state)
         with self._connect() as conn:
+            # Acquire the write lock before reading the one-time state. This
+            # serializes concurrent callbacks so only one request can observe
+            # and consume an unspent state value.
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT tenant_id, expires_at, consumed_at FROM oauth_states WHERE state_hash=?",
                 (digest,),
@@ -161,10 +165,12 @@ class TenantDatabase:
                 raise TenantStoreError("Estado OAuth já foi utilizado.")
             if int(expires_at) < int(now):
                 raise TenantStoreError("Estado OAuth expirou.")
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE oauth_states SET consumed_at=? WHERE state_hash=? AND consumed_at IS NULL",
                 (int(now), digest),
             )
+            if cursor.rowcount != 1:
+                raise TenantStoreError("Estado OAuth já foi utilizado.")
         return str(tenant_id)
 
 

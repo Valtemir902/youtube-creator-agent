@@ -1,0 +1,140 @@
+name: Production YouTube Capability Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"; test -n "$VPS_USER"; test -n "$VPS_SSH_PRIVATE_KEY"; test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh; chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519; chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts; chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify real partial-write auto-rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/apps/youtube-creator-agent
+          compose='docker compose -f deploy/docker-compose.oracle.yml'
+          echo '=== deployed revision ==='; git rev-parse HEAD
+          $compose exec -T mcp python - <<'PY'
+          import sqlite3
+          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
+          from creator_service.cloud_runtime import CloudTenantResolver, GOOGLE_SECRET_NAME
+
+          resolver = CloudTenantResolver()
+          with sqlite3.connect(resolver.db.path) as conn:
+              row = conn.execute(
+                  "SELECT ts.tenant_id FROM tenant_secrets ts JOIN tenants t ON t.tenant_id=ts.tenant_id "
+                  "WHERE ts.secret_name=? AND t.enabled=1 ORDER BY ts.updated_at DESC LIMIT 1",
+                  (GOOGLE_SECRET_NAME,),
+              ).fetchone()
+          if not row:
+              raise RuntimeError('Nenhum tenant com YouTube conectado.')
+
+          service = VerifiedAdvancedSafeCreatorService(resolver.resolve(str(row[0])))
+          youtube = service._youtube()
+          channel = youtube.channels().list(part='contentDetails', mine=True).execute().get('items', [])[0]
+          uploads = channel['contentDetails']['relatedPlaylists']['uploads']
+
+          ids = []
+          token = None
+          for _ in range(4):
+              kwargs = {'part': 'contentDetails', 'playlistId': uploads, 'maxResults': 50}
+              if token:
+                  kwargs['pageToken'] = token
+              page = youtube.playlistItems().list(**kwargs).execute()
+              ids.extend(
+                  item['contentDetails']['videoId']
+                  for item in page.get('items', [])
+                  if item.get('contentDetails', {}).get('videoId')
+              )
+              token = page.get('nextPageToken')
+              if not token:
+                  break
+
+          chosen = None
+          for offset in range(0, len(ids), 50):
+              batch = ids[offset:offset + 50]
+              items = youtube.videos().list(
+                  part='snippet,liveStreamingDetails,status', id=','.join(batch), maxResults=50
+              ).execute().get('items', [])
+              by_id = {item['id']: item for item in items}
+              for video_id in batch:
+                  item = by_id.get(video_id, {})
+                  if not item or item.get('liveStreamingDetails'):
+                      continue
+                  if item.get('status', {}).get('privacyStatus') not in ('public', 'unlisted'):
+                      continue
+                  if service.memory.recent_edit_state(video_id).protected:
+                      continue
+                  chosen = item
+                  break
+              if chosen:
+                  break
+
+          if chosen is None:
+              raise RuntimeError('Nenhum vídeo normal sem proteção recente foi encontrado em até 200 uploads.')
+
+          video_id = chosen['id']
+          before = service._current_video_snippet(video_id)
+          tags = list(before.get('tags', []) or [])[:12]
+          replacement = 'creator agent verified write test'
+          if tags:
+              tags[0] = replacement if tags[0] != replacement else 'creator agent verified write test 2'
+          else:
+              tags = [replacement]
+
+          print('selected_video_id=', video_id)
+          print('selected_video_title=', before['title'])
+          preview = service.preview_video_metadata_update(video_id=video_id, tags=tags)
+          try:
+              result = service.apply_video_metadata_update(
+                  approval_payload=preview['approval_payload'],
+                  approval_token=preview['approval_token'],
+              )
+          except RuntimeError as exc:
+              message = str(exc)
+              if 'revertida automaticamente' not in message:
+                  raise
+              after = service._current_video_snippet(video_id)
+              if after != before:
+                  raise RuntimeError('A camada verificada reportou rollback, mas o vídeo não voltou ao estado original.')
+              print('verified_partial_write_auto_rollback=ok')
+              print('verified_failure_message=', message)
+          else:
+              if result.get('persisted_verified') is not True:
+                  raise RuntimeError('A escrita retornou sucesso sem persisted_verified=True.')
+              print('tag_write_now_persisted=ok')
+              rb = result['rollback_preview']
+              service.apply_video_metadata_rollback(
+                  rollback_payload=rb['rollback_payload'],
+                  rollback_token=rb['rollback_token'],
+              )
+              after = service._current_video_snippet(video_id)
+              if after != before:
+                  raise RuntimeError('Rollback assinado não restaurou o vídeo após escrita válida.')
+              print('signed_rollback_after_verified_write=ok')
+
+          print('VERIFIED_PRODUCTION_WRITE_SAFETY=PASS')
+          PY
+          REMOTE

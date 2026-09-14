@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark;--bg:#0a1220;--line:#24425b;--text:#f6fbff;--muted:#91a9bb;--cyan:#23dff4;--green:#44e8a7}*{box-sizing:border-box}body{margin:0;background:transparent;color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}.card{border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,#0d1929,#08111d);padding:16px}.eyebrow{font-size:10px;letter-spacing:.14em;color:var(--cyan);font-weight:900}.head{display:flex;gap:11px;align-items:flex-start;margin-top:9px}.mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;border:1px solid #2f6675;background:#0a2631;color:var(--cyan);font-weight:950}.head h2{font-size:17px;margin:0 0 3px}.muted{color:var(--muted);font-size:12px}.fields{display:flex;gap:6px;flex-wrap:wrap;margin:13px 0}.pill{border:1px solid #29485e;border-radius:999px;padding:5px 8px;color:#cde0ec;background:#0a1724;font-size:11px}.actions{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:14px}.btn{min-height:42px;border-radius:11px;border:1px solid #2a5269;background:#0b1b29;color:#fff;font-weight:850;cursor:pointer;padding:10px 13px}.btn.primary{border-color:#28bcd0;background:linear-gradient(135deg,#087d8c,#4740a0)}.btn:disabled{opacity:.5;cursor:not-allowed}.safe{margin-top:11px;color:#7892a6;font-size:10px}.cancelled{color:#a9bdcb;font-weight:800}.error{color:#ff9daf;font-size:11px;margin-top:10px;display:none}@media(max-width:420px){.actions{grid-template-columns:1fr}.btn{width:100%}}
+</style>
+</head>
+<body>
+<section class="card">
+  <div class="eyebrow">YOUTUBE CREATOR AGENT</div>
+  <div class="head"><div class="mark">YC</div><div><h2 id="title">Alterações prontas</h2><div class="muted" id="video">Validando o vídeo selecionado…</div></div></div>
+  <div class="fields" id="fields"></div>
+  <div class="actions" id="actions"><button class="btn primary" id="apply">Enviar e aplicar mudanças</button><button class="btn" id="cancel">Cancelar</button></div>
+  <div class="error" id="error"></div>
+  <div class="safe">Antes de gravar, o servidor confere novamente conta, canal, ID do vídeo, estado atual e integridade do pacote. Se algo divergir, bloqueia a alteração.</div>
+</section>
+<script>
+const $=id=>document.getElementById(id);let href='';let cancelled=false;
+const labels={title:'Título',description:'Descrição',tags:'Tags',categoryId:'Categoria',playlist:'Playlist'};
+function hydrate(data,meta){
+  const handoff=(meta&&meta['yca/handoff'])||{};href=handoff.href||data?.handoff_url||'';
+  const name=data?.video_title||data?.title||'Vídeo selecionado';const id=data?.video_id||'';
+  $('video').textContent=id?`${name} · ${id}`:name;
+  const changed=data?.changed_fields||handoff.changed_fields||[];
+  $('fields').innerHTML=changed.map(x=>`<span class="pill">${labels[x]||x}</span>`).join('')||'<span class="pill">Sem mudanças</span>';
+  $('apply').disabled=!href||!changed.length;
+}
+function inspect(result){
+  if(!result)return;
+  const data=result.structuredContent||result.structured_content||result.toolOutput||result.output||result;
+  const meta=result._meta||result.meta||result.toolResponseMetadata||{};
+  hydrate(data,meta);
+}
+async function openHandoff(){
+  if(cancelled||!href)return;
+  $('apply').disabled=true;$('cancel').disabled=true;$('apply').textContent='Enviando…';
+  try{
+    if(window.openai?.openExternal){await window.openai.openExternal({href,redirectUrl:false});return}
+    const opened=window.open(href,'_blank','noopener,noreferrer');if(!opened)location.href=href;
+  }catch(e){$('error').style.display='block';$('error').textContent='Não foi possível abrir o executor seguro. Use o link de fallback mostrado na conversa.';$('apply').disabled=false;$('cancel').disabled=false;$('apply').textContent='Enviar e aplicar mudanças'}
+}
+$('apply').onclick=openHandoff;
+$('cancel').onclick=()=>{cancelled=true;$('apply').disabled=true;$('cancel').disabled=true;$('actions').innerHTML='<div class="cancelled">Cancelado. Nenhuma alteração foi enviada.</div>';try{window.openai?.requestClose?.()}catch{}};
+inspect(window.openai?.toolOutput);inspect(window.openai?.toolResponseMetadata);
+window.addEventListener('message',event=>{const d=event.data||{};if(d.method==='ui/notifications/tool-result'||d.type==='mcp_tool_result'||d.type==='call_tool_result')inspect(d.params||d.result||d)});
+</script>
+</body>
+</html>
