@@ -9,6 +9,7 @@ from .dashboard_ai_route_guard import install_dashboard_ai_route_guard
 from .dashboard_grounded_advice import install_grounded_strategy_service
 from .dashboard_intelligence_terms import install_dashboard_intelligence_terms
 from .dashboard_performance import install_dashboard_performance
+from .dashboard_runtime_hotfix import install_dashboard_runtime_hotfix
 from .dashboard_stability_guard import install_dashboard_stability_guard
 from .extended_onboarding import create_app as create_extended_app
 from .free_channel_dashboard import install_free_channel_dashboard
@@ -23,7 +24,7 @@ from .oauth_compat import install_oauth_compat_routes
 from .pwa import install_pwa_routes
 
 
-DASHBOARD_UI_REVISION = "professional-v1.12-single-read-boot"
+DASHBOARD_UI_REVISION = "elite-v2-cloud-reconnect-v1"
 
 
 def create_app():
@@ -57,5 +58,8 @@ def create_app():
     # Do not install the legacy browser policy: its only live effect without the
     # removed Pro UI was a duplicate /status read plus a document-wide observer.
     install_dashboard_stability_guard(app)
+    # Cloud-only hardening: recover revoked Google tokens as a reconnect state and
+    # layer the certified Elite V2 presentation over the authenticated web panel.
+    install_dashboard_runtime_hotfix(app)
     app.state.dashboard_ui_revision = DASHBOARD_UI_REVISION
     return app
