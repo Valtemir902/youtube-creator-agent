@@ -52,7 +52,8 @@ def test_cloud_layer_preserves_prior_composition_and_adds_human_results():
     assert 'ycaInitialLoad();' in response.text
     assert 'data-yca-cloud-elite-v2' in response.text
     assert 'data-yca-google-reconnect' in response.text
-    assert 'youtube_reconnect_required' in response.text
+    assert 'yca:youtube-reconnect-required' in response.text
+    assert '__ycaYoutubeReconnectRequired' in response.text
     assert 'data-yca-human-results' in response.text
     assert 'Ver dados técnicos (JSON)' in response.text
 
