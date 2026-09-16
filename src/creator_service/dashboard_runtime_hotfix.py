@@ -14,11 +14,11 @@ from .dashboard_human_results_ui import enhance_human_results_html
 from .dashboard_stability_guard import _HEAD_SCRIPT, _apply_fast_boot_policy
 from .extended_onboarding import _enhance_dashboard_html
 
-HOTFIX_REVISION = "revoked-token-recovery-v4-single-identity-read"
+HOTFIX_REVISION = "revoked-token-recovery-v5-final-certification"
 
 _RECONNECT_JS = r'''
 (()=>{
-  const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
+  const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot',"'":'&#39;'}[c]));
   const installBanner=(detail)=>{
     if(document.querySelector('[data-yca-google-reconnect]'))return;
     const host=document.querySelector('.content')||document.body;
