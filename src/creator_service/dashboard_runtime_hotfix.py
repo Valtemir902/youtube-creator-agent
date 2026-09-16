@@ -14,7 +14,7 @@ from .dashboard_human_results_ui import enhance_human_results_html
 from .dashboard_stability_guard import _HEAD_SCRIPT, _apply_fast_boot_policy
 from .extended_onboarding import _enhance_dashboard_html
 
-HOTFIX_REVISION = "revoked-token-recovery-v3-preserve-composed-dashboard"
+HOTFIX_REVISION = "revoked-token-recovery-v4-single-identity-read"
 
 _RECONNECT_JS = r'''
 (()=>{
@@ -38,13 +38,14 @@ _RECONNECT_JS = r'''
       }catch(err){b.disabled=false;b.textContent='Reconectar agora';const span=box.querySelector('span');if(span)span.textContent=err.message||String(err)}
     };
   };
-  const probe=async()=>{
-    try{
-      const r=await fetch('/api/dashboard/channel/identity',{credentials:'same-origin',headers:{Accept:'application/json'}});
-      if(r.status===409){const d=await r.json().catch(()=>({}));if(d.code==='youtube_reconnect_required'){installBanner(d.detail);const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';}}
-    }catch(_err){}
+  const showReconnect=()=>{
+    installBanner();
+    const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');
+    const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';
   };
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(probe,120),{once:true});else setTimeout(probe,120);
+  window.addEventListener('yca:youtube-reconnect-required',showReconnect);
+  const boot=()=>{if(window.__ycaYoutubeReconnectRequired)showReconnect()};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
 '''
 
