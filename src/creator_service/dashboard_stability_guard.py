@@ -79,7 +79,6 @@ async function ycaInitialLoad(){
   setTimeout(()=>{
     void Promise.allSettled([
       loadPlaylists(),
-      loadVideos(),
       loadChannel()
     ]);
   },80);
