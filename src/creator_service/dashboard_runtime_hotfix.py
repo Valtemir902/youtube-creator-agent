@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.routing import APIRoute
 from google.auth.exceptions import RefreshError
 
 from elite_v2_ui import elite_v2_webengine_source
 
-HOTFIX_REVISION = "revoked-token-recovery-v1"
+from .ai_vault_ui import enhance_ai_vault_html
+from .dashboard_human_results_ui import enhance_human_results_html
+from .dashboard_stability_guard import _HEAD_SCRIPT, _apply_fast_boot_policy
+from .extended_onboarding import _enhance_dashboard_html
+
+HOTFIX_REVISION = "revoked-token-recovery-v5-final-certification"
 
 _RECONNECT_JS = r'''
 (()=>{
@@ -33,36 +38,55 @@ _RECONNECT_JS = r'''
       }catch(err){b.disabled=false;b.textContent='Reconectar agora';const span=box.querySelector('span');if(span)span.textContent=err.message||String(err)}
     };
   };
-  const probe=async()=>{
-    try{
-      const r=await fetch('/api/dashboard/channel/identity',{credentials:'same-origin',headers:{Accept:'application/json'}});
-      if(r.status===409){const d=await r.json().catch(()=>({}));if(d.code==='youtube_reconnect_required'){installBanner(d.detail);const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';}}
-    }catch(_err){}
+  const showReconnect=()=>{
+    installBanner();
+    const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');
+    const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';
   };
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(probe,120),{once:true});else setTimeout(probe,120);
+  window.addEventListener('yca:youtube-reconnect-required',showReconnect);
+  const boot=()=>{if(window.__ycaYoutubeReconnectRequired)showReconnect()};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
 })();
 '''
 
 
+def _apply_cloud_presentation(source: str) -> str:
+    """Add cloud-only UX on top of the already-composed dashboard HTML."""
+    source = enhance_human_results_html(source)
+    bundle = elite_v2_webengine_source() + "\n" + _RECONNECT_JS
+    injection = "<script data-yca-cloud-elite-v2>\n" + bundle.replace("</script", "<\\/script") + "\n</script>"
+    if "data-yca-cloud-elite-v2" not in source:
+        source = source.replace("</body>", injection + "\n</body>", 1)
+    return source
+
+
 def _dashboard_html() -> str:
+    """Build a deterministic standalone fixture with the critical composition layers.
+
+    Production does not use this function to replace the response anymore. It is
+    intentionally kept for tests/fixtures that need a complete dashboard without
+    starting the application.
+    """
     page = Path(__file__).resolve().parent / "web" / "dashboard.html"
     html = page.read_text(encoding="utf-8")
-    # Use the same independently-tested visual system as the Windows shell. Cloud
-    # keeps the existing API/write contracts; this layer only upgrades presentation.
-    source = elite_v2_webengine_source() + "\n" + _RECONNECT_JS
-    injection = "<script data-yca-cloud-elite-v2>\n" + source.replace("</script", "<\\/script") + "\n</script>"
-    if "data-yca-cloud-elite-v2" not in html:
-        html = html.replace("</body>", injection + "\n</body>", 1)
-    return html
+    html = _enhance_dashboard_html(html)
+    html = enhance_ai_vault_html(html)
+    html = _apply_fast_boot_policy(html)
+    if "data-yca-stability-guard" not in html:
+        html = html.replace("</head>", _HEAD_SCRIPT + "\n</head>", 1)
+    return _apply_cloud_presentation(html)
 
 
 def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
     """Harden cloud dashboard runtime without changing any YouTube write contract.
 
-    * Expired/revoked Google refresh tokens become a recoverable 409 instead of 500.
-    * The authenticated web dashboard receives the certified Elite V2 visual layer.
-    * No Google/YouTube call is performed by this installer itself.
+    The cloud layer wraps the dashboard route that previous installers already
+    composed. It never rebuilds the page from the raw HTML at request time. This
+    preserves stability guards, feature workspaces, the advanced key vault and any
+    future route-level enhancer installed before this final presentation layer.
     """
+    if getattr(app.state, "dashboard_runtime_hotfix_installed", False):
+        return
 
     @app.exception_handler(RefreshError)
     async def google_refresh_error(_request: Request, exc: RefreshError) -> JSONResponse:
@@ -84,12 +108,33 @@ def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.middleware("http")
-    async def cloud_elite_v2_dashboard(request: Request, call_next):
-        response = await call_next(request)
-        if request.url.path != "/dashboard" or response.status_code != 200:
+    route = next(
+        r for r in app.router.routes
+        if isinstance(r, APIRoute) and r.path == "/dashboard" and "GET" in (r.methods or set())
+    )
+    original = route.endpoint
+    app.router.routes.remove(route)
+
+    async def dashboard(request: Request):
+        response = await original(request)
+        if not isinstance(response, HTMLResponse):
             return response
-        headers = {k: v for k, v in response.headers.items() if k.lower() not in {"content-length", "content-type"}}
+        headers = {
+            k: v for k, v in response.headers.items()
+            if k.lower() not in {"content-length", "content-type"}
+        }
         headers["Cache-Control"] = "no-store"
         headers["X-YCA-Dashboard-UI"] = "elite-v2-cloud"
-        return HTMLResponse(_dashboard_html(), status_code=200, headers=headers)
+        headers["X-YCA-Dashboard-UX"] = "human-results-key-vault"
+        source = response.body.decode("utf-8")
+        source = _apply_cloud_presentation(source)
+        return HTMLResponse(source, status_code=response.status_code, headers=headers)
+
+    app.add_api_route(
+        "/dashboard",
+        dashboard,
+        methods=["GET"],
+        include_in_schema=False,
+        name="dashboard_runtime_hotfix",
+    )
+    app.state.dashboard_runtime_hotfix_installed = True

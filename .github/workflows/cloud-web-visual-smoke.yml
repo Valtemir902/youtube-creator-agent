@@ -2,9 +2,11 @@ name: Cloud Web Elite V2 Visual Smoke
 
 on:
   push:
-    branches: [feat/web-dashboard-v1]
+    branches: [feat/web-dashboard-v1, "fix/**"]
     paths:
       - 'src/creator_service/dashboard_runtime_hotfix.py'
+      - 'src/creator_service/dashboard_human_results_ui.py'
+      - 'src/creator_service/ai_vault_ui.py'
       - 'src/creator_service/oauth_compat_app.py'
       - 'src/creator_service/web/dashboard.html'
       - 'src/elite_v2_ui.py'
@@ -30,7 +32,7 @@ jobs:
           npm install --save-dev playwright@1.63.0
           npm audit --audit-level=high
           npx playwright install --with-deps chromium
-      - name: Capture healthy and revoked-token web states
+      - name: Capture humanized results and advanced key-vault states
         run: node tests/cloud_elite_v2_visual_smoke.js
       - name: Upload web screenshots
         if: always()

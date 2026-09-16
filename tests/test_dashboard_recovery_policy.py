@@ -23,7 +23,9 @@ def test_stability_guard_replaces_automatic_full_refresh_with_independent_boot()
     assert "ycaInitialLoad();" in result
     assert "loadChannelIdentity()" in result
     assert "loadPlaylists()" in result
-    assert "loadVideos()" in result
+    # Elite V2 owns the single overview video read used by its real-data chart.
+    # The full Content Hub read remains explicit when the user opens Videos.
+    assert "loadVideos()" not in result
     assert "loadChannel()" in result
     assert "loadLive()" not in result
     assert "\nrefreshAll();\n</script>" not in result

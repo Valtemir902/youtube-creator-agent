@@ -24,6 +24,10 @@ _HEAD_SCRIPT = r'''
     if(label)label.textContent='Conectado · leitura verificada';
     if(badge)badge.className='pill good';
   };
+  const markReconnectRequired=()=>{
+    window.__ycaYoutubeReconnectRequired=true;
+    window.dispatchEvent(new CustomEvent('yca:youtube-reconnect-required'));
+  };
   window.addEventListener('yca:youtube-read-verified',markVerified);
   window.fetch=async function(input,init={}){
     const policy=classify(input,init);
@@ -37,8 +41,13 @@ _HEAD_SCRIPT = r'''
     const timer=setTimeout(()=>controller.abort('dashboard-read-timeout'),policy.timeout);
     try{
       const response=await baseFetch(input,{...init,signal:controller.signal});
-      if(response.ok&&policy.url.pathname==='/api/dashboard/channel/identity'){
-        window.dispatchEvent(new Event('yca:youtube-read-verified'));
+      if(policy.url.pathname==='/api/dashboard/channel/identity'){
+        if(response.ok){
+          window.__ycaYoutubeReconnectRequired=false;
+          window.dispatchEvent(new Event('yca:youtube-read-verified'));
+        }else if(response.status===409){
+          markReconnectRequired();
+        }
       }
       return response;
     }catch(err){
@@ -70,7 +79,6 @@ async function ycaInitialLoad(){
   setTimeout(()=>{
     void Promise.allSettled([
       loadPlaylists(),
-      loadVideos(),
       loadChannel()
     ]);
   },80);
