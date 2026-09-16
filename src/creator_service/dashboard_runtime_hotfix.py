@@ -18,7 +18,7 @@ HOTFIX_REVISION = "revoked-token-recovery-v5-final-certification"
 
 _RECONNECT_JS = r'''
 (()=>{
-  const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot',"'":'&#39;'}[c]));
+  const esc=v=>String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));
   const installBanner=(detail)=>{
     if(document.querySelector('[data-yca-google-reconnect]'))return;
     const host=document.querySelector('.content')||document.body;
