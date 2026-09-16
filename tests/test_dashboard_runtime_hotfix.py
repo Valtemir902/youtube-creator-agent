@@ -32,12 +32,19 @@ def test_revoked_google_refresh_token_is_recoverable_not_500():
     assert 'Reconecte' in payload['detail']
 
 
-def test_dashboard_gets_cloud_elite_v2_and_reconnect_ui():
+def test_dashboard_gets_cloud_elite_v2_reconnect_key_vault_and_human_results():
     client = TestClient(make_app(), raise_server_exceptions=False)
     response = client.get('/dashboard')
     assert response.status_code == 200
     assert response.headers['x-yca-dashboard-ui'] == 'elite-v2-cloud'
+    assert response.headers['x-yca-dashboard-ux'] == 'human-results-key-vault'
     assert 'data-yca-cloud-elite-v2' in response.text
     assert 'data-yca-google-reconnect' in response.text
     assert 'youtube_reconnect_required' in response.text
+    assert 'data-ai-vault-manager-v2' in response.text
+    assert 'id="vaultModel"' in response.text
+    assert 'id="vaultLoadModels"' in response.text
+    assert "'/api/ai/keys/'+encodeURIComponent(id)+'/test'" in response.text
+    assert 'data-yca-human-results' in response.text
+    assert 'Ver dados técnicos (JSON)' in response.text
     assert 'Elite V2' in response.text or 'v2-command' in response.text
