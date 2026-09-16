@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -9,7 +8,11 @@ from google.auth.exceptions import RefreshError
 
 from elite_v2_ui import elite_v2_webengine_source
 
-HOTFIX_REVISION = "revoked-token-recovery-v1"
+from .ai_vault_ui import enhance_ai_vault_html
+from .dashboard_human_results_ui import enhance_human_results_html
+from .extended_onboarding import _enhance_dashboard_html
+
+HOTFIX_REVISION = "revoked-token-recovery-v2-human-results-key-vault"
 
 _RECONNECT_JS = r'''
 (()=>{
@@ -47,8 +50,16 @@ _RECONNECT_JS = r'''
 def _dashboard_html() -> str:
     page = Path(__file__).resolve().parent / "web" / "dashboard.html"
     html = page.read_text(encoding="utf-8")
-    # Use the same independently-tested visual system as the Windows shell. Cloud
-    # keeps the existing API/write contracts; this layer only upgrades presentation.
+
+    # Re-apply the deterministic route-level enhancers before the cloud visual layer.
+    # The previous hotfix rebuilt from the raw file here, which silently discarded
+    # the advanced multi-key vault installed earlier in application composition.
+    html = _enhance_dashboard_html(html)
+    html = enhance_ai_vault_html(html)
+    html = enhance_human_results_html(html)
+
+    # Use the independently-tested Elite V2 visual system as the final presentation
+    # layer. Cloud keeps the existing API/write contracts; this only upgrades UI.
     source = elite_v2_webengine_source() + "\n" + _RECONNECT_JS
     injection = "<script data-yca-cloud-elite-v2>\n" + source.replace("</script", "<\\/script") + "\n</script>"
     if "data-yca-cloud-elite-v2" not in html:
@@ -61,6 +72,8 @@ def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
 
     * Expired/revoked Google refresh tokens become a recoverable 409 instead of 500.
     * The authenticated web dashboard receives the certified Elite V2 visual layer.
+    * Advanced AI key-vault/model selection remains available in the cloud surface.
+    * Raw JSON result blocks are rendered as human-readable cards with optional JSON.
     * No Google/YouTube call is performed by this installer itself.
     """
 
@@ -92,4 +105,5 @@ def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
         headers = {k: v for k, v in response.headers.items() if k.lower() not in {"content-length", "content-type"}}
         headers["Cache-Control"] = "no-store"
         headers["X-YCA-Dashboard-UI"] = "elite-v2-cloud"
+        headers["X-YCA-Dashboard-UX"] = "human-results-key-vault"
         return HTMLResponse(_dashboard_html(), status_code=200, headers=headers)
