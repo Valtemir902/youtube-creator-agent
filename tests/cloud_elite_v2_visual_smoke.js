@@ -24,13 +24,17 @@ function cloudHtml() {
 
   const eliteCss = pyRaw('src/elite_v2_ui.py', 'V2_CSS');
   const eliteJs = pyRaw('src/elite_v2_ui.py', 'V2_JS');
+  const stabilityGuard = pyRaw('src/creator_service/dashboard_stability_guard.py', '_HEAD_SCRIPT');
   const reconnect = pyRaw('src/creator_service/dashboard_runtime_hotfix.py', '_RECONNECT_JS');
   const vaultCss = pyRaw('src/creator_service/ai_vault_ui.py', '_CSS');
   const vaultScript = pyRaw('src/creator_service/ai_vault_ui.py', '_SCRIPT');
   const humanCss = pyRaw('src/creator_service/dashboard_human_results_ui.py', '_CSS');
   const humanScript = pyRaw('src/creator_service/dashboard_human_results_ui.py', '_SCRIPT');
 
-  html = html.replace('</head>', `${vaultCss}\n${humanCss}\n<style data-yca-elite-v2>${eliteCss}</style></head>`);
+  // Mirror the real cloud composition closely enough to exercise the same
+  // single-read reconnect event contract. Without the stability guard this
+  // fixture would be testing a page production never serves.
+  html = html.replace('</head>', `${stabilityGuard}\n${vaultCss}\n${humanCss}\n<style data-yca-elite-v2>${eliteCss}</style></head>`);
   html = html.replace('</body>', `${vaultScript}\n${humanScript}\n<script data-yca-cloud-elite-v2>${eliteJs}\n${reconnect}</script></body>`);
   return html;
 }
