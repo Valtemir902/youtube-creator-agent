@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import re
+import time
 from typing import Any
 
 from googleapiclient.http import MediaIoBaseUpload
 
+from .caption_quality import process_srt
 from .safe_service import SafeCreatorService
 from .security import signer_from_env
 
@@ -252,18 +254,76 @@ class AdvancedSafeCreatorService(SafeCreatorService):
         }
 
     @staticmethod
+    def _video_duration_seconds(value: str | None) -> float | None:
+        match = re.fullmatch(
+            r"P(?:(?P<d>\\d+)D)?(?:T(?:(?P<h>\\d+)H)?(?:(?P<m>\\d+)M)?(?:(?P<s>\\d+(?:\\.\\d+)?)S)?)?",
+            str(value or ""),
+        )
+        if not match:
+            return None
+        return (
+            float(match.group("d") or 0) * 86400
+            + float(match.group("h") or 0) * 3600
+            + float(match.group("m") or 0) * 60
+            + float(match.group("s") or 0)
+        )
+
+    @staticmethod
+    def _caption_language_matches(track_language: str | None, requested: str) -> bool:
+        track = str(track_language or "").casefold()
+        wanted = str(requested or "").casefold()
+        return bool(track and wanted and (track == wanted or track.split("-", 1)[0] == wanted.split("-", 1)[0]))
+
+    def _caption_context(self, video_id: str, language: str) -> dict[str, Any]:
+        tracks = list(
+            self._youtube().captions().list(part="snippet", videoId=video_id).execute().get("items", [])
+        )
+        manual_same_language: list[dict[str, Any]] = []
+        source_track: dict[str, Any] | None = None
+        for track in tracks:
+            snippet = track.get("snippet", {}) or {}
+            if not self._caption_language_matches(snippet.get("language"), language):
+                continue
+            is_auto = str(snippet.get("trackKind", "")).upper() == "ASR"
+            published = not bool(snippet.get("isDraft", False))
+            if not is_auto and published:
+                manual_same_language.append(track)
+            if source_track is None and is_auto:
+                source_track = track
+        if source_track is None:
+            for track in tracks:
+                snippet = track.get("snippet", {}) or {}
+                if str(snippet.get("trackKind", "")).upper() == "ASR":
+                    source_track = track
+                    break
+        source_snippet = (source_track or {}).get("snippet", {}) or {}
+        return {
+            "tracks": tracks,
+            "manual_same_language": manual_same_language,
+            "manual_caption_already_exists": bool(manual_same_language),
+            "source_track_kind": str(source_snippet.get("trackKind", "")) or None,
+            "source_caption_id": str((source_track or {}).get("id", "")) or None,
+        }
+
+    @staticmethod
     def _normalize_caption_payload(
-        *, video_id: str,
+        *,
+        video_id: str,
         language: str,
         content: str,
         name: str | None,
         caption_format: str,
+        caption_mode: str = "auto",
+        preserve_sdh_markers: bool = False,
+        existing_manual_action: str | None = None,
     ) -> dict[str, Any]:
         video_id = str(video_id).strip()
         language = str(language).strip()
         fmt = str(caption_format or "srt").strip().lower()
-        text = str(content).replace("\r\n", "\n").strip()
+        text = str(content).replace("\\r\\n", "\\n").replace("\\r", "\\n").strip()
         display_name = " ".join(str(name or "").strip().split())
+        mode = str(caption_mode or "auto").strip().lower()
+        manual_action = str(existing_manual_action or "").strip().lower() or None
         if not video_id:
             raise ValueError("video_id é obrigatório.")
         if not _LANGUAGE_RE.fullmatch(language):
@@ -276,16 +336,21 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             raise ValueError("A legenda excede o limite seguro de 1 MB por operação.")
         if fmt == "vtt" and not text.lstrip().startswith("WEBVTT"):
             raise ValueError("Legenda VTT deve começar com WEBVTT.")
-        if fmt == "srt" and "-->" not in text:
-            raise ValueError("Legenda SRT inválida: nenhum intervalo de tempo foi encontrado.")
         if len(display_name) > 150:
             raise ValueError("O nome da faixa de legenda excede 150 caracteres.")
+        if mode not in {"auto", "speech", "music"}:
+            raise ValueError("caption_mode deve ser auto, speech ou music.")
+        if manual_action not in {None, "keep", "separate", "replace"}:
+            raise ValueError("existing_manual_action deve ser keep, separate ou replace.")
         return {
             "video_id": video_id,
             "language": language,
             "name": display_name,
             "caption_format": fmt,
             "content": text,
+            "caption_mode": mode,
+            "preserve_sdh_markers": bool(preserve_sdh_markers),
+            "existing_manual_action": manual_action,
         }
 
     def preview_caption_upload(
@@ -296,6 +361,9 @@ class AdvancedSafeCreatorService(SafeCreatorService):
         content: str,
         name: str | None = None,
         caption_format: str = "srt",
+        caption_mode: str = "auto",
+        preserve_sdh_markers: bool = False,
+        existing_manual_action: str | None = None,
     ) -> dict[str, Any]:
         self.context.validate_youtube()
         proposed = self._normalize_caption_payload(
@@ -304,7 +372,58 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             content=content,
             name=name,
             caption_format=caption_format,
+            caption_mode=caption_mode,
+            preserve_sdh_markers=preserve_sdh_markers,
+            existing_manual_action=existing_manual_action,
         )
+        video = self._owned_video_item(proposed["video_id"], part="snippet,contentDetails")
+        duration = self._video_duration_seconds((video.get("contentDetails", {}) or {}).get("duration"))
+        context = self._caption_context(proposed["video_id"], proposed["language"])
+
+        validation: dict[str, Any] = {
+            "validation_passed": True,
+            "validation_errors": [],
+            "validation_warnings": [],
+            "cue_count": None,
+            "overlap_count": None,
+            "empty_cue_count": None,
+            "malformed_cue_count": None,
+            "duration_coverage": None,
+            "estimated_readability": None,
+        }
+        if proposed["caption_format"] == "srt":
+            music_mode = proposed["caption_mode"] == "music"
+            quality = process_srt(
+                proposed["content"],
+                video_duration=duration,
+                preserve_sdh_markers=proposed["preserve_sdh_markers"],
+                music_mode=music_mode,
+            )
+            proposed["content"] = quality.pop("content")
+            validation.update(quality)
+
+        manual_exists = context["manual_caption_already_exists"]
+        manual_action = proposed["existing_manual_action"]
+        apply_allowed = bool(validation["validation_passed"])
+        if manual_exists:
+            if manual_action is None:
+                validation["validation_errors"].append("manual_caption_decision_required")
+                apply_allowed = False
+            elif manual_action == "keep":
+                validation["validation_warnings"].append("manual_caption_keep_selected_no_upload_needed")
+                apply_allowed = False
+            elif manual_action == "replace":
+                validation["validation_errors"].append("manual_caption_replace_not_supported_by_safe_upload_flow")
+                apply_allowed = False
+            elif manual_action == "separate" and not proposed["name"]:
+                validation["validation_errors"].append("separate_manual_caption_requires_name")
+                apply_allowed = False
+
+        validation["validation_errors"] = list(dict.fromkeys(validation["validation_errors"]))
+        validation["validation_warnings"] = list(dict.fromkeys(validation["validation_warnings"]))
+        validation["validation_passed"] = not validation["validation_errors"]
+        apply_allowed = apply_allowed and validation["validation_passed"]
+
         token = signer_from_env().issue("upload_video_caption", proposed["video_id"], proposed)
         return {
             "video_id": proposed["video_id"],
@@ -316,6 +435,17 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             "approval_token": token,
             "expires_in_seconds": 900,
             "requires_explicit_user_confirmation": True,
+            **validation,
+            "source_track_kind": context["source_track_kind"],
+            "source_caption_id": context["source_caption_id"],
+            "manual_caption_already_exists": manual_exists,
+            "manual_caption_decision": manual_action,
+            "manual_caption_decision_options": {
+                "keep": True,
+                "separate": True,
+                "replace": False,
+            },
+            "apply_allowed": apply_allowed,
         }
 
     def apply_caption_upload(self, *, approval_payload: dict, approval_token: str) -> dict[str, Any]:
@@ -326,6 +456,9 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             content=str(approval_payload.get("content", "")),
             name=approval_payload.get("name"),
             caption_format=str(approval_payload.get("caption_format", "srt")),
+            caption_mode=str(approval_payload.get("caption_mode", "auto")),
+            preserve_sdh_markers=bool(approval_payload.get("preserve_sdh_markers", False)),
+            existing_manual_action=approval_payload.get("existing_manual_action"),
         )
         signer = signer_from_env()
         signer.verify(
@@ -334,6 +467,37 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             subject=proposed["video_id"],
             payload=proposed,
         )
+
+        video = self._owned_video_item(proposed["video_id"], part="snippet,contentDetails")
+        duration = self._video_duration_seconds((video.get("contentDetails", {}) or {}).get("duration"))
+        if proposed["caption_format"] == "srt":
+            quality = process_srt(
+                proposed["content"],
+                video_duration=duration,
+                preserve_sdh_markers=proposed["preserve_sdh_markers"],
+                music_mode=proposed["caption_mode"] == "music",
+            )
+            if not quality["validation_passed"]:
+                raise ValueError(
+                    "A publicação foi bloqueada porque o SRT falhou na validação estrutural: "
+                    + ", ".join(quality["validation_errors"])
+                )
+            if quality["content"] != proposed["content"]:
+                raise ValueError("O conteúdo aprovado não corresponde mais à normalização determinística do SRT.")
+
+        context = self._caption_context(proposed["video_id"], proposed["language"])
+        if context["manual_caption_already_exists"]:
+            action = proposed["existing_manual_action"]
+            if action != "separate":
+                raise ValueError(
+                    "Já existe legenda manual publicada no mesmo idioma. "
+                    "Gere nova prévia e escolha explicitamente keep ou separate."
+                )
+            if not proposed["name"]:
+                raise ValueError("Uma faixa manual separada exige nome explícito.")
+        if proposed["existing_manual_action"] == "replace":
+            raise ValueError("Replace não é suportado pelo fluxo seguro atual; nenhuma faixa foi alterada.")
+
         media = MediaIoBaseUpload(
             io.BytesIO(proposed["content"].encode("utf-8")),
             mimetype=_CAPTION_MIME[proposed["caption_format"]],
@@ -355,6 +519,50 @@ class AdvancedSafeCreatorService(SafeCreatorService):
         caption_id = str(response.get("id", ""))
         if not caption_id:
             raise RuntimeError("O YouTube não retornou o ID da legenda criada.")
+
+        verified_track: dict[str, Any] | None = None
+        verification_attempts = 0
+        for delay in (0.0, 0.5, 1.0, 2.0):
+            if delay:
+                time.sleep(delay)
+            verification_attempts += 1
+            tracks = self._youtube().captions().list(
+                part="snippet", videoId=proposed["video_id"]
+            ).execute().get("items", [])
+            verified_track = next(
+                (item for item in tracks if str(item.get("id", "")) == caption_id),
+                None,
+            )
+            if verified_track:
+                snippet = verified_track.get("snippet", {}) or {}
+                if (
+                    str(snippet.get("trackKind", "")).lower() == "standard"
+                    and str(snippet.get("status", "")).lower() == "serving"
+                    and bool(snippet.get("isDraft", False)) is False
+                ):
+                    break
+            verified_track = None
+
+        if verified_track is None:
+            raise RuntimeError(
+                "A legenda foi enviada, mas a publicação não pôde ser confirmada como standard/serving/is_draft:false. "
+                "Não repita a escrita antes de diagnosticar o estado remoto."
+            )
+
+        final_tracks = self._youtube().captions().list(
+            part="snippet", videoId=proposed["video_id"]
+        ).execute().get("items", [])
+        has_published_manual_caption = any(
+            str((item.get("snippet", {}) or {}).get("trackKind", "")).upper() != "ASR"
+            and not bool((item.get("snippet", {}) or {}).get("isDraft", False))
+            for item in final_tracks
+        )
+        if not has_published_manual_caption:
+            raise RuntimeError(
+                "O readback não confirmou has_published_manual_caption:true; a operação não será marcada como sucesso."
+            )
+
+        snippet = verified_track.get("snippet", {}) or {}
         rollback_payload = {"caption_id": caption_id, "video_id": proposed["video_id"]}
         rollback_token = signer.issue("delete_uploaded_caption", caption_id, rollback_payload)
         self.memory.record_video_action(
@@ -368,10 +576,16 @@ class AdvancedSafeCreatorService(SafeCreatorService):
         )
         return {
             "ok": True,
+            "persisted_verified": True,
             "video_id": proposed["video_id"],
             "caption_id": caption_id,
             "language": proposed["language"],
             "name": proposed["name"],
+            "track_kind": str(snippet.get("trackKind", "")),
+            "status": str(snippet.get("status", "")),
+            "is_draft": bool(snippet.get("isDraft", False)),
+            "has_published_manual_caption": True,
+            "verification_attempts": verification_attempts,
             "rollback_preview": {
                 "rollback_payload": rollback_payload,
                 "rollback_token": rollback_token,
