@@ -385,6 +385,126 @@ def create_server():
         )
 
     @server.tool(
+        title="Preparar prévia de alteração de privacidade do vídeo",
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=False, destructive_hint=False, idempotent_hint=False),
+    )
+    def preview_video_privacy_update(
+        video_id: str,
+        privacy_status: str,
+    ) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("video_privacy_preview", limit=30)
+            service = _service()
+            result = service.preview_video_privacy_update(
+                video_id=video_id,
+                privacy_status=privacy_status,
+            )
+            base._audit(
+                "mcp_video_privacy_preview",
+                "success",
+                {
+                    "video_id": video_id,
+                    "changed": result.get("changed", False),
+                    "privacy_status": result.get("proposed", {}).get("privacy_status"),
+                },
+            )
+            return base.success_response(result)
+        return base._structured("preview_video_privacy_update", action)
+
+    @server.tool(
+        title="Aplicar privacidade aprovada ao vídeo",
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True, destructive_hint=True, idempotent_hint=False),
+    )
+    def apply_video_privacy_update(
+        approval_payload: dict[str, Any],
+        approval_token: str,
+        user_confirmed: bool,
+    ) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("video_privacy_apply", limit=15)
+            if user_confirmed is not True:
+                raise base.tool_error("confirmation_required")
+            proposed = dict(approval_payload.get("proposed", {}) or {})
+            video_id = str(proposed.get("video_id", "")).strip()
+            _consume_token(
+                token=approval_token,
+                payload=approval_payload,
+                action="update_video_privacy",
+                subject=video_id,
+            )
+            result = _service().apply_video_privacy_update(
+                approval_payload=approval_payload,
+                approval_token=approval_token,
+            )
+            base._audit(
+                "mcp_video_privacy_apply",
+                "success",
+                {
+                    "video_id": video_id,
+                    "persisted_verified": result.get("persisted_verified", False),
+                    "privacy_status": result.get("current", {}).get("privacy_status"),
+                },
+            )
+            return base.success_response(result)
+        return base._structured("apply_video_privacy_update", action)
+
+    @server.tool(
+        title="Preparar prévia de exclusão definitiva do vídeo",
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=False, destructive_hint=False, idempotent_hint=False),
+    )
+    def preview_video_delete(video_id: str) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("video_delete_preview", limit=10)
+            result = _service().preview_video_delete(video_id=video_id)
+            base._audit(
+                "mcp_video_delete_preview",
+                "success",
+                {"video_id": video_id, "irreversible": True},
+            )
+            return base.success_response(result)
+        return base._structured("preview_video_delete", action)
+
+    @server.tool(
+        title="Excluir definitivamente o vídeo aprovado",
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True, destructive_hint=True, idempotent_hint=False),
+    )
+    def apply_video_delete(
+        approval_payload: dict[str, Any],
+        approval_token: str,
+        user_confirmed: bool,
+    ) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("video_delete_apply", limit=5)
+            if user_confirmed is not True:
+                raise base.tool_error("confirmation_required")
+            video_id = str(approval_payload.get("video_id", "")).strip()
+            _consume_token(
+                token=approval_token,
+                payload=approval_payload,
+                action="delete_video",
+                subject=video_id,
+            )
+            result = _service().apply_video_delete(
+                approval_payload=approval_payload,
+                approval_token=approval_token,
+            )
+            base._audit(
+                "mcp_video_delete_apply",
+                "success",
+                {
+                    "video_id": video_id,
+                    "deleted_verified": result.get("deleted_verified", False),
+                    "recovered_from_ambiguous_response": result.get("recovered_from_ambiguous_response", False),
+                },
+            )
+            return base.success_response(result)
+        return base._structured("apply_video_delete", action)
+
+    @server.tool(
         title="Listar legendas do vídeo",
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True, destructive_hint=False, idempotent_hint=True),
     )
