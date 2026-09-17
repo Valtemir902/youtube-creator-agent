@@ -32,11 +32,14 @@ class _Videos:
         self.owner = owner
 
     def list(self, *, part: str, id: str):
-        assert part == "snippet"
+        assert "snippet" in part
         assert id == self.owner.video_id
         snippet = dict(self.owner.snippet)
         snippet["channelId"] = self.owner.channel_id
-        return _Request(lambda: {"items": [{"snippet": snippet}]})
+        item = {"snippet": snippet}
+        if "contentDetails" in part:
+            item["contentDetails"] = {"duration": "PT10M"}
+        return _Request(lambda: {"items": [item]})
 
     def update(self, *, part: str, body: dict):
         assert part == "snippet"
@@ -84,6 +87,7 @@ class _Captions:
                     "language": body["snippet"]["language"],
                     "name": body["snippet"]["name"],
                     "status": "serving",
+                    "trackKind": "standard",
                     "isDraft": False,
                 },
             }
