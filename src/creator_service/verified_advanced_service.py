@@ -78,11 +78,16 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
         if field == "description":
             return str(value or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
         if field == "tags":
-            return tuple(
+            clean = [
                 " ".join(str(item).strip().split())
                 for item in (value or [])
                 if " ".join(str(item).strip().split())
-            )
+            ]
+            # YouTube may return the same tags in a provider-normalized order.
+            # Tag ordering has no metadata meaning, so compare the normalized
+            # values canonically while preserving exact-order differences in
+            # _exact_differences for observability.
+            return tuple(sorted(clean, key=lambda item: item.casefold()))
         if field == "categoryId":
             return str(value or "")
         if field == "defaultLanguage":
