@@ -61,8 +61,7 @@ jobs:
             exit 0
           fi
 
-          parent="$(git rev-parse "$DEPLOY_SHA^")"
-          mapfile -t changed < <(git diff --name-only "$parent" "$DEPLOY_SHA")
+          mapfile -t changed < <(git show --pretty= --name-only "$DEPLOY_SHA" | sed '/^$/d')
           printf 'Changed files:\n'
           printf ' - %s\n' "${changed[@]}"
 
