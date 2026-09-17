@@ -401,7 +401,9 @@ class AdvancedSafeCreatorService(SafeCreatorService):
                 preserve_sdh_markers=proposed["preserve_sdh_markers"],
                 music_mode=music_mode,
             )
-            proposed["content"] = quality.pop("content").strip()
+            processed_content = quality.pop("content").strip()
+            if quality["validation_passed"]:
+                proposed["content"] = processed_content
             validation.update(quality)
 
         manual_exists = context["manual_caption_already_exists"]
