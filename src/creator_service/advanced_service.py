@@ -336,6 +336,8 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             raise ValueError("A legenda excede o limite seguro de 1 MB por operação.")
         if fmt == "vtt" and not text.lstrip().startswith("WEBVTT"):
             raise ValueError("Legenda VTT deve começar com WEBVTT.")
+        if fmt == "srt" and "-->" not in text:
+            raise ValueError("Legenda SRT inválida: nenhum intervalo de tempo foi encontrado.")
         if len(display_name) > 150:
             raise ValueError("O nome da faixa de legenda excede 150 caracteres.")
         if mode not in {"auto", "speech", "music"}:
@@ -399,7 +401,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
                 preserve_sdh_markers=proposed["preserve_sdh_markers"],
                 music_mode=music_mode,
             )
-            proposed["content"] = quality.pop("content")
+            proposed["content"] = quality.pop("content").strip()
             validation.update(quality)
 
         manual_exists = context["manual_caption_already_exists"]
@@ -482,7 +484,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
                     "A publicação foi bloqueada porque o SRT falhou na validação estrutural: "
                     + ", ".join(quality["validation_errors"])
                 )
-            if quality["content"] != proposed["content"]:
+            if quality["content"].strip() != proposed["content"]:
                 raise ValueError("O conteúdo aprovado não corresponde mais à normalização determinística do SRT.")
 
         context = self._caption_context(proposed["video_id"], proposed["language"])
