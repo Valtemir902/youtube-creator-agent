@@ -4,17 +4,19 @@ import time
 from typing import Any
 
 from .advanced_service import AdvancedSafeCreatorService
+from .mcp_errors import tool_error
 from .security import signer_from_env
 
 
 class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
-    """Advanced creator writes with defensive read-back and rollback checks.
+    """Advanced creator writes with defensive read-back and compensation.
 
     The verified path owns the complete mutation lifecycle. A remote write is not
     recorded as successful until every approved field has been observed on a
-    bounded read-back. Any exception after the mutation request is sent is treated
-    as an ambiguous write: the service reads the current remote state and restores
-    the pre-write snapshot when necessary before surfacing an error.
+    bounded read-back and a rollback package has been prepared. Any exception
+    after the mutation request is sent is treated as an ambiguous write: the
+    service reads the remote state and restores the pre-write snapshot when
+    necessary before surfacing a structured error.
     """
 
     _VERIFY_FIELDS = ("title", "description", "tags", "categoryId", "defaultLanguage")
@@ -196,7 +198,6 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
         video_id: str,
         before: dict[str, Any],
         observed: dict[str, Any] | None,
-        reason: str,
     ) -> tuple[dict[str, Any], list[str], list[str], int]:
         current = observed if observed is not None else self._current_video_snippet(video_id)
         if not self._mismatches(current, before):
@@ -206,30 +207,37 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             part="snippet",
             body={"id": video_id, "snippet": self._snippet_for_update(before)},
         ).execute()
-        restored, restore_mismatches, restore_exact_differences, restore_attempts = self._wait_for_snippet(
-            video_id,
-            before,
-            self._RESTORE_VERIFY_DELAYS,
-        )
+        return self._wait_for_snippet(video_id, before, self._RESTORE_VERIFY_DELAYS)
+
+    def _compensate_or_raise_uncertain(
+        self,
+        *,
+        video_id: str,
+        before: dict[str, Any],
+        observed: dict[str, Any] | None,
+        original: BaseException | None = None,
+    ) -> None:
         try:
-            self.memory.record_video_action(
+            _, restore_mismatches, _, _ = self._restore_snapshot_after_ambiguous_write(
                 video_id=video_id,
-                action_type="metadata_write_compensated",
-                surface="creator_service",
-                changed_fields=list(self._mismatches(current, before)),
-                before=current,
-                after=restored,
-                details={
-                    "tenant_id": self.context.tenant_id,
-                    "reason": reason,
-                    "restore_mismatches": list(restore_mismatches),
-                    "restore_verification_attempts": restore_attempts,
-                },
+                before=before,
+                observed=observed,
             )
-        except Exception:
-            # Audit persistence must never prevent compensation from completing.
-            pass
-        return restored, restore_mismatches, restore_exact_differences, restore_attempts
+        except Exception as restore_exc:
+            raise tool_error(
+                "write_state_uncertain",
+                "A gravação falhou após uma possível alteração remota e a restauração automática não pôde ser confirmada.",
+            ) from restore_exc
+        if restore_mismatches:
+            raise tool_error(
+                "write_state_uncertain",
+                "A gravação ficou divergente e a restauração automática não pôde ser confirmada nos campos: "
+                + ", ".join(restore_mismatches),
+            ) from original
+        raise tool_error(
+            "partial_write_detected",
+            "A gravação não foi confirmada integralmente. O estado anterior foi restaurado e verificado.",
+        ) from original
 
     def apply_video_metadata_update(self, *, approval_payload: dict, approval_token: str) -> dict:
         video_id, before, expected, changed_fields = self._prepare_verified_update(
@@ -237,41 +245,29 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             approval_token=approval_token,
         )
 
-        mutation_sent = False
         response: dict[str, Any] = {}
         try:
-            mutation_sent = True
             response = self._youtube().videos().update(
                 part="snippet",
                 body={"id": video_id, "snippet": self._snippet_for_update(expected)},
             ).execute()
         except Exception as exc:
-            # A transport/client exception can occur after YouTube accepted the
-            # request. Read the remote state before deciding whether nothing
-            # happened, and compensate if any approved field changed.
+            # A client/transport exception can happen after YouTube accepted the
+            # request. Probe the remote state and compensate if it changed.
             try:
                 observed = self._current_video_snippet(video_id)
-                if self._mismatches(observed, before):
-                    restored, restore_mismatches, _, _ = self._restore_snapshot_after_ambiguous_write(
-                        video_id=video_id,
-                        before=before,
-                        observed=observed,
-                        reason=f"mutation_exception:{type(exc).__name__}",
-                    )
-                    if restore_mismatches:
-                        raise RuntimeError(
-                            "Falha após uma escrita possivelmente aceita pelo YouTube; a restauração automática "
-                            f"não pôde ser confirmada nos campos: {', '.join(restore_mismatches)}."
-                        ) from exc
-                    raise RuntimeError(
-                        "Falha durante a atualização depois de uma possível mutação remota. "
-                        "O estado anterior foi restaurado e verificado."
-                    ) from exc
-            except RuntimeError:
-                raise
             except Exception:
-                # Preserve the original exception if even the ambiguity probe is unavailable.
-                pass
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A chamada de atualização falhou e o estado remoto não pôde ser confirmado.",
+                ) from exc
+            if self._mismatches(observed, before):
+                self._compensate_or_raise_uncertain(
+                    video_id=video_id,
+                    before=before,
+                    observed=observed,
+                    original=exc,
+                )
             raise
 
         persisted, mismatches, exact_differences, attempts = self._wait_for_snippet(
@@ -280,48 +276,52 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             self._WRITE_VERIFY_DELAYS,
         )
         if mismatches:
-            restored, restore_mismatches, restore_exact_differences, restore_attempts = (
-                self._restore_snapshot_after_ambiguous_write(
-                    video_id=video_id,
-                    before=before,
-                    observed=persisted,
-                    reason="youtube_write_not_fully_persisted",
-                )
-            )
-            if restore_mismatches:
-                raise RuntimeError(
-                    "O YouTube não persistiu todos os campos solicitados e a restauração automática "
-                    f"não pôde ser confirmada nos campos: {', '.join(restore_mismatches)}."
-                )
-            raise RuntimeError(
-                "O YouTube não confirmou todos os campos solicitados "
-                f"({', '.join(mismatches)}). A alteração foi revertida automaticamente e a restauração foi verificada."
+            self._compensate_or_raise_uncertain(
+                video_id=video_id,
+                before=before,
+                observed=persisted,
             )
 
-        # Only now is the write considered successful and allowed to activate
-        # recent-edit protection. Audit persistence is deliberately after the
-        # verified read-back.
-        self.memory.record_video_action(
-            video_id=video_id,
-            action_type="metadata_update",
-            surface="creator_service",
-            changed_fields=changed_fields,
-            before=before,
-            after=persisted,
-            details={"tenant_id": self.context.tenant_id, "verification_attempts": attempts},
-        )
+        # Prepare rollback before creating the recent-edit memory record. If any
+        # local finalization step fails, restore the remote snapshot and do not
+        # mark the failed attempt as a successful recent edit.
+        try:
+            rollback_preview = self._build_rollback_package(
+                video_id=video_id,
+                persisted=persisted,
+                restore=before,
+            )
+            self.memory.record_video_action(
+                video_id=video_id,
+                action_type="metadata_update",
+                surface="creator_service",
+                changed_fields=changed_fields,
+                before=before,
+                after=persisted,
+                details={"tenant_id": self.context.tenant_id, "verification_attempts": attempts},
+            )
+        except Exception as exc:
+            self._compensate_or_raise_uncertain(
+                video_id=video_id,
+                before=before,
+                observed=persisted,
+                original=exc,
+            )
 
-        rollback_preview = self._build_rollback_package(
-            video_id=video_id,
-            persisted=persisted,
-            restore=before,
-        )
+        # Protection-state rendering is informational. A failure to read it after
+        # a verified, recorded write must not turn a completed write into an
+        # ambiguous internal error.
+        try:
+            protection = self.video_memory_state(video_id)
+        except Exception:
+            protection = {"protected": True, "state_available": False}
+
         return {
             "ok": True,
             "video_id": video_id,
             "title": response.get("snippet", {}).get("title", persisted["title"]),
             "changed_fields": changed_fields,
-            "recent_edit_protection": self.video_memory_state(video_id),
+            "recent_edit_protection": protection,
             "persisted_verified": True,
             "verification_attempts": attempts,
             "normalization_differences": exact_differences,
@@ -355,9 +355,10 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             self._RESTORE_VERIFY_DELAYS,
         )
         if mismatches:
-            raise RuntimeError(
+            raise tool_error(
+                "write_state_uncertain",
                 "O rollback foi enviado ao YouTube, mas a leitura de confirmação ainda diverge nos campos: "
-                f"{', '.join(mismatches)}."
+                + ", ".join(mismatches),
             )
         result["persisted_verified"] = True
         result["verification_attempts"] = attempts
