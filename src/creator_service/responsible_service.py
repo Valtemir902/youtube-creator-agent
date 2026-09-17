@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any
 
 from .mcp_errors import tool_error
 from .security import signer_from_env
 from .verified_advanced_service import VerifiedAdvancedSafeCreatorService
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
@@ -44,6 +49,55 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             if self._semantic_value(field, before.get(field)) != self._semantic_value(field, after.get(field))
         ]
 
+    def _provider_field_states(
+        self,
+        *,
+        before: dict[str, Any],
+        expected: dict[str, Any],
+        observed: dict[str, Any],
+    ) -> dict[str, str]:
+        """Classify fields without logging or exposing any metadata values."""
+        states: dict[str, str] = {}
+        for field in self._VERIFY_FIELDS:
+            old = self._semantic_value(field, before.get(field))
+            new = self._semantic_value(field, expected.get(field))
+            got = self._semantic_value(field, observed.get(field))
+            if got == new:
+                states[field] = "expected"
+            elif got == old:
+                states[field] = "before"
+            else:
+                states[field] = "other"
+        return states
+
+    def _log_partial_state(
+        self,
+        *,
+        video_id: str,
+        before: dict[str, Any],
+        expected: dict[str, Any],
+        observed: dict[str, Any],
+        phase: str,
+        verification_attempts: int | None = None,
+    ) -> None:
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "metadata_partial_write_state",
+                    "video_id": video_id,
+                    "phase": phase,
+                    "field_states": self._provider_field_states(
+                        before=before,
+                        expected=expected,
+                        observed=observed,
+                    ),
+                    "verification_attempts": verification_attempts,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+
     def _is_provider_partial_state(
         self,
         *,
@@ -52,20 +106,9 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
         observed: dict[str, Any],
     ) -> bool:
         """Return True only for a state composed exclusively of before/expected values."""
-        saw_before = False
-        saw_expected = False
-        for field in self._VERIFY_FIELDS:
-            old = self._semantic_value(field, before.get(field))
-            new = self._semantic_value(field, expected.get(field))
-            got = self._semantic_value(field, observed.get(field))
-            if got == old:
-                saw_before = True
-                continue
-            if got == new:
-                saw_expected = True
-                continue
-            return False
-        return saw_before and saw_expected
+        states = self._provider_field_states(before=before, expected=expected, observed=observed)
+        values = set(states.values())
+        return "other" not in values and "before" in values and "expected" in values
 
     def _restore_verified_snapshot(
         self,
@@ -183,6 +226,14 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             raise original_error
 
         if self._is_provider_partial_state(before=before, expected=expected, observed=observed):
+            self._log_partial_state(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+                observed=observed,
+                phase="ambiguous_response",
+                verification_attempts=attempts,
+            )
             self._restore_verified_snapshot(video_id=video_id, before=before)
             raise self._partial_write_error() from original_error
 
@@ -266,6 +317,13 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                     "A chamada de gravação foi aceita, mas nenhuma alteração ficou visível antes de a verificação falhar.",
                 ) from exc
             if self._is_provider_partial_state(before=before, expected=expected, observed=observed):
+                self._log_partial_state(
+                    video_id=video_id,
+                    before=before,
+                    expected=expected,
+                    observed=observed,
+                    phase="verification_exception",
+                )
                 self._restore_verified_snapshot(video_id=video_id, before=before)
                 raise self._partial_write_error() from exc
             if not self._mismatches(observed, expected):
@@ -292,6 +350,14 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             )
 
         if self._is_provider_partial_state(before=before, expected=expected, observed=persisted):
+            self._log_partial_state(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+                observed=persisted,
+                phase="confirmed_response",
+                verification_attempts=attempts,
+            )
             self._restore_verified_snapshot(video_id=video_id, before=before)
             raise self._partial_write_error()
 
