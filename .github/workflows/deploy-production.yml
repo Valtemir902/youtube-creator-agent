@@ -260,7 +260,7 @@ jobs:
                   resources = await client.list_resources()
                   names = {tool.name for tool in result.tools}
                   assert names == expected, f'missing={sorted(expected-names)} unexpected={sorted(names-expected)}'
-                  assert len(names) == 47, len(names)
+                  assert len(names) == 51, len(names)
                   uris = {str(resource.uri) for resource in resources.resources}
                   assert HANDOFF_UI_URI in uris, sorted(uris)
                   by_name = {tool.name: tool for tool in result.tools}
