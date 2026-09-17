@@ -324,6 +324,9 @@ def test_separate_manual_caption_requires_explicit_name_and_then_allows_preview(
 def test_invalid_duration_preview_cannot_be_applied():
     youtube = _Youtube(duration="PT10S")
     service = _Service(youtube)
+    assert service._video_duration_seconds("PT10S") == 10.0
+    owned = service._owned_video_item("video-1", part="snippet,contentDetails")
+    assert owned["contentDetails"]["duration"] == "PT10S"
     invalid = "1\n00:00:09,000 --> 00:00:11,000\nOutside duration.\n"
     preview = service.preview_caption_upload(
         video_id="video-1", language="en", content=invalid, name="English - Manual"
