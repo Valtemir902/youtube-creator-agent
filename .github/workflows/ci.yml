@@ -134,7 +134,10 @@ jobs:
               "preview_video_metadata_update", "apply_video_metadata_update", "apply_video_metadata_rollback",
               "list_channel_videos", "get_video_details", "get_video_transcript", "list_video_categories",
               "preview_video_metadata_update_advanced", "apply_video_metadata_update_advanced",
-              "apply_video_metadata_rollback_advanced", "list_video_captions",
+              "apply_video_metadata_rollback_advanced",
+              "preview_video_privacy_update", "apply_video_privacy_update",
+              "preview_video_delete", "apply_video_delete",
+              "list_video_captions",
               "preview_caption_upload", "apply_caption_upload", "apply_caption_delete_rollback",
               "list_playlists", "get_playlist_details", "preview_playlist_metadata_update",
               "apply_playlist_metadata_update", "apply_playlist_metadata_rollback",
@@ -160,7 +163,8 @@ jobs:
           READ_OPEN = {"validate_keyword_candidates", "list_video_categories", "list_video_captions"}
           PREVIEW = {
               "activate_connected_channel", "create_onboarding_link",
-              "preview_video_metadata_update_advanced", "preview_caption_upload",
+              "preview_video_metadata_update_advanced", "preview_video_privacy_update",
+              "preview_video_delete", "preview_caption_upload",
               "preview_playlist_metadata_update", "preview_playlist_item_add", "preview_playlist_item_remove",
               "preview_playlist_create", "preview_playlist_delete", "preview_playlist_item_reorder",
               "preview_channel_profile_update",
@@ -168,6 +172,7 @@ jobs:
           DESTRUCTIVE = {
               "apply_video_metadata_update", "apply_video_metadata_rollback",
               "apply_video_metadata_update_advanced", "apply_video_metadata_rollback_advanced",
+              "apply_video_privacy_update", "apply_video_delete",
               "apply_caption_upload", "apply_caption_delete_rollback",
               "apply_playlist_metadata_update", "apply_playlist_metadata_rollback",
               "apply_playlist_item_add", "apply_playlist_item_add_rollback",
@@ -186,6 +191,10 @@ jobs:
           EXPECTED_SCHEMAS = {
               "preview_video_metadata_update": ({"video_id", "title", "description", "tags"}, {"video_id"}),
               "list_channel_videos": ({"max_results", "page_token"}, set()),
+              "preview_video_privacy_update": ({"video_id", "privacy_status"}, {"video_id", "privacy_status"}),
+              "apply_video_privacy_update": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
+              "preview_video_delete": ({"video_id"}, {"video_id"}),
+              "apply_video_delete": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
               "preview_playlist_create": ({"title", "description", "privacy_status", "default_language", "video_ids"}, {"title"}),
               "apply_playlist_create": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
               "apply_playlist_create_rollback": ({"rollback_payload", "rollback_token", "user_confirmed"}, {"rollback_payload", "rollback_token", "user_confirmed"}),
@@ -208,7 +217,7 @@ jobs:
                   f"Production MCP drift: missing={sorted(CLOUD_EXPECTED-cloud_names)} "
                   f"unexpected={sorted(cloud_names-CLOUD_EXPECTED)}"
               )
-              assert len(cloud_names) == 47, f"Expected exactly 47 production tools, got {len(cloud_names)}"
+              assert len(cloud_names) == 51, f"Expected exactly 51 production tools, got {len(cloud_names)}"
               assert not (CLOUD_FORBIDDEN & cloud_names)
               assert any(str(resource.uri) == HANDOFF_UI_URI for resource in resources), "Handoff UI resource missing"
               assert set(EXPECTED_HINTS) == cloud_names
