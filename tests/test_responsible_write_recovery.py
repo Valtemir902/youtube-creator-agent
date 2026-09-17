@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from creator_service.mcp_errors import CreatorToolError
 from creator_service.responsible_service import ResponsibleCreatorService
 from intelligence.creator_memory import CreatorMemoryStore
 
@@ -45,6 +46,16 @@ class _Videos:
             self.owner.update_calls += 1
             incoming = dict(body["snippet"])
             mode = self.owner.mode
+
+            # A second update is compensation. Always allow the signed baseline
+            # to be restored in partial-write test modes.
+            if self.owner.update_calls > 1 and mode in {
+                "partial_confirmed",
+                "partial_then_transport_failed",
+            }:
+                self.owner.snippet = incoming
+                return {"id": body["id"], "snippet": dict(incoming)}
+
             if mode == "accepted_then_transport_failed":
                 self.owner.snippet = incoming
                 raise RuntimeError("connection reset after provider accepted request")
@@ -54,6 +65,15 @@ class _Videos:
                 self.owner.snippet = dict(incoming)
                 self.owner.snippet["title"] = "Concurrent external title"
                 raise RuntimeError("connection reset with divergent final state")
+            if mode in {"partial_confirmed", "partial_then_transport_failed"}:
+                # Reproduce the production signature: only approved tags are
+                # visible while title/description/category remain on baseline.
+                self.owner.snippet = dict(self.owner.snippet)
+                self.owner.snippet["tags"] = list(incoming.get("tags", []))
+                if mode == "partial_then_transport_failed":
+                    raise RuntimeError("connection reset after partial provider write")
+                return {"id": body["id"], "snippet": dict(self.owner.snippet)}
+
             self.owner.snippet = incoming
             return {"id": body["id"], "snippet": dict(incoming)}
 
@@ -101,6 +121,16 @@ def _service(tmp_path, monkeypatch, mode: str):
     return service, youtube
 
 
+def _preview_all_fields(service, youtube):
+    return service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Approved title",
+        description="Approved description",
+        tags=["new", "tags"],
+        category_id="10",
+    )
+
+
 def test_lost_response_is_recovered_by_authoritative_readback(tmp_path, monkeypatch):
     service, youtube = _service(tmp_path, monkeypatch, "accepted_then_transport_failed")
     preview = service.preview_video_metadata_update(video_id=youtube.video_id, title="Approved title")
@@ -129,13 +159,56 @@ def test_transport_failure_without_write_never_claims_success(tmp_path, monkeypa
 def test_divergent_ambiguous_state_is_not_overwritten(tmp_path, monkeypatch):
     service, youtube = _service(tmp_path, monkeypatch, "divergent_after_failure")
     preview = service.preview_video_metadata_update(video_id=youtube.video_id, title="Approved title")
-    with pytest.raises(RuntimeError, match="possível edição externa"):
+    with pytest.raises(CreatorToolError) as caught:
         service.apply_video_metadata_update(
             approval_payload=preview["approval_payload"],
             approval_token=preview["approval_token"],
         )
+    assert caught.value.code == "write_state_uncertain"
     assert youtube.snippet["title"] == "Concurrent external title"
     assert youtube.update_calls == 1
     state = service.memory.recent_edit_state(youtube.video_id)
     assert state.protected is True
     assert state.last_action_type == "metadata_write_ambiguous_state"
+
+
+def test_confirmed_partial_tags_write_is_restored_and_structured(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_confirmed")
+    before = dict(youtube.snippet)
+    preview = _preview_all_fields(service, youtube)
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    assert caught.value.code == "partial_write_detected"
+    assert youtube.snippet == before
+    assert youtube.update_calls == 2
+    state = service.memory.recent_edit_state(youtube.video_id)
+    assert state.protected is False
+
+
+def test_transport_failed_partial_tags_write_is_restored_and_structured(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_then_transport_failed")
+    before = dict(youtube.snippet)
+    preview = _preview_all_fields(service, youtube)
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    assert caught.value.code == "partial_write_detected"
+    assert youtube.snippet == before
+    assert youtube.update_calls == 2
+    state = service.memory.recent_edit_state(youtube.video_id)
+    assert state.protected is False
+
+
+def test_verification_budgets_are_bounded_for_mcp_request_lifetime():
+    assert sum(ResponsibleCreatorService._WRITE_VERIFY_DELAYS) <= 3.0
+    assert sum(ResponsibleCreatorService._AMBIGUOUS_VERIFY_DELAYS) <= 3.0
+    assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) <= 6.0
