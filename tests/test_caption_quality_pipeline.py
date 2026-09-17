@@ -321,6 +321,22 @@ def test_separate_manual_caption_requires_explicit_name_and_then_allows_preview(
     assert allowed["apply_allowed"] is True
 
 
+def test_invalid_duration_preview_cannot_be_applied():
+    youtube = _Youtube(duration="PT10S")
+    service = _Service(youtube)
+    invalid = "1\n00:00:09,000 --> 00:00:11,000\nOutside duration.\n"
+    preview = service.preview_caption_upload(
+        video_id="video-1", language="en", content=invalid, name="English - Manual"
+    )
+    assert preview["validation_passed"] is False
+    assert preview["apply_allowed"] is False
+    with pytest.raises(ValueError, match="validação estrutural"):
+        service.apply_caption_upload(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+    assert youtube._captions.insert_calls == 0
+
 def test_apply_requires_signed_payload_and_confirms_serving_standard_readback():
     youtube = _Youtube(
         [
