@@ -40,7 +40,6 @@ class FakeLocalAiHandler(BaseHTTPRequestHandler):
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin, Access-Control-Request-Private-Network")
-        if self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true":
             self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
