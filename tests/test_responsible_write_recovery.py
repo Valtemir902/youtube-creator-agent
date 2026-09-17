@@ -69,6 +69,13 @@ class _Videos:
                 if mode == "partial_then_transport_failed":
                     raise RuntimeError("connection reset after partial provider write")
                 return {"id": body["id"], "snippet": dict(self.owner.snippet)}
+            if mode == "provider_reorders_tags":
+                self.owner.snippet = dict(incoming)
+                self.owner.snippet["tags"] = sorted(
+                    list(incoming.get("tags", [])),
+                    key=lambda item: str(item).casefold(),
+                )
+                return {"id": body["id"], "snippet": dict(self.owner.snippet)}
 
             self.owner.snippet = incoming
             return {"id": body["id"], "snippet": dict(incoming)}
@@ -202,6 +209,28 @@ def test_transport_failed_partial_tags_write_is_restored_and_structured(tmp_path
     assert youtube.update_calls == 2
     state = service.memory.recent_edit_state(youtube.video_id)
     assert state.protected is False
+
+
+def test_provider_tag_reordering_is_verified_as_success(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "provider_reorders_tags")
+    preview = service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Approved title",
+        description="Approved description",
+        tags=["Zulu tag", "alpha tag", "Middle tag"],
+        category_id="10",
+    )
+
+    result = service.apply_video_metadata_update(
+        approval_payload=preview["approval_payload"],
+        approval_token=preview["approval_token"],
+    )
+
+    assert result["persisted_verified"] is True
+    assert result["changed_fields"] == ["title", "description", "tags", "categoryId"]
+    assert result["normalization_differences"] == ["tags"]
+    assert youtube.snippet["tags"] == ["alpha tag", "Middle tag", "Zulu tag"]
+    assert youtube.update_calls == 1
 
 
 def test_verification_budgets_are_bounded_for_mcp_request_lifetime():
