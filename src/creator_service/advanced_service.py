@@ -256,7 +256,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
     @staticmethod
     def _video_duration_seconds(value: str | None) -> float | None:
         match = re.fullmatch(
-            r"P(?:(?P<d>\\d+)D)?(?:T(?:(?P<h>\\d+)H)?(?:(?P<m>\\d+)M)?(?:(?P<s>\\d+(?:\\.\\d+)?)S)?)?",
+            r"P(?:(?P<d>\d+)D)?(?:T(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+(?:\.\d+)?)S)?)?",
             str(value or ""),
         )
         if not match:
@@ -320,7 +320,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
         video_id = str(video_id).strip()
         language = str(language).strip()
         fmt = str(caption_format or "srt").strip().lower()
-        text = str(content).replace("\\r\\n", "\\n").replace("\\r", "\\n").strip()
+        text = str(content).replace("\r\n", "\n").replace("\r", "\n").strip()
         display_name = " ".join(str(name or "").strip().split())
         mode = str(caption_mode or "auto").strip().lower()
         manual_action = str(existing_manual_action or "").strip().lower() or None
