@@ -10,10 +10,11 @@ from .security import signer_from_env
 class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
     """Advanced creator writes with defensive read-back and rollback checks.
 
-    YouTube may acknowledge a snippet update before every read replica exposes
-    the new value. This service therefore verifies writes over a bounded window,
-    treats harmless whitespace normalization separately from real divergence,
-    and re-bases rollback tokens on the metadata that was actually observed.
+    The verified path owns the complete mutation lifecycle. A remote write is not
+    recorded as successful until every approved field has been observed on a
+    bounded read-back. Any exception after the mutation request is sent is treated
+    as an ambiguous write: the service reads the current remote state and restores
+    the pre-write snapshot when necessary before surfacing an error.
     """
 
     _VERIFY_FIELDS = ("title", "description", "tags", "categoryId", "defaultLanguage")
@@ -22,12 +23,6 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
 
     @staticmethod
     def _clean_write_tags(tags: list[str] | None) -> list[str] | None:
-        """Normalize tags without the old SEO-only 12-tag truncation.
-
-        YouTube constrains the aggregate tag payload, not this product to an
-        arbitrary twelve items. Existing videos can legitimately contain more
-        than twelve tags, so silently truncating them during an edit is unsafe.
-        """
         if tags is None:
             return None
         clean: list[str] = []
@@ -41,8 +36,6 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
                 continue
             seen.add(key)
             clean.append(tag)
-        # Be conservative about YouTube's 500-character aggregate tag budget:
-        # tags containing spaces are effectively quoted in the serialized form.
         total = sum(len(tag) + (2 if " " in tag else 0) + 1 for tag in clean)
         if total > 500:
             raise ValueError("As tags ultrapassam o limite total seguro de 500 caracteres.")
@@ -132,9 +125,6 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
         persisted: dict[str, Any],
         restore: dict[str, Any],
     ) -> dict[str, Any]:
-        # Sign exactly the normalized payload that apply_video_metadata_rollback
-        # will reconstruct. This prevents harmless YouTube normalization from
-        # making a freshly-issued rollback token unusable.
         normalized = self._normalize_metadata_payload(
             video_id=video_id,
             title=str(restore.get("title", "")),
@@ -158,37 +148,60 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             "requires_explicit_user_confirmation": True,
         }
 
-    def apply_video_metadata_update(self, *, approval_payload: dict, approval_token: str) -> dict:
+    def _prepare_verified_update(
+        self,
+        *,
+        approval_payload: dict,
+        approval_token: str,
+    ) -> tuple[str, dict[str, Any], dict[str, Any], list[str]]:
+        self.context.validate_youtube()
         proposed = dict(approval_payload.get("proposed", {}) or {})
         video_id = str(proposed.get("video_id", "")).strip()
         if not video_id:
             raise ValueError("video_id ausente no payload aprovado.")
 
+        self.memory.assert_not_recently_edited(video_id)
         before = self._current_video_snippet(video_id)
-        result = super().apply_video_metadata_update(
-            approval_payload=approval_payload,
-            approval_token=approval_token,
-        )
-        expected = dict(result.get("rollback_preview", {}).get("current", {}) or {})
+        signer = signer_from_env()
+        baseline_digest = str(approval_payload.get("baseline_digest", ""))
+        if not baseline_digest or baseline_digest != signer.payload_digest(before):
+            raise RuntimeError("O vídeo mudou desde a prévia. Gere uma nova prévia antes de aplicar.")
 
-        persisted, mismatches, exact_differences, attempts = self._wait_for_snippet(
-            video_id,
-            expected,
-            self._WRITE_VERIFY_DELAYS,
+        expected = self._normalize_metadata_payload(
+            video_id=video_id,
+            title=str(proposed.get("title", "")),
+            description=str(proposed.get("description", "")),
+            tags=list(proposed.get("tags", []) or []),
+            current=before,
         )
-        if not mismatches:
-            result["persisted_verified"] = True
-            result["verification_attempts"] = attempts
-            result["normalization_differences"] = exact_differences
-            result["rollback_preview"] = self._build_rollback_package(
-                video_id=video_id,
-                persisted=persisted,
-                restore=before,
-            )
-            return result
+        expected["categoryId"] = self._normalize_category_id(proposed.get("categoryId"), before)
+        expected["defaultLanguage"] = before.get("defaultLanguage")
+        normalized_envelope = {"baseline_digest": baseline_digest, "proposed": expected}
+        signer.verify(
+            approval_token,
+            action="update_video_metadata",
+            subject=video_id,
+            payload=normalized_envelope,
+        )
+        changed_fields = [
+            key
+            for key in ("title", "description", "tags", "categoryId")
+            if before.get(key) != expected.get(key)
+        ]
+        return video_id, before, expected, changed_fields
 
-        # A partial or stale write is not accepted as success. Restore the
-        # pre-write snapshot and keep reading until the rollback propagates.
+    def _restore_snapshot_after_ambiguous_write(
+        self,
+        *,
+        video_id: str,
+        before: dict[str, Any],
+        observed: dict[str, Any] | None,
+        reason: str,
+    ) -> tuple[dict[str, Any], list[str], list[str], int]:
+        current = observed if observed is not None else self._current_video_snippet(video_id)
+        if not self._mismatches(current, before):
+            return current, [], self._exact_differences(current, before), 1
+
         self._youtube().videos().update(
             part="snippet",
             body={"id": video_id, "snippet": self._snippet_for_update(before)},
@@ -198,32 +211,122 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             before,
             self._RESTORE_VERIFY_DELAYS,
         )
+        try:
+            self.memory.record_video_action(
+                video_id=video_id,
+                action_type="metadata_write_compensated",
+                surface="creator_service",
+                changed_fields=list(self._mismatches(current, before)),
+                before=current,
+                after=restored,
+                details={
+                    "tenant_id": self.context.tenant_id,
+                    "reason": reason,
+                    "restore_mismatches": list(restore_mismatches),
+                    "restore_verification_attempts": restore_attempts,
+                },
+            )
+        except Exception:
+            # Audit persistence must never prevent compensation from completing.
+            pass
+        return restored, restore_mismatches, restore_exact_differences, restore_attempts
+
+    def apply_video_metadata_update(self, *, approval_payload: dict, approval_token: str) -> dict:
+        video_id, before, expected, changed_fields = self._prepare_verified_update(
+            approval_payload=approval_payload,
+            approval_token=approval_token,
+        )
+
+        mutation_sent = False
+        response: dict[str, Any] = {}
+        try:
+            mutation_sent = True
+            response = self._youtube().videos().update(
+                part="snippet",
+                body={"id": video_id, "snippet": self._snippet_for_update(expected)},
+            ).execute()
+        except Exception as exc:
+            # A transport/client exception can occur after YouTube accepted the
+            # request. Read the remote state before deciding whether nothing
+            # happened, and compensate if any approved field changed.
+            try:
+                observed = self._current_video_snippet(video_id)
+                if self._mismatches(observed, before):
+                    restored, restore_mismatches, _, _ = self._restore_snapshot_after_ambiguous_write(
+                        video_id=video_id,
+                        before=before,
+                        observed=observed,
+                        reason=f"mutation_exception:{type(exc).__name__}",
+                    )
+                    if restore_mismatches:
+                        raise RuntimeError(
+                            "Falha após uma escrita possivelmente aceita pelo YouTube; a restauração automática "
+                            f"não pôde ser confirmada nos campos: {', '.join(restore_mismatches)}."
+                        ) from exc
+                    raise RuntimeError(
+                        "Falha durante a atualização depois de uma possível mutação remota. "
+                        "O estado anterior foi restaurado e verificado."
+                    ) from exc
+            except RuntimeError:
+                raise
+            except Exception:
+                # Preserve the original exception if even the ambiguity probe is unavailable.
+                pass
+            raise
+
+        persisted, mismatches, exact_differences, attempts = self._wait_for_snippet(
+            video_id,
+            expected,
+            self._WRITE_VERIFY_DELAYS,
+        )
+        if mismatches:
+            restored, restore_mismatches, restore_exact_differences, restore_attempts = (
+                self._restore_snapshot_after_ambiguous_write(
+                    video_id=video_id,
+                    before=before,
+                    observed=persisted,
+                    reason="youtube_write_not_fully_persisted",
+                )
+            )
+            if restore_mismatches:
+                raise RuntimeError(
+                    "O YouTube não persistiu todos os campos solicitados e a restauração automática "
+                    f"não pôde ser confirmada nos campos: {', '.join(restore_mismatches)}."
+                )
+            raise RuntimeError(
+                "O YouTube não confirmou todos os campos solicitados "
+                f"({', '.join(mismatches)}). A alteração foi revertida automaticamente e a restauração foi verificada."
+            )
+
+        # Only now is the write considered successful and allowed to activate
+        # recent-edit protection. Audit persistence is deliberately after the
+        # verified read-back.
         self.memory.record_video_action(
             video_id=video_id,
-            action_type="metadata_write_verification_rollback",
+            action_type="metadata_update",
             surface="creator_service",
-            changed_fields=list(mismatches),
-            before=persisted,
-            after=restored,
-            details={
-                "tenant_id": self.context.tenant_id,
-                "reason": "youtube_write_not_fully_persisted",
-                "mismatches": list(mismatches),
-                "write_verification_attempts": attempts,
-                "restore_mismatches": list(restore_mismatches),
-                "restore_exact_differences": list(restore_exact_differences),
-                "restore_verification_attempts": restore_attempts,
-            },
+            changed_fields=changed_fields,
+            before=before,
+            after=persisted,
+            details={"tenant_id": self.context.tenant_id, "verification_attempts": attempts},
         )
-        if restore_mismatches:
-            raise RuntimeError(
-                "O YouTube não persistiu todos os campos solicitados e a restauração automática "
-                f"não pôde ser confirmada nos campos: {', '.join(restore_mismatches)}."
-            )
-        raise RuntimeError(
-            "O YouTube não confirmou todos os campos solicitados "
-            f"({', '.join(mismatches)}). A alteração foi revertida automaticamente e a restauração foi verificada."
+
+        rollback_preview = self._build_rollback_package(
+            video_id=video_id,
+            persisted=persisted,
+            restore=before,
         )
+        return {
+            "ok": True,
+            "video_id": video_id,
+            "title": response.get("snippet", {}).get("title", persisted["title"]),
+            "changed_fields": changed_fields,
+            "recent_edit_protection": self.video_memory_state(video_id),
+            "persisted_verified": True,
+            "verification_attempts": attempts,
+            "normalization_differences": exact_differences,
+            "rollback_preview": rollback_preview,
+        }
 
     def apply_video_metadata_rollback(self, *, rollback_payload: dict, rollback_token: str) -> dict:
         proposed = dict(rollback_payload.get("proposed", {}) or {})
