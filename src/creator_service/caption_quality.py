@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -250,6 +249,10 @@ def process_srt(
         for error in parse_errors
         if error.startswith(("malformed_", "invalid_", "duplicate_", "missing_", "empty_cue", "non_positive_"))
     ]
+    if video_duration is not None:
+        for cue in parsed:
+            if cue.start < 0 or cue.end > video_duration + 0.001 or cue.start > video_duration + 0.001:
+                structural_errors.append(f"cue_outside_video:{cue.index}")
 
     sanitized: list[Cue] = []
     for cue in parsed:
