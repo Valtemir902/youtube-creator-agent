@@ -203,8 +203,12 @@ class CompanionHandler(BaseHTTPRequestHandler):
         if origin and self._origin_allowed():
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin, Access-Control-Request-Private-Network")
-            if self._private_network_preflight_requested():
-                self.send_header("Access-Control-Allow-Private-Network", "true")
+            # QtWebEngine/Chromium may enforce Local/Private Network Access on
+            # simple loopback GETs without issuing a preflight first. Returning
+            # the permission header on every response to an already-approved
+            # origin keeps the loopback bridge deterministic without broadening
+            # the origin allowlist.
+            self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Cache-Control", "no-store")
