@@ -27,6 +27,46 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
     _WRITE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
     _RESTORE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5, 2.5)
     _AMBIGUOUS_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
+    _MAX_RESTORE_WRITES = 2
+
+    @staticmethod
+    def _snippet_from_item(item: dict[str, Any]) -> dict[str, Any]:
+        snippet = dict(item.get("snippet", {}) or {})
+        return {
+            "title": str(snippet.get("title", "")),
+            "description": str(snippet.get("description", "")),
+            "tags": list(snippet.get("tags", []) or []),
+            "categoryId": str(snippet.get("categoryId", "22")),
+            "defaultLanguage": snippet.get("defaultLanguage"),
+        }
+
+    def _versioned_video_snippet(self, video_id: str) -> tuple[dict[str, Any], str]:
+        item = self._owned_video_item(video_id, part="snippet")
+        return self._snippet_from_item(item), str(item.get("etag", "") or "").strip()
+
+    def _conditional_snippet_update(
+        self,
+        *,
+        video_id: str,
+        snippet: dict[str, Any],
+        etag: str,
+    ) -> dict[str, Any]:
+        request = self._youtube().videos().update(
+            part="snippet",
+            body={"id": video_id, "snippet": snippet},
+        )
+        # googleapiclient.http.HttpRequest exposes a mutable headers mapping.
+        # Use If-Match whenever YouTube supplied an ETag so a concurrent edit
+        # fails instead of being overwritten by this request.
+        if etag:
+            headers = getattr(request, "headers", None)
+            if headers is None:
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A atualização segura por versão não está disponível neste cliente. Nenhuma gravação foi enviada.",
+                )
+            headers["If-Match"] = etag
+        return request.execute()
 
     def _expected_from_approval(self, approval_payload: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
         proposed = dict(approval_payload.get("proposed", {}) or {})
@@ -110,39 +150,172 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
         values = set(states.values())
         return "other" not in values and "before" in values and "expected" in values
 
+    def _record_uncertain_restore(
+        self,
+        *,
+        video_id: str,
+        before: dict[str, Any],
+        observed: dict[str, Any],
+        reason: str,
+        restore_writes: int,
+        verification_attempts: int | None = None,
+    ) -> None:
+        self.memory.record_video_action(
+            video_id=video_id,
+            action_type="metadata_restore_uncertain_state",
+            surface="responsible_creator_service",
+            changed_fields=self._changed_fields(before, observed),
+            before=before,
+            after=observed,
+            details={
+                "tenant_id": self.context.tenant_id,
+                "reason": reason,
+                "restore_writes": restore_writes,
+                "verification_attempts": verification_attempts,
+            },
+        )
+
     def _restore_verified_snapshot(
         self,
         *,
         video_id: str,
         before: dict[str, Any],
+        expected: dict[str, Any],
     ) -> tuple[dict[str, Any], list[str], list[str], int]:
-        restore_error: Exception | None = None
-        try:
-            self._youtube().videos().update(
-                part="snippet",
-                body={"id": video_id, "snippet": self._snippet_for_update(before)},
-            ).execute()
-        except Exception as exc:
-            restore_error = exc
+        """Restore the signed pre-write snapshot without retrying the user update.
 
-        try:
-            restored, mismatches, exact_differences, attempts = self._wait_for_snippet(
-                video_id,
-                before,
-                self._RESTORE_VERIFY_DELAYS,
+        A provider may itself partially apply a compensation update. We allow one
+        bounded reconciliation write only while every remotely observed field is
+        still one of the two authenticated values (before/expected). Any third
+        value stops compensation immediately and activates recent-edit protection.
+        """
+        last_observed = dict(before)
+        last_mismatches: list[str] = []
+        last_exact: list[str] = []
+        total_verification_attempts = 0
+
+        for restore_write in range(1, self._MAX_RESTORE_WRITES + 1):
+            try:
+                current, etag = self._versioned_video_snippet(video_id)
+            except Exception as exc:
+                self._record_uncertain_restore(
+                    video_id=video_id,
+                    before=before,
+                    observed=last_observed,
+                    reason="restore_prewrite_read_failed",
+                    restore_writes=restore_write - 1,
+                    verification_attempts=total_verification_attempts,
+                )
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A restauração foi interrompida porque o estado remoto não pôde ser relido com segurança.",
+                ) from exc
+
+            last_observed = current
+            if not self._mismatches(current, before):
+                return current, [], self._exact_differences(current, before), max(1, total_verification_attempts)
+
+            states = self._provider_field_states(before=before, expected=expected, observed=current)
+            if "other" in states.values():
+                self._log_partial_state(
+                    video_id=video_id,
+                    before=before,
+                    expected=expected,
+                    observed=current,
+                    phase=f"restore_prewrite_{restore_write}",
+                    verification_attempts=total_verification_attempts or None,
+                )
+                self._record_uncertain_restore(
+                    video_id=video_id,
+                    before=before,
+                    observed=current,
+                    reason="restore_prewrite_third_value",
+                    restore_writes=restore_write - 1,
+                    verification_attempts=total_verification_attempts,
+                )
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A restauração foi interrompida porque apareceu um valor que não pertence ao snapshot anterior nem à proposta aprovada. O vídeo foi protegido contra novas escritas automáticas.",
+                )
+
+            restore_error: Exception | None = None
+            try:
+                self._conditional_snippet_update(
+                    video_id=video_id,
+                    snippet=self._snippet_for_update(before),
+                    etag=etag,
+                )
+            except Exception as exc:
+                restore_error = exc
+
+            try:
+                restored, mismatches, exact_differences, attempts = self._wait_for_snippet(
+                    video_id,
+                    before,
+                    self._RESTORE_VERIFY_DELAYS,
+                )
+            except Exception as exc:
+                self._record_uncertain_restore(
+                    video_id=video_id,
+                    before=before,
+                    observed=current,
+                    reason="restore_readback_failed",
+                    restore_writes=restore_write,
+                    verification_attempts=total_verification_attempts,
+                )
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A restauração foi enviada, mas a releitura de confirmação falhou. O vídeo foi protegido contra novas escritas automáticas.",
+                ) from exc
+
+            total_verification_attempts += attempts
+            last_observed = restored
+            last_mismatches = mismatches
+            last_exact = exact_differences
+            self._log_partial_state(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+                observed=restored,
+                phase=f"restore_attempt_{restore_write}",
+                verification_attempts=attempts,
             )
-        except Exception as exc:
-            raise tool_error(
-                "write_state_uncertain",
-                "A gravação não pôde ser confirmada e a releitura da restauração também falhou. O estado remoto precisa ser relido antes de outra escrita.",
-            ) from exc
 
-        if mismatches:
+            if not mismatches:
+                return restored, mismatches, exact_differences, total_verification_attempts
+
+            states = self._provider_field_states(before=before, expected=expected, observed=restored)
+            if "other" in states.values():
+                self._record_uncertain_restore(
+                    video_id=video_id,
+                    before=before,
+                    observed=restored,
+                    reason="restore_readback_third_value",
+                    restore_writes=restore_write,
+                    verification_attempts=total_verification_attempts,
+                )
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A restauração encontrou um valor externo ao snapshot/proposta assinados. O vídeo foi protegido e nenhuma nova compensação será enviada.",
+                ) from restore_error
+
+            if restore_write < self._MAX_RESTORE_WRITES:
+                continue
+
+            self._record_uncertain_restore(
+                video_id=video_id,
+                before=before,
+                observed=restored,
+                reason="restore_budget_exhausted",
+                restore_writes=restore_write,
+                verification_attempts=total_verification_attempts,
+            )
             raise tool_error(
                 "write_state_uncertain",
-                "Foi detectada uma gravação parcial e a restauração automática não pôde ser confirmada integralmente. O estado remoto precisa ser relido antes de outra escrita.",
+                "Foi detectada uma gravação parcial e as tentativas limitadas de restauração não convergiram integralmente. O vídeo foi protegido contra novas escritas automáticas.",
             ) from restore_error
-        return restored, mismatches, exact_differences, attempts
+
+        return last_observed, last_mismatches, last_exact, total_verification_attempts
 
     def _partial_write_error(self) -> Exception:
         return tool_error(
@@ -234,7 +407,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 phase="ambiguous_response",
                 verification_attempts=attempts,
             )
-            self._restore_verified_snapshot(video_id=video_id, before=before)
+            self._restore_verified_snapshot(video_id=video_id, before=before, expected=expected)
             raise self._partial_write_error() from original_error
 
         self.memory.record_video_action(
@@ -265,7 +438,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             raise tool_error("invalid_request", "video_id ausente no payload aprovado.")
 
         self.memory.assert_not_recently_edited(video_id)
-        before = self._current_video_snippet(video_id)
+        before, before_etag = self._versioned_video_snippet(video_id)
         signer = signer_from_env()
         baseline_digest = str(approval_payload.get("baseline_digest", "")).strip()
         if not baseline_digest or baseline_digest != signer.payload_digest(before):
@@ -285,10 +458,11 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
 
         snippet = self._snippet_for_update(expected)
         try:
-            self._youtube().videos().update(
-                part="snippet",
-                body={"id": video_id, "snippet": snippet},
-            ).execute()
+            self._conditional_snippet_update(
+                video_id=video_id,
+                snippet=snippet,
+                etag=before_etag,
+            )
         except Exception as exc:
             return self._resolve_ambiguous_write(
                 video_id=video_id,
@@ -324,7 +498,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                     observed=observed,
                     phase="verification_exception",
                 )
-                self._restore_verified_snapshot(video_id=video_id, before=before)
+                self._restore_verified_snapshot(video_id=video_id, before=before, expected=expected)
                 raise self._partial_write_error() from exc
             if not self._mismatches(observed, expected):
                 return self._success_result(
@@ -358,7 +532,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 phase="confirmed_response",
                 verification_attempts=attempts,
             )
-            self._restore_verified_snapshot(video_id=video_id, before=before)
+            self._restore_verified_snapshot(video_id=video_id, before=before, expected=expected)
             raise self._partial_write_error()
 
         if not self._mismatches(persisted, before):
