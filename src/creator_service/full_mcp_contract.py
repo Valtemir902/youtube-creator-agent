@@ -12,7 +12,10 @@ EXPECTED_TOOL_NAMES = {
     "preview_video_metadata_update", "apply_video_metadata_update", "apply_video_metadata_rollback",
     "list_channel_videos", "get_video_details", "get_video_transcript", "list_video_categories",
     "preview_video_metadata_update_advanced", "apply_video_metadata_update_advanced",
-    "apply_video_metadata_rollback_advanced", "list_video_captions",
+    "apply_video_metadata_rollback_advanced",
+    "preview_video_privacy_update", "apply_video_privacy_update",
+    "preview_video_delete", "apply_video_delete",
+    "list_video_captions",
     "preview_caption_upload", "apply_caption_upload", "apply_caption_delete_rollback",
     "list_playlists", "get_playlist_details", "preview_playlist_metadata_update",
     "apply_playlist_metadata_update", "apply_playlist_metadata_rollback",
@@ -33,6 +36,20 @@ EXPECTED_SCHEMAS = {
     "list_channel_videos": (
         {"max_results", "page_token"}, set()
     ),
+    "preview_video_privacy_update": (
+        {"video_id", "privacy_status"}, {"video_id", "privacy_status"}
+    ),
+    "apply_video_privacy_update": (
+        {"approval_payload", "approval_token", "user_confirmed"},
+        {"approval_payload", "approval_token", "user_confirmed"},
+    ),
+    "preview_video_delete": (
+        {"video_id"}, {"video_id"}
+    ),
+    "apply_video_delete": (
+        {"approval_payload", "approval_token", "user_confirmed"},
+        {"approval_payload", "approval_token", "user_confirmed"},
+    ),
     "preview_playlist_create": (
         {"title", "description", "privacy_status", "default_language", "video_ids"}, {"title"}
     ),
@@ -49,6 +66,10 @@ EXPECTED_SCHEMAS = {
 EXPECTED_ANNOTATIONS = {
     "preview_video_metadata_update": (True, False, False, True),
     "list_channel_videos": (True, False, False, True),
+    "preview_video_privacy_update": (False, False, False, False),
+    "apply_video_privacy_update": (False, True, True, False),
+    "preview_video_delete": (False, False, False, False),
+    "apply_video_delete": (False, True, True, False),
     "preview_playlist_create": (False, False, False, False),
     "apply_playlist_create": (False, True, True, False),
     "apply_playlist_create_rollback": (False, True, True, False),
@@ -78,7 +99,7 @@ def assert_registered_server_contract(server: Any) -> None:
         f"missing={sorted(EXPECTED_TOOL_NAMES - names)} "
         f"unexpected={sorted(names - EXPECTED_TOOL_NAMES)}"
     )
-    assert len(names) == 47, len(names)
+    assert len(names) == 51, len(names)
 
     resources = list(server._resource_manager.list_resources())
     uris = {str(resource.uri) for resource in resources}
