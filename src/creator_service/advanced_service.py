@@ -233,7 +233,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             "recent_edit_protection": self.video_memory_state(video_id),
         }
 
-    # Video-control writes are intentionally isolated from metadata/caption paths.
+    # Video-control writes are intentionally isolated from metadata/caption paths; this marker promotes the validated runtime.
     _VIDEO_STATUS_WRITABLE_FIELDS = (
         "privacyStatus",
         "publishAt",
