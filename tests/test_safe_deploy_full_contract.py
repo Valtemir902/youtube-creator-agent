@@ -41,7 +41,7 @@ def test_public_v1_compat_surface_remains_exactly_51_plus_one(monkeypatch) -> No
     _env(monkeypatch)
     server = create_public_server()
     assert _names(server) == full_mcp_contract.EXPECTED_TOOL_NAMES
-    assert len(_names(server)) == 47
+    assert len(_names(server)) == 51
     assert _resource_uris(server) == {full_mcp_contract.EXPECTED_RESOURCE_URI}
 
 
