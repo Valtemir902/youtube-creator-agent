@@ -32,13 +32,24 @@ _RECONNECT_JS = r'''
       }catch(err){b.disabled=false;b.textContent='Reconectar agora';const span=box.querySelector('span');if(span)span.textContent=err.message||String(err)}
     };
   };
-  const probe=async()=>{
-    try{
-      const r=await fetch('/api/dashboard/channel/identity',{credentials:'same-origin',headers:{Accept:'application/json'}});
-      if(r.status===409){const d=await r.json().catch(()=>({}));if(d.code==='youtube_reconnect_required'){installBanner(d.detail);const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';}}
-    }catch(_err){}
+  const markReconnect=(detail)=>{
+    installBanner(detail);
+    const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');
+    const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';
   };
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(probe,120),{once:true});else setTimeout(probe,120);
+  const baseFetch=window.fetch.bind(window);
+  window.fetch=async function(input,init){
+    const response=await baseFetch(input,init);
+    try{
+      const raw=typeof input==='string'?input:(input&&input.url)||'';
+      const url=new URL(raw,location.href);
+      if(url.origin===location.origin&&url.pathname==='/api/dashboard/channel/identity'&&response.status===409){
+        const data=await response.clone().json().catch(()=>({}));
+        if(data.code==='youtube_reconnect_required')markReconnect(data.detail);
+      }
+    }catch(_err){}
+    return response;
+  };
 })();
 '''
 
@@ -63,7 +74,7 @@ def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
     * Expired/revoked Google refresh tokens become a recoverable 409 instead of 500.
     * The authenticated web dashboard receives the certified Elite V2 visual layer.
     * Previously composed dashboard layers are preserved verbatim.
-    * No Google/YouTube call is performed by this installer itself.
+    * No duplicate YouTube identity probe is added during dashboard boot.
     """
 
     @app.exception_handler(RefreshError)
