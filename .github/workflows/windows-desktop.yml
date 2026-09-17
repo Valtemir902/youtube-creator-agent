@@ -88,7 +88,8 @@ jobs:
           QTWEBENGINE_DISABLE_SANDBOX: '1'
           QTWEBENGINE_CHROMIUM_FLAGS: '--disable-gpu --disable-gpu-compositing --disable-features=VizDisplayCompositor --no-sandbox'
         run: |
-          python scripts/ui_v2_visual_smoke.py | Tee-Object -FilePath artifacts/windows/ui-v2-visual-smoke.json
+          $visualPython = (Resolve-Path 'build/windows-release/.venv/Scripts/python.exe').Path
+          & $visualPython scripts/ui_v2_visual_smoke.py | Tee-Object -FilePath artifacts/windows/ui-v2-visual-smoke.json
           if ($LASTEXITCODE -ne 0) { throw "Elite V2 visual smoke falhou com exit code $LASTEXITCODE" }
           $line = Get-Content artifacts/windows/ui-v2-visual-smoke.json | Where-Object { $_ -match '^\{"ok"' } | Select-Object -Last 1
           if (-not $line) { throw 'Elite V2 visual smoke não gerou payload final' }
