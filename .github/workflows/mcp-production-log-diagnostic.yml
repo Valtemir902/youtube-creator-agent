@@ -53,15 +53,19 @@ jobs:
           $compose exec -T mcp python - <<'PY'
           import hashlib
           import inspect
-          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
-          from creator_service import cloud_mcp_server_advanced
+          from creator_service.responsible_service import ResponsibleCreatorService
+          from creator_service import cloud_mcp_server_management
+          from creator_service import cloud_mcp_server_responsible
 
-          src = inspect.getsource(VerifiedAdvancedSafeCreatorService).encode('utf-8')
-          print('service_class=' + VerifiedAdvancedSafeCreatorService.__module__ + '.' + VerifiedAdvancedSafeCreatorService.__name__)
+          src = inspect.getsource(ResponsibleCreatorService).encode('utf-8')
+          print('service_class=' + ResponsibleCreatorService.__module__ + '.' + ResponsibleCreatorService.__name__)
           print('service_source_sha256=' + hashlib.sha256(src).hexdigest())
-          print('write_verify_delays=' + repr(VerifiedAdvancedSafeCreatorService._WRITE_VERIFY_DELAYS))
-          print('restore_verify_delays=' + repr(VerifiedAdvancedSafeCreatorService._RESTORE_VERIFY_DELAYS))
-          print('advanced_service_factory=' + cloud_mcp_server_advanced._service.__module__ + '.' + cloud_mcp_server_advanced._service.__name__)
+          print('write_verify_delays=' + repr(ResponsibleCreatorService._WRITE_VERIFY_DELAYS))
+          print('restore_verify_delays=' + repr(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS))
+          print('ambiguous_verify_delays=' + repr(ResponsibleCreatorService._AMBIGUOUS_VERIFY_DELAYS))
+          print('management_service_symbol=' + cloud_mcp_server_management.VerifiedAdvancedSafeCreatorService.__module__ + '.' + cloud_mcp_server_management.VerifiedAdvancedSafeCreatorService.__name__)
+          print('responsible_server_factory=' + cloud_mcp_server_responsible.create_server.__module__ + '.' + cloud_mcp_server_responsible.create_server.__name__)
+          print('advanced_service_factory=' + cloud_mcp_server_management._service.__module__ + '.' + cloud_mcp_server_management._service.__name__)
           PY
 
           echo '=== recent structured MCP tool exceptions ==='
