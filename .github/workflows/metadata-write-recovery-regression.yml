@@ -8,6 +8,7 @@ on:
       - "src/creator_service/responsible_service.py"
       - "src/creator_service/mcp_errors.py"
       - "tests/test_responsible_write_recovery.py"
+      - "tests/test_mcp_errors_write_recovery.py"
       - ".github/workflows/metadata-write-recovery-regression.yml"
 
 permissions:
@@ -29,4 +30,4 @@ jobs:
       - name: Run metadata recovery regression only
         env:
           PYTHONPATH: src
-        run: pytest -q tests/test_responsible_write_recovery.py
+        run: pytest -q tests/test_responsible_write_recovery.py tests/test_mcp_errors_write_recovery.py
