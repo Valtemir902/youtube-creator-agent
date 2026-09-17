@@ -407,6 +407,9 @@ def create_server():
         content: str,
         name: str | None = None,
         caption_format: str = "srt",
+        caption_mode: str = "auto",
+        preserve_sdh_markers: bool = False,
+        existing_manual_action: str | None = None,
     ) -> dict[str, Any]:
         def action() -> dict[str, Any]:
             base._require_scope(base.WRITE_SCOPE)
@@ -419,6 +422,9 @@ def create_server():
                 content=content,
                 name=name,
                 caption_format=caption_format,
+                caption_mode=caption_mode,
+                preserve_sdh_markers=preserve_sdh_markers,
+                existing_manual_action=existing_manual_action,
             )
             base._audit("mcp_caption_preview", "success", {"video_id": video_id, "language": language})
             return base.success_response(result)
