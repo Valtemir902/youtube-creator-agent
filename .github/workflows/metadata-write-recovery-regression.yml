@@ -6,6 +6,7 @@ on:
     branches: ["feat/web-dashboard-v1"]
     paths:
       - "src/creator_service/responsible_service.py"
+      - "src/creator_service/verified_advanced_service.py"
       - "src/creator_service/mcp_errors.py"
       - "tests/test_responsible_write_recovery.py"
       - "tests/test_mcp_errors_write_recovery.py"
