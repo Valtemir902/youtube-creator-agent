@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from creator_service.mcp_errors import CreatorToolError
 from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
 from intelligence.creator_memory import CreatorMemoryStore
 
@@ -116,14 +117,15 @@ def test_partial_write_is_restored_and_never_reported_as_success(tmp_path, monke
         tags=["new-tag"],
     )
 
-    with pytest.raises(RuntimeError, match="revertida automaticamente"):
+    with pytest.raises(CreatorToolError) as caught:
         service.apply_video_metadata_update(
             approval_payload=preview["approval_payload"],
             approval_token=preview["approval_token"],
         )
 
+    assert caught.value.code == "partial_write_detected"
     assert youtube.snippet == before
     assert youtube.update_calls == 2
     state = service.memory.recent_edit_state(youtube.video_id)
-    assert state.protected is True
-    assert state.last_action_type == "metadata_write_verification_rollback"
+    assert state.protected is False
+    assert state.last_action_at is None

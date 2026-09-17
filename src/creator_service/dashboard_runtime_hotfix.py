@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -33,22 +32,30 @@ _RECONNECT_JS = r'''
       }catch(err){b.disabled=false;b.textContent='Reconectar agora';const span=box.querySelector('span');if(span)span.textContent=err.message||String(err)}
     };
   };
-  const probe=async()=>{
-    try{
-      const r=await fetch('/api/dashboard/channel/identity',{credentials:'same-origin',headers:{Accept:'application/json'}});
-      if(r.status===409){const d=await r.json().catch(()=>({}));if(d.code==='youtube_reconnect_required'){installBanner(d.detail);const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';}}
-    }catch(_err){}
+  const markReconnect=(detail)=>{
+    installBanner(detail);
+    const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');
+    const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';
   };
-  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(probe,120),{once:true});else setTimeout(probe,120);
+  const baseFetch=window.fetch.bind(window);
+  window.fetch=async function(input,init){
+    const response=await baseFetch(input,init);
+    try{
+      const raw=typeof input==='string'?input:(input&&input.url)||'';
+      const url=new URL(raw,location.href);
+      if(url.origin===location.origin&&url.pathname==='/api/dashboard/channel/identity'&&response.status===409){
+        const data=await response.clone().json().catch(()=>({}));
+        if(data.code==='youtube_reconnect_required')markReconnect(data.detail);
+      }
+    }catch(_err){}
+    return response;
+  };
 })();
 '''
 
 
-def _dashboard_html() -> str:
-    page = Path(__file__).resolve().parent / "web" / "dashboard.html"
-    html = page.read_text(encoding="utf-8")
-    # Use the same independently-tested visual system as the Windows shell. Cloud
-    # keeps the existing API/write contracts; this layer only upgrades presentation.
+def _inject_cloud_elite_v2(html: str) -> str:
+    """Add the cloud Elite V2 layer without discarding previously composed HTML."""
     source = elite_v2_webengine_source() + "\n" + _RECONNECT_JS
     injection = "<script data-yca-cloud-elite-v2>\n" + source.replace("</script", "<\\/script") + "\n</script>"
     if "data-yca-cloud-elite-v2" not in html:
@@ -56,12 +63,18 @@ def _dashboard_html() -> str:
     return html
 
 
+def _dashboard_html() -> str:
+    page = Path(__file__).resolve().parent / "web" / "dashboard.html"
+    return _inject_cloud_elite_v2(page.read_text(encoding="utf-8"))
+
+
 def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
     """Harden cloud dashboard runtime without changing any YouTube write contract.
 
     * Expired/revoked Google refresh tokens become a recoverable 409 instead of 500.
     * The authenticated web dashboard receives the certified Elite V2 visual layer.
-    * No Google/YouTube call is performed by this installer itself.
+    * Previously composed dashboard layers are preserved verbatim.
+    * No duplicate YouTube identity probe is added during dashboard boot.
     """
 
     @app.exception_handler(RefreshError)
@@ -89,7 +102,14 @@ def install_dashboard_runtime_hotfix(app: FastAPI) -> None:
         response = await call_next(request)
         if request.url.path != "/dashboard" or response.status_code != 200:
             return response
+
+        chunks: list[bytes] = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk))
+        html = b"".join(chunks).decode("utf-8")
+        html = _inject_cloud_elite_v2(html)
+
         headers = {k: v for k, v in response.headers.items() if k.lower() not in {"content-length", "content-type"}}
         headers["Cache-Control"] = "no-store"
         headers["X-YCA-Dashboard-UI"] = "elite-v2-cloud"
-        return HTMLResponse(_dashboard_html(), status_code=200, headers=headers)
+        return HTMLResponse(html, status_code=200, headers=headers)

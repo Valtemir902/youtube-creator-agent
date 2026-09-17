@@ -23,7 +23,9 @@ def test_stability_guard_replaces_automatic_full_refresh_with_independent_boot()
     assert "ycaInitialLoad();" in result
     assert "loadChannelIdentity()" in result
     assert "loadPlaylists()" in result
-    assert "loadVideos()" in result
+    # Videos already have a dedicated initial loader in the composed dashboard.
+    # The stability guard must not add a second automatic read during boot.
+    assert "loadVideos()" not in result
     assert "loadChannel()" in result
     assert "loadLive()" not in result
     assert "\nrefreshAll();\n</script>" not in result
