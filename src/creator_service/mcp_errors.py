@@ -95,6 +95,24 @@ def classify_exception(exc: BaseException) -> CreatorToolError:
         return tool_error("external_change_detected")
     if "proteção de memória ativa" in text or "recently edited" in text:
         return tool_error("recent_edit_protected")
+
+    # Compatibility mapping for older write-recovery paths that raised plain
+    # RuntimeError after compensation. New code raises CreatorToolError directly,
+    # but these signatures must never be collapsed back to generic internal_error.
+    if (
+        "revertida automaticamente e a restauração foi verificada" in text
+        or "leitura final confirmou que o estado anterior foi restaurado" in text
+        or "previous state was restored and verified" in text
+    ):
+        return tool_error("partial_write_detected")
+    if (
+        "restauração automática não pôde ser confirmada" in text
+        or "releitura da restauração também falhou" in text
+        or "estado atual ficou diferente tanto da versão anterior quanto da versão aprovada" in text
+        or "final state could not be verified safely" in text
+    ):
+        return tool_error("write_state_uncertain")
+
     if "playlist" in text and ("não pertence" in text or "does not belong" in text):
         return tool_error("playlist_not_owned")
     if "playlist" in text and ("não encontr" in text or "not found" in text):
