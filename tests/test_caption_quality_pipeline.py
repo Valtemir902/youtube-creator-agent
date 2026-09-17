@@ -437,3 +437,33 @@ def test_ownership_validation_blocks_foreign_video():
             content=VALID_SRT,
             name="English - Manual",
         )
+
+
+def test_video_duration_parser_handles_real_youtube_iso8601_duration():
+    assert AdvancedSafeCreatorService._video_duration_seconds("PT10S") == 10.0
+    assert AdvancedSafeCreatorService._video_duration_seconds("PT1H2M3.5S") == 3723.5
+
+
+def test_caption_payload_normalizes_real_crlf_newlines():
+    payload = AdvancedSafeCreatorService._normalize_caption_payload(
+        video_id="video-1",
+        language="en",
+        content="1\r\n00:00:00,000 --> 00:00:02,000\r\nGhost road.\r\n",
+        name="English - Manual",
+        caption_format="srt",
+    )
+    assert "\r" not in payload["content"]
+    assert "\n" in payload["content"]
+
+
+def test_preview_uses_video_duration_to_block_out_of_range_cue():
+    service = _Service(_Youtube(duration="PT10S"))
+    preview = service.preview_caption_upload(
+        video_id="video-1",
+        language="en",
+        content="1\n00:00:09,000 --> 00:00:11,000\nOutside.\n",
+        name="English - Manual",
+    )
+    assert preview["validation_passed"] is False
+    assert preview["apply_allowed"] is False
+    assert "cue_outside_video:1" in preview["validation_errors"]
