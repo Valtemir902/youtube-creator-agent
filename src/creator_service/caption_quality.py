@@ -243,6 +243,11 @@ def process_srt(
     max_duration: float = 7.0,
     max_line_length: int = 42,
 ) -> dict[str, Any]:
+    """Build a publishable SRT only from deterministic, validated transformations.
+
+    Structural source errors remain errors even when a safe timing normalization
+    can be rendered for diagnostics; callers must fail closed before upload.
+    """
     parsed, parse_errors, original_counts = parse_srt(content)
     structural_errors = [
         error
