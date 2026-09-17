@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from creator_service.mcp_errors import CreatorToolError
 from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
 
 
@@ -110,8 +111,11 @@ class _YouTube:
 class _Memory:
     def __init__(self):
         self.actions = []
+        self.fail_record = False
 
     def record_video_action(self, **kwargs):
+        if self.fail_record:
+            raise OSError("simulated memory failure")
         self.actions.append(kwargs)
         return len(self.actions)
 
@@ -155,7 +159,7 @@ def test_success_is_recorded_only_after_verified_readback(monkeypatch):
     assert [action["action_type"] for action in service.memory.actions] == ["metadata_update"]
 
 
-def test_partial_readback_is_compensated_before_error(monkeypatch):
+def test_partial_readback_is_compensated_without_recent_edit_record(monkeypatch):
     before = _snippet(tags=["old"])
     expected = _snippet(title="New", description="New description", tags=["new"], category_id="10")
     remote = dict(before)
@@ -173,13 +177,13 @@ def test_partial_readback_is_compensated_before_error(monkeypatch):
     service._WRITE_VERIFY_DELAYS = (0.0,)
     service._RESTORE_VERIFY_DELAYS = (0.0,)
 
-    with pytest.raises(RuntimeError, match="revertida automaticamente"):
+    with pytest.raises(CreatorToolError) as caught:
         service.apply_video_metadata_update(approval_payload={}, approval_token="token")
 
+    assert caught.value.code == "partial_write_detected"
     assert remote == before
     assert len(youtube._videos.calls) == 2
-    assert not any(action["action_type"] == "metadata_update" for action in service.memory.actions)
-    assert any(action["action_type"] == "metadata_write_compensated" for action in service.memory.actions)
+    assert service.memory.actions == []
 
 
 def test_execute_exception_after_remote_mutation_is_compensated(monkeypatch):
@@ -200,9 +204,44 @@ def test_execute_exception_after_remote_mutation_is_compensated(monkeypatch):
     youtube._videos.callback = ambiguous_mutate
     service._RESTORE_VERIFY_DELAYS = (0.0,)
 
-    with pytest.raises(RuntimeError, match="estado anterior foi restaurado"):
+    with pytest.raises(CreatorToolError) as caught:
         service.apply_video_metadata_update(approval_payload={}, approval_token="token")
 
+    assert caught.value.code == "partial_write_detected"
     assert remote == before
     assert len(youtube._videos.calls) == 2
-    assert not any(action["action_type"] == "metadata_update" for action in service.memory.actions)
+    assert service.memory.actions == []
+
+
+def test_rollback_package_failure_after_verified_write_is_compensated(monkeypatch):
+    before = _snippet(tags=["old"])
+    expected = _snippet(title="New", description="New description", tags=["new"], category_id="10")
+    remote = dict(before)
+    service, youtube = _service_for_apply(monkeypatch, before, expected, remote)
+    service._RESTORE_VERIFY_DELAYS = (0.0,)
+    monkeypatch.setattr(service, "_build_rollback_package", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("signer failed")))
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(approval_payload={}, approval_token="token")
+
+    assert caught.value.code == "partial_write_detected"
+    assert remote == before
+    assert len(youtube._videos.calls) == 2
+    assert service.memory.actions == []
+
+
+def test_memory_failure_after_verified_write_is_compensated(monkeypatch):
+    before = _snippet(tags=["old"])
+    expected = _snippet(title="New", description="New description", tags=["new"], category_id="10")
+    remote = dict(before)
+    service, youtube = _service_for_apply(monkeypatch, before, expected, remote)
+    service._RESTORE_VERIFY_DELAYS = (0.0,)
+    service.memory.fail_record = True
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(approval_payload={}, approval_token="token")
+
+    assert caught.value.code == "partial_write_detected"
+    assert remote == before
+    assert len(youtube._videos.calls) == 2
+    assert service.memory.actions == []
