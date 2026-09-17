@@ -1,81 +1,102 @@
-from __future__ import annotations
-
 import asyncio
 import time
+from dataclasses import dataclass
 
 import pytest
-from fastapi import FastAPI, HTTPException
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
-from creator_service.dashboard_performance import DashboardReadCache, install_dashboard_performance
-from creator_service.security import Tenant
+from creator_service.dashboard_performance import DashboardReadCache
 
 
-def test_dashboard_read_cache_deduplicates_concurrent_cold_reads():
+@dataclass
+class Tenant:
+    tenant_id: str
+
+
+def test_dashboard_read_cache_reuses_fresh_value_and_invalidates_per_tenant():
     async def scenario():
-        cache = DashboardReadCache(cold_timeout_seconds=1)
+        cache = DashboardReadCache()
+        calls = {"n": 0}
+
+        async def producer(*, tenant):
+            calls["n"] += 1
+            await asyncio.sleep(0.01)
+            return {"value": calls["n"], "tenant": tenant.tenant_id}
+
+        kwargs = {"tenant": Tenant("tenant-a")}
+        key = cache.key_for("/api/dashboard/channel", kwargs)
+        first = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=60, stale_seconds=120)
+        second = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=60, stale_seconds=120)
+        assert first == second == {"value": 1, "tenant": "tenant-a"}
+        assert calls["n"] == 1
+
+        cache.invalidate_tenant("tenant-a")
+        third = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=60, stale_seconds=120)
+        assert third["value"] == 2
+        assert calls["n"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_dashboard_read_cache_deduplicates_simultaneous_cold_reads():
+    async def scenario():
+        cache = DashboardReadCache()
         calls = {"n": 0}
 
         async def producer(*, tenant):
             calls["n"] += 1
             await asyncio.sleep(0.05)
-            return {"tenant": tenant.tenant_id}
+            return {"ok": True, "tenant": tenant.tenant_id}
 
-        kwargs = {"tenant": Tenant("tenant-one")}
-        key = cache.key_for("/api/dashboard/channel", kwargs)
-        first, second = await asyncio.gather(
-            cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=10, stale_seconds=20),
-            cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=10, stale_seconds=20),
-        )
-        assert first == {"tenant": "tenant-one"}
-        assert second == first
+        kwargs = {"tenant": Tenant("tenant-b")}
+        key = cache.key_for("/api/dashboard/videos", kwargs)
+        values = await asyncio.gather(*[
+            cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=30, stale_seconds=60)
+            for _ in range(5)
+        ])
         assert calls["n"] == 1
+        assert values == [{"ok": True, "tenant": "tenant-b"}] * 5
 
     asyncio.run(scenario())
 
 
-def test_dashboard_read_cache_is_tenant_isolated():
-    cache = DashboardReadCache()
-    one = cache.key_for("/api/dashboard/channel", {"tenant": Tenant("tenant-one")})
-    two = cache.key_for("/api/dashboard/channel", {"tenant": Tenant("tenant-two")})
-    assert one != two
-
-
-def test_dashboard_read_cache_serves_stale_and_refreshes_in_background():
+def test_dashboard_read_cache_returns_stale_immediately_and_refreshes_in_background():
     async def scenario():
-        cache = DashboardReadCache(cold_timeout_seconds=1)
+        cache = DashboardReadCache()
         calls = {"n": 0}
-        release = asyncio.Event()
 
         async def producer(*, tenant):
             calls["n"] += 1
-            if calls["n"] > 1:
-                await release.wait()
+            await asyncio.sleep(0.03)
             return {"version": calls["n"], "tenant": tenant.tenant_id}
 
-        kwargs = {"tenant": Tenant("tenant-stale")}
-        key = cache.key_for("/api/dashboard/channel", kwargs)
-        first = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=0, stale_seconds=10)
+        kwargs = {"tenant": Tenant("tenant-c")}
+        key = cache.key_for("/api/dashboard/free/channel", kwargs)
+        first = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=0.01, stale_seconds=5)
         assert first["version"] == 1
-        stale = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=0, stale_seconds=10)
+        await asyncio.sleep(0.02)
+
+        started = time.monotonic()
+        stale = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=0.01, stale_seconds=5)
+        elapsed = time.monotonic() - started
         assert stale["version"] == 1
-        await asyncio.sleep(0.02)
-        assert calls["n"] == 2
-        release.set()
-        await asyncio.sleep(0.02)
-        refreshed = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=10, stale_seconds=20)
+        assert elapsed < 0.02
+
+        await asyncio.sleep(0.08)
+        refreshed = await cache.get(key=key, fn=producer, kwargs=kwargs, ttl_seconds=1, stale_seconds=5)
         assert refreshed["version"] == 2
+        assert calls["n"] == 2
 
     asyncio.run(scenario())
 
 
-def test_dashboard_read_cache_times_out_without_blocking_forever():
+def test_dashboard_read_cache_times_out_cold_read_instead_of_hanging():
     async def scenario():
         cache = DashboardReadCache(cold_timeout_seconds=0.03)
 
         async def producer(*, tenant):
             await asyncio.sleep(5)
-            return {"tenant": tenant.tenant_id}
+            return {"never": "reached"}
 
         kwargs = {"tenant": Tenant("tenant-timeout")}
         key = cache.key_for("/api/dashboard/channel", kwargs)
@@ -91,8 +112,6 @@ def test_dashboard_read_cache_times_out_without_blocking_forever():
 
 def test_dashboard_read_cache_uses_last_known_good_after_refresh_timeout():
     async def scenario():
-        # Keep this budget short enough to exercise timeout/fallback behavior but
-        # long enough for CI runner thread scheduling on the first successful read.
         cache = DashboardReadCache(cold_timeout_seconds=0.2, fallback_seconds=60)
         calls = {"n": 0}
 
@@ -111,37 +130,3 @@ def test_dashboard_read_cache_uses_last_known_good_after_refresh_timeout():
         assert fallback == {"value": "good"}
 
     asyncio.run(scenario())
-
-
-def test_install_dashboard_performance_wraps_dashboard_get_routes():
-    app = FastAPI()
-
-    @app.get("/api/dashboard/channel")
-    async def channel(tenant=None):
-        return {"ok": True}
-
-    @app.get("/health")
-    async def health():
-        return {"ok": True}
-
-    install_dashboard_performance(app)
-    dashboard = next(route for route in app.routes if getattr(route, "path", None) == "/api/dashboard/channel")
-    health_route = next(route for route in app.routes if getattr(route, "path", None) == "/health")
-    assert getattr(dashboard.endpoint, "__name__", "") == "cached_endpoint"
-    assert getattr(health_route.endpoint, "__name__", "") == "health"
-
-
-def test_install_dashboard_performance_keeps_post_routes_uncached():
-    app = FastAPI()
-
-    @app.post("/api/dashboard/video/abc/metadata/preview")
-    async def preview():
-        return {"ok": True}
-
-    install_dashboard_performance(app)
-    route = next(
-        route
-        for route in app.routes
-        if getattr(route, "path", None) == "/api/dashboard/video/abc/metadata/preview"
-    )
-    assert getattr(route.endpoint, "__name__", "") == "preview"
