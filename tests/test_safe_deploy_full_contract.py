@@ -33,11 +33,11 @@ def test_standalone_wrapper_factory_is_exact_full_contract(monkeypatch) -> None:
 
     server = create_responsible_server()
     assert _names(server) == full_mcp_contract.EXPECTED_TOOL_NAMES
-    assert len(_names(server)) == 47
+    assert len(_names(server)) == 51
     assert _resource_uris(server) == {full_mcp_contract.EXPECTED_RESOURCE_URI}
 
 
-def test_public_v1_compat_surface_remains_exactly_47_plus_one(monkeypatch) -> None:
+def test_public_v1_compat_surface_remains_exactly_51_plus_one(monkeypatch) -> None:
     _env(monkeypatch)
     server = create_public_server()
     assert _names(server) == full_mcp_contract.EXPECTED_TOOL_NAMES
