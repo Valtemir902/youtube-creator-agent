@@ -207,7 +207,7 @@ class CompanionHandler(BaseHTTPRequestHandler):
             # simple loopback GETs without issuing a preflight first. Returning
             # the permission header on every response to an already-approved
             # origin keeps the loopback bridge deterministic without broadening
-            # the origin allowlist.
+            # the origin allowlist, including the packaged Windows WebEngine.
             self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
