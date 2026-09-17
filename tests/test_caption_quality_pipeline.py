@@ -396,6 +396,7 @@ def test_caption_replay_guard_rejects_second_consumption(monkeypatch):
     store = _Store()
     monkeypatch.setattr(management, "signer_from_env", lambda: signer)
     monkeypatch.setattr(management.base, "_ops_store", lambda: store)
+    monkeypatch.setattr(management.base, "_tenant_id", lambda: "tenant-1")
     management._consume_token(
         token=token,
         payload=payload,
