@@ -42,21 +42,24 @@ def create_server():
         tags: list[str] | None = None,
         category_id: str | None = None,
     ) -> dict[str, Any]:
-        base._require_scope(base.WRITE_SCOPE)
-        base._limit("write_preview", limit=30)
-        result = _service().preview_video_metadata_update(
-            video_id=video_id,
-            title=title,
-            description=description,
-            tags=tags,
-            category_id=category_id,
-        )
-        base._audit(
-            "mcp_video_metadata_advanced_preview",
-            "success",
-            {"video_id": video_id, "changed": result.get("changed", {})},
-        )
-        return result
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("write_preview", limit=30)
+            result = _service().preview_video_metadata_update(
+                video_id=video_id,
+                title=title,
+                description=description,
+                tags=tags,
+                category_id=category_id,
+            )
+            base._audit(
+                "mcp_video_metadata_advanced_preview",
+                "success",
+                {"video_id": video_id, "changed": result.get("changed", {})},
+            )
+            return base.success_response(result)
+
+        return base._structured("preview_video_metadata_update_advanced", action)
 
     @server.tool(
         title="Aplicar metadados avançados aprovados no vídeo",
@@ -67,25 +70,33 @@ def create_server():
         approval_token: str,
         user_confirmed: bool,
     ) -> dict[str, Any]:
-        base._require_scope(base.WRITE_SCOPE)
-        base._limit("write_apply", limit=15)
-        if user_confirmed is not True:
-            base._audit("mcp_video_metadata_advanced_apply", "denied", {"reason": "confirmation_missing"})
-            raise ValueError("Confirmação explícita do usuário é obrigatória.")
-        try:
-            result = _service().apply_video_metadata_update(
-                approval_payload=approval_payload,
-                approval_token=approval_token,
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("write_apply", limit=15)
+            if user_confirmed is not True:
+                base._audit("mcp_video_metadata_advanced_apply", "denied", {"reason": "confirmation_missing"})
+                raise base.tool_error("confirmation_required")
+            video_id = base._consume_signed_write(
+                token=approval_token,
+                payload=approval_payload,
+                action="update_video_metadata",
             )
-        except Exception as exc:
-            base._audit("mcp_video_metadata_advanced_apply", "failed", {"error": type(exc).__name__})
-            raise
-        base._audit(
-            "mcp_video_metadata_advanced_apply",
-            "success",
-            {"video_id": result.get("video_id"), "changed_fields": result.get("changed_fields", [])},
-        )
-        return result
+            try:
+                result = _service().apply_video_metadata_update(
+                    approval_payload=approval_payload,
+                    approval_token=approval_token,
+                )
+            except Exception:
+                base._audit("mcp_video_metadata_advanced_apply", "failed", {"video_id": video_id})
+                raise
+            base._audit(
+                "mcp_video_metadata_advanced_apply",
+                "success",
+                {"video_id": result.get("video_id"), "changed_fields": result.get("changed_fields", [])},
+            )
+            return base.success_response(result)
+
+        return base._structured("apply_video_metadata_update_advanced", action)
 
     @server.tool(
         title="Restaurar metadados avançados anteriores do vídeo",
@@ -96,20 +107,32 @@ def create_server():
         rollback_token: str,
         user_confirmed: bool,
     ) -> dict[str, Any]:
-        base._require_scope(base.WRITE_SCOPE)
-        base._limit("write_rollback", limit=10)
-        if user_confirmed is not True:
-            raise ValueError("Confirmação explícita do usuário é obrigatória para executar rollback.")
-        result = _service().apply_video_metadata_rollback(
-            rollback_payload=rollback_payload,
-            rollback_token=rollback_token,
-        )
-        base._audit(
-            "mcp_video_metadata_advanced_rollback",
-            "success",
-            {"video_id": result.get("video_id"), "changed_fields": result.get("changed_fields", [])},
-        )
-        return result
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("write_rollback", limit=10)
+            if user_confirmed is not True:
+                raise base.tool_error("confirmation_required")
+            video_id = base._consume_signed_write(
+                token=rollback_token,
+                payload=rollback_payload,
+                action="rollback_video_metadata",
+            )
+            try:
+                result = _service().apply_video_metadata_rollback(
+                    rollback_payload=rollback_payload,
+                    rollback_token=rollback_token,
+                )
+            except Exception:
+                base._audit("mcp_video_metadata_advanced_rollback", "failed", {"video_id": video_id})
+                raise
+            base._audit(
+                "mcp_video_metadata_advanced_rollback",
+                "success",
+                {"video_id": result.get("video_id"), "changed_fields": result.get("changed_fields", [])},
+            )
+            return base.success_response(result)
+
+        return base._structured("apply_video_metadata_rollback_advanced", action)
 
     @server.tool(
         title="Listar legendas do vídeo",
