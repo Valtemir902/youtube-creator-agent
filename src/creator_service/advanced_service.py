@@ -8,6 +8,7 @@ from typing import Any
 from googleapiclient.http import MediaIoBaseUpload
 
 from .caption_quality import process_srt
+from .mcp_errors import tool_error
 from .safe_service import SafeCreatorService
 from .security import signer_from_env
 
@@ -230,6 +231,320 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             "title": response.get("snippet", {}).get("title", normalized["title"]),
             "changed_fields": changed_fields,
             "recent_edit_protection": self.video_memory_state(video_id),
+        }
+
+    _VIDEO_STATUS_WRITABLE_FIELDS = (
+        "privacyStatus",
+        "publishAt",
+        "license",
+        "embeddable",
+        "publicStatsViewable",
+        "selfDeclaredMadeForKids",
+    )
+    _VIDEO_CONTROL_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
+
+    @classmethod
+    def _writable_video_status(cls, status: dict[str, Any]) -> dict[str, Any]:
+        return {
+            field: status[field]
+            for field in cls._VIDEO_STATUS_WRITABLE_FIELDS
+            if field in status and status[field] is not None
+        }
+
+    @staticmethod
+    def _video_identity_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+        snippet = item.get("snippet", {}) or {}
+        status = item.get("status", {}) or {}
+        return {
+            "video_id": str(item.get("id", "")),
+            "channel_id": str(snippet.get("channelId", "")),
+            "title": str(snippet.get("title", "")),
+            "privacy_status": str(status.get("privacyStatus", "")),
+            "published_at": snippet.get("publishedAt"),
+        }
+
+    @classmethod
+    def _video_control_baseline(cls, item: dict[str, Any]) -> dict[str, Any]:
+        snippet = item.get("snippet", {}) or {}
+        return {
+            "video_id": str(item.get("id", "")),
+            "channel_id": str(snippet.get("channelId", "")),
+            "snippet": {
+                "title": str(snippet.get("title", "")),
+                "description": str(snippet.get("description", "")),
+                "tags": list(snippet.get("tags", []) or []),
+                "categoryId": str(snippet.get("categoryId", "22")),
+                "defaultLanguage": snippet.get("defaultLanguage"),
+            },
+            "status": cls._writable_video_status(item.get("status", {}) or {}),
+        }
+
+    def _owned_video_control_item(self, video_id: str) -> dict[str, Any]:
+        return self._owned_video_item(video_id, part="snippet,status")
+
+    def _video_absent(self, video_id: str) -> bool:
+        response = self._youtube().videos().list(part="snippet", id=video_id).execute()
+        items = response.get("items", [])
+        if not items:
+            return True
+        item = dict(items[0])
+        owner = str((item.get("snippet", {}) or {}).get("channelId", "")).strip()
+        if owner != self._authorized_channel_id():
+            raise tool_error("video_not_owned")
+        return False
+
+    def preview_video_privacy_update(self, *, video_id: str, privacy_status: str) -> dict[str, Any]:
+        self.context.validate_youtube()
+        target = str(privacy_status or "").strip().lower()
+        if target not in {"public", "unlisted", "private"}:
+            raise ValueError("privacy_status deve ser public, unlisted ou private.")
+        item = self._owned_video_control_item(video_id)
+        current = self._video_identity_snapshot(item)
+        proposed = dict(current)
+        proposed["privacy_status"] = target
+        baseline = self._video_control_baseline(item)
+        approval_payload = {
+            "baseline_digest": signer_from_env().payload_digest(baseline),
+            "proposed": {
+                "video_id": current["video_id"],
+                "privacy_status": target,
+            },
+        }
+        token = signer_from_env().issue(
+            "update_video_privacy",
+            current["video_id"],
+            approval_payload,
+        )
+        return {
+            "video_id": current["video_id"],
+            "current": current,
+            "proposed": proposed,
+            "changed": current["privacy_status"] != target,
+            "approval_payload": approval_payload,
+            "approval_token": token,
+            "expires_in_seconds": 900,
+            "requires_explicit_user_confirmation": True,
+        }
+
+    def apply_video_privacy_update(
+        self,
+        *,
+        approval_payload: dict[str, Any],
+        approval_token: str,
+    ) -> dict[str, Any]:
+        self.context.validate_youtube()
+        proposed = dict(approval_payload.get("proposed", {}) or {})
+        video_id = str(proposed.get("video_id", "")).strip()
+        target = str(proposed.get("privacy_status", "")).strip().lower()
+        if not video_id:
+            raise ValueError("video_id ausente no payload aprovado.")
+        if target not in {"public", "unlisted", "private"}:
+            raise ValueError("privacy_status deve ser public, unlisted ou private.")
+
+        signer = signer_from_env()
+        normalized_payload = {
+            "baseline_digest": str(approval_payload.get("baseline_digest", "")),
+            "proposed": {"video_id": video_id, "privacy_status": target},
+        }
+        signer.verify(
+            approval_token,
+            action="update_video_privacy",
+            subject=video_id,
+            payload=normalized_payload,
+        )
+
+        item = self._owned_video_control_item(video_id)
+        before_identity = self._video_identity_snapshot(item)
+        before_baseline = self._video_control_baseline(item)
+        if signer.payload_digest(before_baseline) != normalized_payload["baseline_digest"]:
+            raise tool_error("external_change_detected")
+
+        if before_identity["privacy_status"] == target:
+            observed = before_identity
+            rollback_preview = None
+            return {
+                "ok": True,
+                "video_id": video_id,
+                "persisted_verified": True,
+                "no_changes": True,
+                "current": observed,
+                "changed_fields": [],
+                "verification_attempts": 0,
+                "rollback_preview": rollback_preview,
+            }
+
+        status_body = dict(before_baseline["status"])
+        status_body["privacyStatus"] = target
+        if target != "private":
+            status_body.pop("publishAt", None)
+
+        request = self._youtube().videos().update(
+            part="status",
+            body={"id": video_id, "status": status_body},
+        )
+        etag = str(item.get("etag", "") or "").strip()
+        if etag:
+            headers = getattr(request, "headers", None)
+            if headers is None:
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A atualização condicional de privacidade não está disponível neste cliente. Nenhuma gravação foi enviada.",
+                )
+            headers["If-Match"] = etag
+        request.execute()
+
+        observed_item: dict[str, Any] | None = None
+        verification_attempts = 0
+        for delay in self._VIDEO_CONTROL_VERIFY_DELAYS:
+            if delay:
+                time.sleep(delay)
+            verification_attempts += 1
+            candidate = self._owned_video_control_item(video_id)
+            if self._video_identity_snapshot(candidate)["privacy_status"] == target:
+                observed_item = candidate
+                break
+
+        if observed_item is None:
+            raise tool_error(
+                "write_state_uncertain",
+                "O YouTube recebeu a atualização de privacidade, mas o estado final aprovado não pôde ser confirmado por leitura. Nenhum retry foi executado.",
+            )
+
+        observed_identity = self._video_identity_snapshot(observed_item)
+        observed_baseline = self._video_control_baseline(observed_item)
+        if observed_baseline["snippet"] != before_baseline["snippet"]:
+            raise tool_error(
+                "write_state_uncertain",
+                "A privacidade foi alterada, mas o readback detectou mudança concorrente no snippet do vídeo.",
+            )
+        for field, value in before_baseline["status"].items():
+            if field in {"privacyStatus", "publishAt"}:
+                continue
+            if observed_baseline["status"].get(field) != value:
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A privacidade foi alterada, mas o readback detectou mudança concorrente em outro campo de status.",
+                )
+
+        rollback_payload = {
+            "baseline_digest": signer.payload_digest(observed_baseline),
+            "proposed": {
+                "video_id": video_id,
+                "privacy_status": before_identity["privacy_status"],
+            },
+        }
+        rollback_token = signer.issue("update_video_privacy", video_id, rollback_payload)
+        return {
+            "ok": True,
+            "video_id": video_id,
+            "persisted_verified": True,
+            "current": observed_identity,
+            "changed_fields": ["privacyStatus"],
+            "verification_attempts": verification_attempts,
+            "rollback_preview": {
+                "rollback_payload": rollback_payload,
+                "rollback_token": rollback_token,
+                "restore_privacy_status": before_identity["privacy_status"],
+                "apply_tool": "apply_video_privacy_update",
+                "expires_in_seconds": 900,
+                "requires_explicit_user_confirmation": True,
+            },
+        }
+
+    def preview_video_delete(self, *, video_id: str) -> dict[str, Any]:
+        self.context.validate_youtube()
+        item = self._owned_video_control_item(video_id)
+        snapshot = self._video_identity_snapshot(item)
+        baseline = self._video_control_baseline(item)
+        approval_payload = {
+            "video_id": snapshot["video_id"],
+            "baseline_digest": signer_from_env().payload_digest(baseline),
+            "snapshot": snapshot,
+            "irreversible": True,
+        }
+        token = signer_from_env().issue(
+            "delete_video",
+            snapshot["video_id"],
+            approval_payload,
+        )
+        return {
+            "video_id": snapshot["video_id"],
+            "snapshot": snapshot,
+            "approval_payload": approval_payload,
+            "approval_token": token,
+            "expires_in_seconds": 900,
+            "requires_explicit_user_confirmation": True,
+            "irreversible": True,
+            "rollback_supported": False,
+            "warning": "A exclusão de vídeo no YouTube é definitiva e não possui rollback pela API.",
+        }
+
+    def apply_video_delete(
+        self,
+        *,
+        approval_payload: dict[str, Any],
+        approval_token: str,
+    ) -> dict[str, Any]:
+        self.context.validate_youtube()
+        video_id = str(approval_payload.get("video_id", "")).strip()
+        if not video_id:
+            raise ValueError("video_id ausente no payload aprovado.")
+        signer = signer_from_env()
+        signer.verify(
+            approval_token,
+            action="delete_video",
+            subject=video_id,
+            payload=approval_payload,
+        )
+
+        item = self._owned_video_control_item(video_id)
+        current_baseline = self._video_control_baseline(item)
+        baseline_digest = str(approval_payload.get("baseline_digest", ""))
+        if not baseline_digest or signer.payload_digest(current_baseline) != baseline_digest:
+            raise tool_error("external_change_detected")
+
+        request = self._youtube().videos().delete(id=video_id)
+        recovered_from_ambiguous_response = False
+        try:
+            request.execute()
+        except Exception as exc:
+            try:
+                absent = self._video_absent(video_id)
+            except Exception as read_exc:
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A resposta da exclusão foi ambígua e o estado remoto não pôde ser confirmado. Nenhum retry foi executado.",
+                ) from read_exc
+            if not absent:
+                raise tool_error(
+                    "youtube_api_error",
+                    "A exclusão falhou e o readback confirmou que o vídeo ainda existe. Nenhum retry foi executado.",
+                ) from exc
+            recovered_from_ambiguous_response = True
+
+        verification_attempts = 0
+        deleted_verified = False
+        for delay in self._VIDEO_CONTROL_VERIFY_DELAYS:
+            if delay:
+                time.sleep(delay)
+            verification_attempts += 1
+            if self._video_absent(video_id):
+                deleted_verified = True
+                break
+        if not deleted_verified:
+            raise tool_error(
+                "write_state_uncertain",
+                "A chamada de exclusão retornou, mas a ausência remota do vídeo não pôde ser confirmada. Nenhum retry foi executado.",
+            )
+
+        return {
+            "ok": True,
+            "video_id": video_id,
+            "deleted_verified": True,
+            "verification_attempts": verification_attempts,
+            "recovered_from_ambiguous_response": recovered_from_ambiguous_response,
+            "rollback_supported": False,
+            "irreversible": True,
         }
 
     def list_video_captions(self, video_id: str) -> dict[str, Any]:
