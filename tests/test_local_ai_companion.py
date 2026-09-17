@@ -110,6 +110,39 @@ def test_private_network_access_is_requested_only_by_browser_preflight():
     assert handler._private_network_preflight_requested() is False
 
 
+
+def test_private_network_access_header_is_present_on_simple_allowed_origin_response():
+    handler = object.__new__(companion.CompanionHandler)
+    handler.server = type(
+        "Server", (), {"config": {"origins": ["https://creator.silvadigitaltech.com"]}}
+    )()
+    handler.headers = {"Origin": "https://creator.silvadigitaltech.com"}
+    headers: dict[str, str] = {}
+    handler.send_response = lambda status: None
+    handler.send_header = lambda key, value: headers.__setitem__(key, value)
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    handler._send(200, {"ok": True})
+    assert headers["Access-Control-Allow-Origin"] == "https://creator.silvadigitaltech.com"
+    assert headers["Access-Control-Allow-Private-Network"] == "true"
+
+
+def test_private_network_access_header_is_not_exposed_to_disallowed_origin():
+    handler = object.__new__(companion.CompanionHandler)
+    handler.server = type(
+        "Server", (), {"config": {"origins": ["https://creator.silvadigitaltech.com"]}}
+    )()
+    handler.headers = {"Origin": "https://evil.example"}
+    headers: dict[str, str] = {}
+    handler.send_response = lambda status: None
+    handler.send_header = lambda key, value: headers.__setitem__(key, value)
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+    handler._send(200, {"ok": True})
+    assert "Access-Control-Allow-Origin" not in headers
+    assert "Access-Control-Allow-Private-Network" not in headers
+
+
 def test_private_network_access_header_is_limited_to_an_allowed_origin():
     handler = object.__new__(companion.CompanionHandler)
     handler.server = type(
