@@ -249,7 +249,7 @@ def _call_result(result: dict[str, Any]) -> CallToolResult:
 def create_server():
     # Compose the exact production surface here so every caller of the
     # responsible factory, including the standalone deploy wrapper, sees the
-    # same 51-tool + 1-resource catalog as the public entrypoint.
+    # same 51-tool + 1-resource catalog as the public entrypoint; contract drift fails closed before serving.
     management.VerifiedAdvancedSafeCreatorService = ResponsibleCreatorService
     playlist_consistency.install()
     server = inventory.extend_server(growth.extend_server(management.create_server()))
