@@ -54,12 +54,20 @@ jobs:
           import hashlib
           import inspect
           from creator_service.responsible_service import ResponsibleCreatorService
+          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
           from creator_service import cloud_mcp_server_management
           from creator_service import cloud_mcp_server_responsible
 
-          src = inspect.getsource(ResponsibleCreatorService).encode('utf-8')
+          responsible_src = inspect.getsource(ResponsibleCreatorService).encode('utf-8')
+          verified_src = inspect.getsource(VerifiedAdvancedSafeCreatorService).encode('utf-8')
           print('service_class=' + ResponsibleCreatorService.__module__ + '.' + ResponsibleCreatorService.__name__)
-          print('service_source_sha256=' + hashlib.sha256(src).hexdigest())
+          print('service_source_sha256=' + hashlib.sha256(responsible_src).hexdigest())
+          print('verified_service_class=' + VerifiedAdvancedSafeCreatorService.__module__ + '.' + VerifiedAdvancedSafeCreatorService.__name__)
+          print('verified_service_source_sha256=' + hashlib.sha256(verified_src).hexdigest())
+          print('tag_order_semantic_equal=' + repr(
+              ResponsibleCreatorService._semantic_value('tags', ['Zulu tag', 'alpha tag'])
+              == ResponsibleCreatorService._semantic_value('tags', ['alpha tag', 'Zulu tag'])
+          ))
           print('write_verify_delays=' + repr(ResponsibleCreatorService._WRITE_VERIFY_DELAYS))
           print('restore_verify_delays=' + repr(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS))
           print('ambiguous_verify_delays=' + repr(ResponsibleCreatorService._AMBIGUOUS_VERIFY_DELAYS))
