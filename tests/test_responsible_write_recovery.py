@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import logging
+
 import pytest
 
 from creator_service.mcp_errors import CreatorToolError
@@ -175,22 +178,41 @@ def test_divergent_ambiguous_state_is_not_overwritten(tmp_path, monkeypatch):
     assert state.last_action_type == "metadata_write_ambiguous_state"
 
 
-def test_confirmed_partial_tags_write_is_restored_and_structured(tmp_path, monkeypatch):
+def test_confirmed_partial_tags_write_is_restored_and_structured(tmp_path, monkeypatch, caplog):
     service, youtube = _service(tmp_path, monkeypatch, "partial_confirmed")
     before = dict(youtube.snippet)
     preview = _preview_all_fields(service, youtube)
 
-    with pytest.raises(CreatorToolError) as caught:
-        service.apply_video_metadata_update(
-            approval_payload=preview["approval_payload"],
-            approval_token=preview["approval_token"],
-        )
+    with caplog.at_level(logging.WARNING, logger="creator_service.responsible_service"):
+        with pytest.raises(CreatorToolError) as caught:
+            service.apply_video_metadata_update(
+                approval_payload=preview["approval_payload"],
+                approval_token=preview["approval_token"],
+            )
 
     assert caught.value.code == "partial_write_detected"
     assert youtube.snippet == before
     assert youtube.update_calls == 2
     state = service.memory.recent_edit_state(youtube.video_id)
     assert state.protected is False
+
+    diagnostic = next(
+        json.loads(record.message)
+        for record in caplog.records
+        if '"event":"metadata_partial_write_state"' in record.message
+    )
+    assert diagnostic["phase"] == "confirmed_response"
+    assert diagnostic["field_states"] == {
+        "title": "before",
+        "description": "before",
+        "tags": "expected",
+        "categoryId": "before",
+        "defaultLanguage": "expected",
+    }
+    serialized = json.dumps(diagnostic)
+    assert "Approved title" not in serialized
+    assert "Approved description" not in serialized
+    assert '"new"' not in serialized
 
 
 def test_transport_failed_partial_tags_write_is_restored_and_structured(tmp_path, monkeypatch):
