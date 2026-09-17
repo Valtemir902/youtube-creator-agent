@@ -255,6 +255,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
 
     @staticmethod
     def _video_duration_seconds(value: str | None) -> float | None:
+        # YouTube contentDetails.duration is ISO 8601 (for example PT10S or PT1H2M3.5S).
         match = re.fullmatch(
             r"P(?:(?P<d>\d+)D)?(?:T(?:(?P<h>\d+)H)?(?:(?P<m>\d+)M)?(?:(?P<s>\d+(?:\.\d+)?)S)?)?",
             str(value or ""),
