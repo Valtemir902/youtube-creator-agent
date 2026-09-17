@@ -120,6 +120,12 @@ class _Memory:
         return len(self.actions)
 
 
+def _canonical_remote(remote):
+    value = dict(remote)
+    value.setdefault("defaultLanguage", None)
+    return value
+
+
 def _service_for_apply(monkeypatch, before, expected, remote):
     service = object.__new__(VerifiedAdvancedSafeCreatorService)
     service.context = SimpleNamespace(tenant_id="tenant")
@@ -132,7 +138,7 @@ def _service_for_apply(monkeypatch, before, expected, remote):
 
     youtube = _YouTube(mutate)
     monkeypatch.setattr(service, "_youtube", lambda: youtube)
-    monkeypatch.setattr(service, "_current_video_snippet", lambda _video_id: dict(remote))
+    monkeypatch.setattr(service, "_current_video_snippet", lambda _video_id: _canonical_remote(remote))
     monkeypatch.setattr(
         service,
         "_prepare_verified_update",
@@ -154,7 +160,7 @@ def test_success_is_recorded_only_after_verified_readback(monkeypatch):
 
     assert result["ok"] is True
     assert result["persisted_verified"] is True
-    assert remote == expected
+    assert _canonical_remote(remote) == expected
     assert len(youtube._videos.calls) == 1
     assert [action["action_type"] for action in service.memory.actions] == ["metadata_update"]
 
@@ -181,7 +187,7 @@ def test_partial_readback_is_compensated_without_recent_edit_record(monkeypatch)
         service.apply_video_metadata_update(approval_payload={}, approval_token="token")
 
     assert caught.value.code == "partial_write_detected"
-    assert remote == before
+    assert _canonical_remote(remote) == before
     assert len(youtube._videos.calls) == 2
     assert service.memory.actions == []
 
@@ -208,7 +214,7 @@ def test_execute_exception_after_remote_mutation_is_compensated(monkeypatch):
         service.apply_video_metadata_update(approval_payload={}, approval_token="token")
 
     assert caught.value.code == "partial_write_detected"
-    assert remote == before
+    assert _canonical_remote(remote) == before
     assert len(youtube._videos.calls) == 2
     assert service.memory.actions == []
 
@@ -225,7 +231,7 @@ def test_rollback_package_failure_after_verified_write_is_compensated(monkeypatc
         service.apply_video_metadata_update(approval_payload={}, approval_token="token")
 
     assert caught.value.code == "partial_write_detected"
-    assert remote == before
+    assert _canonical_remote(remote) == before
     assert len(youtube._videos.calls) == 2
     assert service.memory.actions == []
 
@@ -242,6 +248,6 @@ def test_memory_failure_after_verified_write_is_compensated(monkeypatch):
         service.apply_video_metadata_update(approval_payload={}, approval_token="token")
 
     assert caught.value.code == "partial_write_detected"
-    assert remote == before
+    assert _canonical_remote(remote) == before
     assert len(youtube._videos.calls) == 2
     assert service.memory.actions == []
