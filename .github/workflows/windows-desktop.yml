@@ -8,6 +8,7 @@ on:
       - 'src/**'
       - 'scripts/build_windows.py'
       - 'scripts/ui_v2_visual_smoke.py'
+      - 'scripts/local_ai_ui_browser_e2e.py'
       - 'desktop_windows.spec'
       - 'requirements.txt'
       - 'requirements-build-windows.txt'
