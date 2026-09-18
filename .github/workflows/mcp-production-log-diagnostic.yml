@@ -1,0 +1,86 @@
+name: MCP Production Log Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["feat/web-dashboard-v1"]
+    paths:
+      - ".github/workflows/mcp-production-log-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+    steps:
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Inspect deployed advanced apply runtime safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          ssh -i ~/.ssh/id_ed25519 -p "$port" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          cd ~/apps/youtube-creator-agent
+          compose='docker compose -f deploy/docker-compose.oracle.yml'
+
+          echo '=== deployed revision ==='
+          git rev-parse HEAD
+
+          echo '=== MCP container runtime fingerprint ==='
+          $compose exec -T mcp python - <<'PY'
+          import hashlib
+          import inspect
+          from creator_service.responsible_service import ResponsibleCreatorService
+          from creator_service.verified_advanced_service import VerifiedAdvancedSafeCreatorService
+          from creator_service import cloud_mcp_server_management
+          from creator_service import cloud_mcp_server_responsible
+
+          responsible_src = inspect.getsource(ResponsibleCreatorService).encode('utf-8')
+          verified_src = inspect.getsource(VerifiedAdvancedSafeCreatorService).encode('utf-8')
+          print('service_class=' + ResponsibleCreatorService.__module__ + '.' + ResponsibleCreatorService.__name__)
+          print('service_source_sha256=' + hashlib.sha256(responsible_src).hexdigest())
+          print('verified_service_class=' + VerifiedAdvancedSafeCreatorService.__module__ + '.' + VerifiedAdvancedSafeCreatorService.__name__)
+          print('verified_service_source_sha256=' + hashlib.sha256(verified_src).hexdigest())
+          print('tag_order_semantic_equal=' + repr(
+              ResponsibleCreatorService._semantic_value('tags', ['Zulu tag', 'alpha tag'])
+              == ResponsibleCreatorService._semantic_value('tags', ['alpha tag', 'Zulu tag'])
+          ))
+          print('write_verify_delays=' + repr(ResponsibleCreatorService._WRITE_VERIFY_DELAYS))
+          print('restore_verify_delays=' + repr(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS))
+          print('ambiguous_verify_delays=' + repr(ResponsibleCreatorService._AMBIGUOUS_VERIFY_DELAYS))
+          print('management_service_symbol=' + cloud_mcp_server_management.VerifiedAdvancedSafeCreatorService.__module__ + '.' + cloud_mcp_server_management.VerifiedAdvancedSafeCreatorService.__name__)
+          print('responsible_server_factory=' + cloud_mcp_server_responsible.create_server.__module__ + '.' + cloud_mcp_server_responsible.create_server.__name__)
+          print('advanced_service_factory=' + cloud_mcp_server_management._service.__module__ + '.' + cloud_mcp_server_management._service.__name__)
+          PY
+
+          echo '=== recent structured MCP tool exceptions ==='
+          $compose logs --since 90m --no-color mcp 2>&1 \
+            | grep -E 'mcp_tool_exception|mcp_video_metadata_advanced_apply|partial_write_detected|write_state_uncertain|internal_error' \
+            | tail -n 250 || true
+
+          echo '=== recent MCP tail ==='
+          $compose logs --since 20m --no-color mcp 2>&1 | tail -n 250
+          REMOTE

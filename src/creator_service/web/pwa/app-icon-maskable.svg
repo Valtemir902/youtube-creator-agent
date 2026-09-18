@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Creator Agent growth play icon, maskable</title>
+  <desc id="desc">Original maskable creator economy icon with a centered safe-zone media and growth symbol.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024"><stop offset="0" stop-color="#171A20"/><stop offset=".55" stop-color="#0B0D12"/><stop offset="1" stop-color="#050608"/></linearGradient>
+    <linearGradient id="panel" x1="300" y1="280" x2="730" y2="730"><stop offset="0" stop-color="#FF4B4F"/><stop offset=".52" stop-color="#D91F2F"/><stop offset="1" stop-color="#8D1020"/></linearGradient>
+    <linearGradient id="growth" x1="310" y1="675" x2="735" y2="390"><stop offset="0" stop-color="#FF9A8F"/><stop offset=".55" stop-color="#FFE2D9"/><stop offset="1" stop-color="#FFF"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect x="228" y="238" width="568" height="548" rx="165" fill="url(#panel)"/>
+  <rect x="242" y="252" width="540" height="520" rx="151" fill="none" stroke="#FF817C" stroke-opacity=".34" stroke-width="7"/>
+  <path d="M430 398c-21-13-48 2-48 26v166c0 25 28 40 49 25l131-84c19-13 19-41 0-53L430 398Z" fill="#FFF"/>
+  <rect x="525" y="648" width="43" height="67" rx="11" fill="#FFC0B7"/><rect x="590" y="612" width="43" height="103" rx="11" fill="#FF9C94"/><rect x="655" y="564" width="43" height="151" rx="11" fill="#FF726E"/><rect x="720" y="509" width="43" height="206" rx="11" fill="#FF4D51"/>
+  <path d="M307 683C370 672 405 636 447 599C492 559 533 593 583 554C629 519 657 458 708 426" fill="none" stroke="url(#growth)" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M697 389L744 416L719 466" fill="none" stroke="#FFF" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

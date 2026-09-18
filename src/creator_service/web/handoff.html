@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Aplicando mudanças · YouTube Creator Agent</title>
+  <style>
+    :root{color-scheme:dark;--bg:#050914;--card:#0d1726;--line:#1c3851;--text:#f4fbff;--muted:#8fa9bf;--cyan:#1be3ff;--green:#3ff3b0;--red:#ff6d86}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 20% 0,rgba(27,227,255,.14),transparent 30%),radial-gradient(circle at 80% 0,rgba(112,70,255,.16),transparent 30%),var(--bg);color:var(--text);font:15px/1.5 Inter,system-ui,-apple-system,Segoe UI,sans-serif;padding:18px}
+    main{width:min(560px,100%);border:1px solid var(--line);border-radius:24px;background:linear-gradient(180deg,rgba(13,23,38,.98),rgba(7,13,23,.98));box-shadow:0 28px 90px rgba(0,0,0,.46);padding:26px}.brand{font-size:11px;letter-spacing:.17em;color:var(--cyan);font-weight:900}.icon{width:58px;height:58px;border-radius:18px;display:grid;place-items:center;margin:18px 0;background:#0a2430;border:1px solid #236274;font-size:26px}.icon.good{background:rgba(63,243,176,.08);border-color:rgba(63,243,176,.35)}.icon.bad{background:rgba(255,109,134,.08);border-color:rgba(255,109,134,.35)}h1{font-size:26px;line-height:1.15;margin:0 0 10px}p{margin:0;color:var(--muted)}.status{margin-top:20px;padding:13px 14px;border:1px solid var(--line);border-radius:13px;background:#08121f;color:#c8d8e7;word-break:break-word}.status.good{border-color:rgba(63,243,176,.35);color:#c9f8e7}.status.bad{border-color:rgba(255,109,134,.35);color:#ffd2db}.spin{width:22px;height:22px;border:3px solid rgba(255,255,255,.16);border-top-color:var(--cyan);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.details{display:none;margin-top:14px;font-size:12px;color:var(--muted)}.details.show{display:block}.btn{display:none;width:100%;margin-top:16px;border:1px solid #2d6577;border-radius:12px;padding:12px 14px;background:#0b2230;color:#fff;font-weight:850;cursor:pointer}.btn.show{display:block}.security{margin-top:18px;font-size:11px;color:#657f95}.security strong{color:#a7c1d5}
+  </style>
+</head>
+<body>
+<main>
+  <div class="brand">YOUTUBE CREATOR AGENT · HANDOFF SEGURO</div>
+  <div class="icon" id="icon"><div class="spin" id="spinner"></div></div>
+  <h1 id="title">Validando e aplicando</h1>
+  <p id="lead">Conferindo sua conta, o canal, o vídeo e o estado analisado antes de gravar no YouTube.</p>
+  <div class="status" id="status" role="status" aria-live="polite">Preparando execução segura…</div>
+  <div class="details" id="details"></div>
+  <button class="btn" id="retry">Tentar novamente</button>
+  <div class="security"><strong>Fail closed:</strong> se o vídeo ou canal tiver mudado desde a análise, nenhuma nova edição é feita.</div>
+</main>
+<script>
+const STORAGE_KEY='yca_handoff_v1_ticket';
+const $=id=>document.getElementById(id);
+let running=false;
+function extractTicket(){
+  const hash=location.hash.startsWith('#')?location.hash.slice(1):location.hash;
+  const params=new URLSearchParams(hash);
+  const fromHash=(params.get('ticket')||'').trim();
+  if(fromHash){sessionStorage.setItem(STORAGE_KEY,fromHash);history.replaceState(null,'',location.pathname);return fromHash}
+  return (sessionStorage.getItem(STORAGE_KEY)||'').trim();
+}
+function setState(kind,title,lead,status,details=''){
+  $('title').textContent=title;$('lead').textContent=lead;$('status').textContent=status;$('status').className='status '+kind;
+  $('icon').className='icon '+kind;$('spinner').style.display=kind?'none':'block';
+  $('icon').textContent=kind==='good'?'✓':kind==='bad'?'!':'';
+  $('details').textContent=details;$('details').className='details'+(details?' show':'');
+}
+async function beginAuthentication(){
+  $('status').textContent='Sua sessão expirou. Abrindo autenticação segura e retornando diretamente para concluir a mudança…';
+  const cfg=await fetch('/api/auth/config',{credentials:'same-origin'}).then(r=>r.json());
+  if(!cfg.oidc_ready)throw new Error('O login seguro não está disponível neste momento.');
+  if(cfg.turnstile_required)throw new Error('A sessão expirou e o login exige uma verificação adicional. Abra o Creator Agent e autentique-se antes de reenviar.');
+  const r=await fetch('/api/auth/begin',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'login',next:'/handoff/v1',turnstile_token:''})});
+  let data={};try{data=await r.json()}catch{}
+  if(!r.ok||!data.authorization_url)throw new Error(data.detail||'Não foi possível iniciar a autenticação segura.');
+  location.assign(data.authorization_url);
+}
+async function execute(){
+  if(running)return;running=true;$('retry').className='btn';
+  const ticket=extractTicket();
+  if(!ticket){running=false;setState('bad','Handoff ausente','Nenhuma alteração foi executada.','Este link não contém mais um pacote de alteração válido.');return}
+  try{
+    const r=await fetch('/api/handoff/v1/apply',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({ticket})});
+    if(r.status===401){running=false;await beginAuthentication();return}
+    let data={};try{data=await r.json()}catch{}
+    if(!r.ok)throw new Error(data.detail||'O servidor recusou a alteração por segurança.');
+    sessionStorage.removeItem(STORAGE_KEY);
+    const fields=(data.changed_fields||[]).join(', ')||'nenhuma alteração necessária';
+    setState('good','Mudanças verificadas','O YouTube Creator Agent concluiu a operação e releu o vídeo no YouTube.','Alteração aplicada e confirmada.',`Vídeo: ${data.video_id||''} · Campos: ${fields}`);
+  }catch(e){
+    running=false;
+    setState('bad','Alteração bloqueada','O canal foi preservado. A ferramenta não fará tentativas cegas.',''+(e?.message||'Falha inesperada.'));
+    $('retry').className='btn show';
+  }
+}
+$('retry').onclick=execute;
+execute();
+</script>
+</body>
+</html>

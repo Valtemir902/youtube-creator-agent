@@ -20,7 +20,8 @@ class OnboardingSessionStore:
 
     Raw tokens are never persisted. Only SHA-256 digests are stored. A launch
     token is single-use and becomes a separate browser session token after the
-    initial redirect, so credentials disappear from the address bar/history.
+    initial redirect. Direct browser login can also mint the same isolated
+    server-side session after successful OIDC authentication.
     """
 
     def __init__(self, db: TenantDatabase):
@@ -89,6 +90,30 @@ class OnboardingSessionStore:
             )
             conn.execute("DELETE FROM onboarding_launches WHERE expires_at < ? OR consumed_at IS NOT NULL", (now - 3600,))
         return token
+
+    def issue_session(
+        self,
+        tenant_id: str,
+        scopes: Iterable[str] = ("yca:read", "yca:write"),
+        session_ttl_seconds: int = 28800,
+    ) -> tuple[str, WebIdentity]:
+        tenant_id = self.db.ensure_tenant(validate_tenant_id(tenant_id))
+        clean_scopes = self._clean_scopes(scopes)
+        scopes_raw = self._encode_scopes(clean_scopes)
+        now = int(time.time())
+        session_ttl = max(900, min(86400, int(session_ttl_seconds)))
+        session_token = secrets.token_urlsafe(48)
+        with self.db._connect() as conn:
+            conn.execute(
+                "INSERT INTO onboarding_web_sessions(token_hash,tenant_id,scopes,expires_at,revoked_at,created_at,last_seen_at) "
+                "VALUES(?,?,?,?,NULL,?,?)",
+                (self._hash(session_token), tenant_id, scopes_raw, now + session_ttl, now, now),
+            )
+            conn.execute(
+                "DELETE FROM onboarding_web_sessions WHERE expires_at < ? OR revoked_at IS NOT NULL",
+                (now - 86400,),
+            )
+        return session_token, WebIdentity(tenant_id, clean_scopes)
 
     def exchange_launch(self, launch_token: str, session_ttl_seconds: int = 28800) -> tuple[str, WebIdentity]:
         if not launch_token:

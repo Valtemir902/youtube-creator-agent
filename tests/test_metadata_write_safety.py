@@ -17,6 +17,16 @@ class _Request:
         return self._fn()
 
 
+class _Channels:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def list(self, *, part: str, mine: bool):
+        assert part == "id"
+        assert mine is True
+        return _Request(lambda: {"items": [{"id": self.owner.channel_id}]})
+
+
 class _Videos:
     def __init__(self, owner):
         self.owner = owner
@@ -24,7 +34,9 @@ class _Videos:
     def list(self, *, part: str, id: str):
         assert part == "snippet"
         assert id == self.owner.video_id
-        return _Request(lambda: {"items": [{"snippet": dict(self.owner.snippet)}]})
+        snippet = dict(self.owner.snippet)
+        snippet["channelId"] = self.owner.video_channel_id
+        return _Request(lambda: {"items": [{"snippet": snippet}]})
 
     def update(self, *, part: str, body: dict):
         assert part == "snippet"
@@ -41,6 +53,8 @@ class _Videos:
 class _FakeYouTube:
     def __init__(self, video_id: str = "abc123"):
         self.video_id = video_id
+        self.channel_id = "channel-1"
+        self.video_channel_id = self.channel_id
         self.snippet = {
             "title": "Titulo atual",
             "description": "Descricao atual",
@@ -49,7 +63,11 @@ class _FakeYouTube:
             "defaultLanguage": "pt-BR",
         }
         self.update_calls = 0
+        self._channels = _Channels(self)
         self._videos = _Videos(self)
+
+    def channels(self):
+        return self._channels
 
     def videos(self):
         return self._videos
@@ -73,6 +91,16 @@ def _service(tmp_path, monkeypatch):
     youtube = _FakeYouTube()
     monkeypatch.setattr(service, "_youtube", lambda: youtube)
     return service, youtube
+
+
+def test_preview_rejects_video_owned_by_another_channel(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch)
+    youtube.video_channel_id = "another-channel"
+
+    with pytest.raises(RuntimeError, match="does not belong"):
+        service.preview_video_metadata_update(video_id=youtube.video_id, title="Titulo aprovado")
+
+    assert youtube.update_calls == 0
 
 
 def test_stale_baseline_is_rejected_before_youtube_write(tmp_path, monkeypatch):
