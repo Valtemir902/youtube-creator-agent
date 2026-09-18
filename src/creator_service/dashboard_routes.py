@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from google.auth.exceptions import RefreshError, TransportError
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from pydantic import BaseModel, Field
 
@@ -45,6 +47,65 @@ MAX_VIDEO_BYTES = 64 * 1024 * 1024 * 1024
 MAX_THUMB_BYTES = 10 * 1024 * 1024
 UPLOAD_SAFETY = UploadSafetyPolicy()
 UPLOAD_SESSION_TTL_SECONDS = UPLOAD_SAFETY.ttl_seconds
+
+
+def _youtube_http_error_details(exc: HttpError) -> tuple[int, dict[str, Any]]:
+    """Translate Google/YouTube failures into stable, non-secret dashboard errors."""
+    upstream_status = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
+    reason = ""
+    upstream_message = ""
+    try:
+        raw = exc.content.decode("utf-8", errors="replace") if isinstance(exc.content, (bytes, bytearray)) else str(exc.content or "")
+        payload = json.loads(raw) if raw else {}
+        error = payload.get("error", {}) if isinstance(payload, dict) else {}
+        errors = error.get("errors", []) if isinstance(error, dict) else []
+        if errors and isinstance(errors[0], dict):
+            reason = str(errors[0].get("reason", "") or "")
+            upstream_message = str(errors[0].get("message", "") or "")
+        if not upstream_message and isinstance(error, dict):
+            upstream_message = str(error.get("message", "") or "")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    reason_key = reason.casefold()
+    quota_reasons = {"quotaexceeded", "dailylimitexceeded", "dailylimitexceededunreg"}
+    rate_reasons = {"ratelimitexceeded", "userratelimitexceeded"}
+    auth_reasons = {"autherror", "invalidcredentials"}
+    permission_reasons = {"insufficientpermissions", "forbidden", "youtubesignuprequired"}
+
+    if reason_key in quota_reasons:
+        status_code, code, retryable = 403, "youtube_quota_exceeded", False
+        detail = "A cota da YouTube Data API foi excedida. Nenhuma alteração foi feita."
+    elif reason_key in rate_reasons or upstream_status == 429:
+        status_code, code, retryable = 429, "youtube_rate_limited", True
+        detail = "O YouTube limitou temporariamente a frequência de requisições. Aguarde e tente novamente."
+    elif reason_key in auth_reasons or upstream_status == 401:
+        status_code, code, retryable = 401, "youtube_auth_expired", False
+        detail = "A credencial do YouTube não foi aceita. Reconecte o canal antes de tentar novamente."
+    elif reason_key in permission_reasons:
+        status_code, code, retryable = 403, "youtube_permission_denied", False
+        detail = "A credencial atual não tem permissão suficiente para esta operação no YouTube."
+    elif upstream_status >= 500:
+        status_code, code, retryable = 503, "youtube_upstream_unavailable", True
+        detail = "O YouTube retornou uma falha temporária de servidor. Nenhuma alteração adicional foi feita."
+    elif 400 <= upstream_status < 500:
+        status_code, code, retryable = upstream_status, "youtube_request_rejected", False
+        detail = "O YouTube rejeitou a solicitação."
+    else:
+        status_code, code, retryable = 502, "youtube_upstream_error", True
+        detail = "Não foi possível concluir a comunicação com o YouTube."
+
+    public_message = " ".join(upstream_message.split())[:300]
+    body: dict[str, Any] = {
+        "detail": detail,
+        "error_code": code,
+        "upstream_status": upstream_status or None,
+        "upstream_reason": reason or None,
+        "retryable": retryable,
+    }
+    if public_message:
+        body["upstream_message"] = public_message
+    return status_code, body
 
 
 @dataclass(frozen=True)
@@ -184,6 +245,38 @@ def install_dashboard_routes(
     if db_path is None:
         db_path = Path(tempfile.gettempdir()) / f"yca-dashboard-{id(resolver)}.sqlite3"
     action_store = DashboardActionStore(db_path)
+
+    @app.exception_handler(HttpError)
+    async def youtube_http_error_handler(request: Request, exc: HttpError):
+        status_code, body = _youtube_http_error_details(exc)
+        body["request_id"] = getattr(request.state, "request_id", None)
+        headers = {"Retry-After": "60"} if status_code in {429, 503} and body.get("retryable") else None
+        return JSONResponse(body, status_code=status_code, headers=headers)
+
+    @app.exception_handler(RefreshError)
+    async def youtube_refresh_error_handler(request: Request, exc: RefreshError):
+        return JSONResponse(
+            {
+                "detail": "A credencial do YouTube expirou ou foi revogada. Reconecte o canal antes de continuar.",
+                "error_code": "youtube_refresh_failed",
+                "retryable": False,
+                "request_id": getattr(request.state, "request_id", None),
+            },
+            status_code=401,
+        )
+
+    @app.exception_handler(TransportError)
+    async def youtube_transport_error_handler(request: Request, exc: TransportError):
+        return JSONResponse(
+            {
+                "detail": "Falha temporária de comunicação entre o servidor e Google/YouTube. Tente novamente em instantes.",
+                "error_code": "youtube_transport_error",
+                "retryable": True,
+                "request_id": getattr(request.state, "request_id", None),
+            },
+            status_code=503,
+            headers={"Retry-After": "30"},
+        )
 
     def service_for(tenant_id: str) -> SafeCreatorService:
         return SafeCreatorService(resolver.resolve(tenant_id))
