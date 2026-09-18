@@ -24,6 +24,8 @@
     ],
     "write": [
       "signed preview and apply for video title, description, tags and category",
+      "signed preview and verified apply for video privacy (public, unlisted or private) with rollback to the previous privacy state",
+      "signed preview and one-shot irreversible video delete with mandatory absence readback and no rollback",
       "verified video metadata rollback",
       "signed caption upload and rollback",
       "signed playlist metadata edits and rollback",
@@ -40,6 +42,8 @@
     "writes_require_explicit_confirmation": true,
     "writes_are_verified_after_mutation": true,
     "signed_rollback_supported": true,
+    "video_delete_rollback_supported": false,
+    "video_delete_is_irreversible": true,
     "replay_protection_enabled": true,
     "tenant_identity_comes_from_authenticated_token": true
   }
