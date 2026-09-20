@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from .context import LocalTenantResolver
-from .service import CreatorService
+from .safe_service import SafeCreatorService
 
 
 mcp = MCPServer(
@@ -24,8 +24,8 @@ mcp = MCPServer(
 _resolver = LocalTenantResolver()
 
 
-def _service(tenant_id: str = "local") -> CreatorService:
-    return CreatorService(_resolver.resolve(tenant_id))
+def _service(tenant_id: str = "local") -> SafeCreatorService:
+    return SafeCreatorService(_resolver.resolve(tenant_id))
 
 
 @mcp.custom_route("/", methods=["GET"])
@@ -113,12 +113,33 @@ def apply_video_metadata_update(
     Só chame depois que o usuário confirmar explicitamente a prévia apresentada nesta
     conversa. `user_confirmed` deve ser true. O servidor rejeita payload alterado, token
     expirado, vídeo modificado depois da prévia ou vídeo ainda sob proteção de reedição.
+    Uma escrita bem-sucedida retorna também um rollback_preview assinado e temporário.
     """
     if user_confirmed is not True:
         raise ValueError("Confirmação explícita do usuário é obrigatória para alterar o canal.")
     return _service(tenant_id).apply_video_metadata_update(
         approval_payload=approval_payload,
         approval_token=approval_token,
+    )
+
+
+@mcp.tool()
+def apply_video_metadata_rollback(
+    rollback_payload: dict[str, Any],
+    rollback_token: str,
+    user_confirmed: bool,
+    tenant_id: str = "local",
+) -> dict[str, Any]:
+    """Restaura exatamente os metadados anteriores usando o rollback_preview assinado.
+
+    Esta é a única exceção à proteção de reedição recente. Exige confirmação explícita e
+    rejeita token expirado, payload alterado ou qualquer mudança ocorrida depois da edição.
+    """
+    if user_confirmed is not True:
+        raise ValueError("Confirmação explícita do usuário é obrigatória para executar rollback.")
+    return _service(tenant_id).apply_video_metadata_rollback(
+        rollback_payload=rollback_payload,
+        rollback_token=rollback_token,
     )
 
 
