@@ -27,6 +27,9 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
     _WRITE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
     _RESTORE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5, 2.5)
     _AMBIGUOUS_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
+    # Final read-only settlement window for YouTube eventual consistency.
+    # No mutation is sent during this phase.
+    _ROLLBACK_SETTLE_VERIFY_DELAYS = (0.0, 2.0, 4.0, 6.0)
     _MAX_RESTORE_WRITES = 2
 
     @staticmethod
@@ -323,18 +326,73 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             if restore_write < self._MAX_RESTORE_WRITES:
                 continue
 
+            # The provider can expose the compensating write field-by-field
+            # for several seconds. Before declaring rollback_incomplete, spend a
+            # final bounded window on authoritative READBACK only. This never
+            # retries the user's original write or sends another compensation.
+            try:
+                settled, settle_mismatches, settle_exact, settle_attempts = self._wait_for_snippet(
+                    video_id,
+                    before,
+                    self._ROLLBACK_SETTLE_VERIFY_DELAYS,
+                )
+            except Exception as exc:
+                self._record_uncertain_restore(
+                    video_id=video_id,
+                    before=before,
+                    observed=restored,
+                    reason="restore_settle_read_failed",
+                    restore_writes=restore_write,
+                    verification_attempts=total_verification_attempts,
+                )
+                raise tool_error(
+                    "write_state_uncertain",
+                    "O rollback foi enviado, mas a janela final de confirmação por leitura falhou. O vídeo foi protegido contra novas escritas automáticas.",
+                ) from exc
+
+            total_verification_attempts += settle_attempts
+            self._log_partial_state(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+                observed=settled,
+                phase="restore_settle",
+                verification_attempts=settle_attempts,
+            )
+            if not settle_mismatches:
+                return settled, [], settle_exact, total_verification_attempts
+
+            settle_states = self._provider_field_states(
+                before=before,
+                expected=expected,
+                observed=settled,
+            )
+            if "other" in settle_states.values():
+                self._record_uncertain_restore(
+                    video_id=video_id,
+                    before=before,
+                    observed=settled,
+                    reason="restore_settle_third_value",
+                    restore_writes=restore_write,
+                    verification_attempts=total_verification_attempts,
+                )
+                raise tool_error(
+                    "write_state_uncertain",
+                    "A janela final de confirmação encontrou um valor externo ao snapshot/proposta assinados. O vídeo foi protegido e nenhuma nova escrita será enviada.",
+                ) from restore_error
+
             self._record_uncertain_restore(
                 video_id=video_id,
                 before=before,
-                observed=restored,
+                observed=settled,
                 reason="restore_budget_exhausted",
                 restore_writes=restore_write,
                 verification_attempts=total_verification_attempts,
             )
-            report = self._verification_report(expected=before, observed=restored)
+            report = self._verification_report(expected=before, observed=settled)
             raise tool_error(
                 "rollback_incomplete",
-                "Foi detectada uma gravação parcial e o rollback limitado não restaurou todos os campos. O estado real foi relido e o vídeo foi protegido contra novas escritas automáticas.",
+                "Foi detectada uma gravação parcial e, mesmo após a janela final somente de leitura, o rollback não restaurou todos os campos. O estado real foi relido e o vídeo foi protegido contra novas escritas automáticas.",
                 details=report,
             ) from restore_error
 

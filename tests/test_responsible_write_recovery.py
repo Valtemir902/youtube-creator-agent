@@ -403,8 +403,14 @@ def test_verification_budgets_are_bounded_for_mcp_request_lifetime():
     assert sum(ResponsibleCreatorService._WRITE_VERIFY_DELAYS) <= 3.0
     assert sum(ResponsibleCreatorService._AMBIGUOUS_VERIFY_DELAYS) <= 3.0
     assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) <= 6.0
+    assert sum(ResponsibleCreatorService._ROLLBACK_SETTLE_VERIFY_DELAYS) <= 12.0
     assert ResponsibleCreatorService._MAX_RESTORE_WRITES == 2
     assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) * ResponsibleCreatorService._MAX_RESTORE_WRITES <= 12.0
+    assert (
+        sum(ResponsibleCreatorService._WRITE_VERIFY_DELAYS)
+        + sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) * ResponsibleCreatorService._MAX_RESTORE_WRITES
+        + sum(ResponsibleCreatorService._ROLLBACK_SETTLE_VERIFY_DELAYS)
+    ) <= 25.0
 
 
 def test_title_and_description_can_persist_while_tags_do_not_and_are_restored(tmp_path, monkeypatch):
@@ -421,3 +427,41 @@ def test_title_and_description_can_persist_while_tags_do_not_and_are_restored(tm
     assert caught.value.code == "partial_write_detected"
     assert youtube.snippet == before
     assert youtube.update_calls == 2
+
+
+def test_restore_budget_uses_read_only_settlement_before_declaring_incomplete(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_restore_stuck")
+    before = dict(youtube.snippet)
+    expected = dict(before)
+    expected.update({
+        "title": "Approved title",
+        "description": "Approved description",
+        "tags": ["new", "tags"],
+        "categoryId": "10",
+    })
+
+    original_wait = service._wait_for_snippet
+    settle_calls = []
+
+    def eventual_wait(video_id, wanted, delays):
+        if delays == service._ROLLBACK_SETTLE_VERIFY_DELAYS:
+            settle_calls.append(tuple(delays))
+            # Simulate YouTube converging after the last compensation without
+            # any additional videos.update call.
+            youtube.set_snippet(before)
+            return dict(before), [], [], 3
+        return original_wait(video_id, wanted, delays)
+
+    monkeypatch.setattr(service, "_wait_for_snippet", eventual_wait)
+
+    restored, mismatches, _exact, attempts = service._restore_verified_snapshot(
+        video_id=youtube.video_id,
+        before=before,
+        expected=expected,
+    )
+
+    assert restored == before
+    assert mismatches == []
+    assert settle_calls == [service._ROLLBACK_SETTLE_VERIFY_DELAYS]
+    assert youtube.update_calls == ResponsibleCreatorService._MAX_RESTORE_WRITES
+    assert attempts > 0
