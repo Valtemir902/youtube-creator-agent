@@ -251,3 +251,15 @@ def test_memory_failure_after_verified_write_is_compensated(monkeypatch):
     assert _canonical_remote(remote) == before
     assert len(youtube._videos.calls) == 2
     assert service.memory.actions == []
+
+
+def test_semantic_tag_comparison_tolerates_order_and_exact_provider_deduplication():
+    expected = _snippet(tags=["Zulu tag", "alpha tag", "alpha tag"])
+    actual = _snippet(tags=["alpha tag", "Zulu tag"])
+    assert VerifiedAdvancedSafeCreatorService._mismatches(actual, expected) == []
+
+
+def test_semantic_tag_comparison_rejects_real_tag_content_change():
+    expected = _snippet(tags=["alpha tag", "Zulu tag"])
+    actual = _snippet(tags=["alpha tag", "Different tag"])
+    assert VerifiedAdvancedSafeCreatorService._mismatches(actual, expected) == ["tags"]

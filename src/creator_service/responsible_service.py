@@ -89,6 +89,27 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             if self._semantic_value(field, before.get(field)) != self._semantic_value(field, after.get(field))
         ]
 
+    def _verification_report(
+        self,
+        *,
+        expected: dict[str, Any],
+        observed: dict[str, Any],
+    ) -> dict[str, Any]:
+        mismatched_fields = self._mismatches(observed, expected)
+        return {
+            "restored_and_verified": not mismatched_fields,
+            "expected_snapshot": {field: expected.get(field) for field in self._VERIFY_FIELDS},
+            "observed_snapshot": {field: observed.get(field) for field in self._VERIFY_FIELDS},
+            "mismatched_fields": list(mismatched_fields),
+            "field_matches": {
+                "title_matches": "title" not in mismatched_fields,
+                "description_matches": "description" not in mismatched_fields,
+                "tags_match": "tags" not in mismatched_fields,
+                "category_matches": "categoryId" not in mismatched_fields,
+                "default_language_matches": "defaultLanguage" not in mismatched_fields,
+            },
+        }
+
     def _provider_field_states(
         self,
         *,
@@ -310,9 +331,11 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 restore_writes=restore_write,
                 verification_attempts=total_verification_attempts,
             )
+            report = self._verification_report(expected=before, observed=restored)
             raise tool_error(
-                "write_state_uncertain",
-                "Foi detectada uma gravação parcial e as tentativas limitadas de restauração não convergiram integralmente. O vídeo foi protegido contra novas escritas automáticas.",
+                "rollback_incomplete",
+                "Foi detectada uma gravação parcial e o rollback limitado não restaurou todos os campos. O estado real foi relido e o vídeo foi protegido contra novas escritas automáticas.",
+                details=report,
             ) from restore_error
 
         return last_observed, last_mismatches, last_exact, total_verification_attempts

@@ -87,7 +87,10 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
             # Tag ordering has no metadata meaning, so compare the normalized
             # values canonically while preserving exact-order differences in
             # _exact_differences for observability.
-            return tuple(sorted(clean, key=lambda item: item.casefold()))
+            # Ordering and exact duplicate removal are semantically harmless.
+            # Do not case-fold values themselves: changing tag text/case remains
+            # observable unless it is an exact duplicate of another returned tag.
+            return tuple(sorted(set(clean), key=lambda item: item.casefold()))
         if field == "categoryId":
             return str(value or "")
         if field == "defaultLanguage":

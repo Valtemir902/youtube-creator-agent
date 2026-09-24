@@ -74,6 +74,7 @@ class _Videos:
             if call > 1 and mode in {
                 "partial_confirmed",
                 "partial_then_transport_failed",
+                "partial_tags_missing",
             }:
                 self.owner.set_snippet(incoming)
                 return {"id": body["id"], "snippet": dict(incoming)}
@@ -88,6 +89,11 @@ class _Videos:
                 divergent["title"] = "Concurrent external title"
                 self.owner.set_snippet(divergent)
                 raise RuntimeError("connection reset with divergent final state")
+            if mode == "partial_tags_missing" and call == 1:
+                partial = dict(incoming)
+                partial["tags"] = list(self.owner.snippet.get("tags", []))
+                self.owner.set_snippet(partial)
+                return {"id": body["id"], "snippet": dict(self.owner.snippet)}
             if mode in {
                 "partial_confirmed",
                 "partial_then_transport_failed",
@@ -356,7 +362,14 @@ def test_restore_budget_exhaustion_protects_video_without_unbounded_writes(tmp_p
             approval_token=preview["approval_token"],
         )
 
-    assert caught.value.code == "write_state_uncertain"
+    assert caught.value.code == "rollback_incomplete"
+    assert caught.value.details is not None
+    assert caught.value.details["restored_and_verified"] is False
+    assert caught.value.details["mismatched_fields"] == ["tags"]
+    assert caught.value.details["field_matches"]["title_matches"] is True
+    assert caught.value.details["field_matches"]["description_matches"] is True
+    assert caught.value.details["field_matches"]["tags_match"] is False
+    assert caught.value.details["field_matches"]["category_matches"] is True
     assert youtube.update_calls == 1 + ResponsibleCreatorService._MAX_RESTORE_WRITES
     assert youtube.snippet["tags"] == ["new", "tags"]
     state = service.memory.recent_edit_state(youtube.video_id)
@@ -392,3 +405,19 @@ def test_verification_budgets_are_bounded_for_mcp_request_lifetime():
     assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) <= 6.0
     assert ResponsibleCreatorService._MAX_RESTORE_WRITES == 2
     assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) * ResponsibleCreatorService._MAX_RESTORE_WRITES <= 12.0
+
+
+def test_title_and_description_can_persist_while_tags_do_not_and_are_restored(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_tags_missing")
+    before = dict(youtube.snippet)
+    preview = _preview_all_fields(service, youtube)
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    assert caught.value.code == "partial_write_detected"
+    assert youtube.snippet == before
+    assert youtube.update_calls == 2

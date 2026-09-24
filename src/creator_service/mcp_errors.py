@@ -21,6 +21,7 @@ T = TypeVar("T")
 class CreatorToolError(RuntimeError):
     code: str
     message: str
+    details: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -45,6 +46,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "external_change_detected": "The protected YouTube resource changed after preview; a new preview is required.",
     "recent_edit_protected": "This video is protected against another recent edit.",
     "partial_write_detected": "YouTube did not persist the complete approved update. The previous state was restored and verified.",
+    "rollback_incomplete": "YouTube partially persisted metadata and the compensating rollback did not restore every verified field.",
     "write_state_uncertain": "A YouTube write may have changed remote state and the final state could not be verified safely.",
     "youtube_api_error": "YouTube rejected or could not complete the requested operation.",
     "caption_not_available": "No usable caption track is available for this video.",
@@ -57,8 +59,17 @@ ERROR_MESSAGES: dict[str, str] = {
 }
 
 
-def tool_error(code: str, message: str | None = None) -> CreatorToolError:
-    return CreatorToolError(code=code, message=message or ERROR_MESSAGES.get(code, ERROR_MESSAGES["internal_error"]))
+def tool_error(
+    code: str,
+    message: str | None = None,
+    *,
+    details: dict[str, Any] | None = None,
+) -> CreatorToolError:
+    return CreatorToolError(
+        code=code,
+        message=message or ERROR_MESSAGES.get(code, ERROR_MESSAGES["internal_error"]),
+        details=details,
+    )
 
 
 def _message(exc: BaseException) -> str:
@@ -142,7 +153,10 @@ def classify_exception(exc: BaseException) -> CreatorToolError:
 
 def error_response(exc: BaseException) -> dict[str, Any]:
     mapped = classify_exception(exc)
-    return {"success": False, "error": {"code": mapped.code, "message": mapped.message}}
+    error: dict[str, Any] = {"code": mapped.code, "message": mapped.message}
+    if mapped.details is not None:
+        error["details"] = mapped.details
+    return {"success": False, "error": error}
 
 
 def success_response(payload: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
