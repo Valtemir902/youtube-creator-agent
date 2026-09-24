@@ -28,7 +28,8 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
     _RESTORE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5, 2.5)
     _AMBIGUOUS_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
     # Final read-only settlement window for YouTube eventual consistency.
-    # No mutation is sent during this phase.
+    # Production evidence showed tag rollback becoming visible only after the
+    # bounded compensation phase; no mutation is sent during this phase.
     _ROLLBACK_SETTLE_VERIFY_DELAYS = (0.0, 2.0, 4.0, 6.0)
     _MAX_RESTORE_WRITES = 2
 
