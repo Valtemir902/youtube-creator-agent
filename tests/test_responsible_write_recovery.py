@@ -440,6 +440,11 @@ def test_restore_budget_uses_read_only_settlement_before_declaring_incomplete(tm
         "categoryId": "10",
     })
 
+    # Start exactly where the production incident enters compensation:
+    # the original apply already happened and only the new tags are visible.
+    youtube.set_snippet({**before, "tags": ["new", "tags"]})
+    youtube.update_calls = 1
+
     original_wait = service._wait_for_snippet
     settle_calls = []
 
@@ -463,5 +468,5 @@ def test_restore_budget_uses_read_only_settlement_before_declaring_incomplete(tm
     assert restored == before
     assert mismatches == []
     assert settle_calls == [service._ROLLBACK_SETTLE_VERIFY_DELAYS]
-    assert youtube.update_calls == ResponsibleCreatorService._MAX_RESTORE_WRITES
+    assert youtube.update_calls == 1 + ResponsibleCreatorService._MAX_RESTORE_WRITES
     assert attempts > 0
