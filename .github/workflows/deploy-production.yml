@@ -237,6 +237,7 @@ jobs:
               'apply_video_metadata_rollback_advanced',
               'preview_video_privacy_update', 'apply_video_privacy_update',
               'preview_video_delete', 'apply_video_delete',
+              'preview_video_thumbnail_update', 'apply_video_thumbnail_update',
               'list_video_captions',
               'preview_caption_upload', 'apply_caption_upload', 'apply_caption_delete_rollback',
               'list_playlists', 'get_playlist_details', 'preview_playlist_metadata_update',
@@ -259,6 +260,8 @@ jobs:
               'apply_video_privacy_update': ({'approval_payload','approval_token','user_confirmed'}, {'approval_payload','approval_token','user_confirmed'}),
               'preview_video_delete': ({'video_id'}, {'video_id'}),
               'apply_video_delete': ({'approval_payload','approval_token','user_confirmed'}, {'approval_payload','approval_token','user_confirmed'}),
+              'preview_video_thumbnail_update': ({'video_id','thumbnail_url'}, {'video_id','thumbnail_url'}),
+              'apply_video_thumbnail_update': ({'approval_payload','approval_token','user_confirmed'}, {'approval_payload','approval_token','user_confirmed'}),
           }
 
           async def main():
@@ -267,7 +270,7 @@ jobs:
                   resources = await client.list_resources()
                   names = {tool.name for tool in result.tools}
                   assert names == expected, f'missing={sorted(expected-names)} unexpected={sorted(names-expected)}'
-                  assert len(names) == 51, len(names)
+                  assert len(names) == 53, len(names)
                   uris = {str(resource.uri) for resource in resources.resources}
                   assert HANDOFF_UI_URI in uris, sorted(uris)
                   by_name = {tool.name: tool for tool in result.tools}
