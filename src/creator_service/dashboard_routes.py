@@ -95,7 +95,10 @@ def _collect_upload_video_ids(
     *,
     limit: int | None = None,
 ) -> tuple[list[str], int, bool]:
-    """Read the authenticated uploads playlist across all pages, preserving order."""
+    """Read the authenticated uploads playlist across all pages, preserving order.
+
+    This runtime path intentionally paginates the complete Content inventory.
+    """
     requested_limit = None if limit is None else max(1, int(limit))
     ordered_ids: list[str] = []
     seen_ids: set[str] = set()
