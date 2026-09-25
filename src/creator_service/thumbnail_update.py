@@ -227,7 +227,6 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict[str, Any]]:
             image_format = str(probe.format or "").upper()
             claimed_mode = str(probe.mode or "")
             has_alpha = claimed_mode in {"RGBA", "LA"} or "transparency" in probe.info
-            exif_orientation = int(probe.getexif().get(274, 1) or 1)
             if width <= 0 or height <= 0 or width * height > THUMBNAIL_MAX_PIXELS:
                 raise tool_error(
                     "thumbnail_validation_failed",
@@ -237,6 +236,7 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict[str, Any]]:
             probe.verify()
 
             image = Image.open(io.BytesIO(data))
+            exif_orientation = int(image.getexif().get(274, 1) or 1)
             image.load()
             if exif_orientation != 1:
                 image = ImageOps.exif_transpose(image)
