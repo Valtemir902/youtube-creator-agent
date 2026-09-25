@@ -787,7 +787,7 @@ def normalize_thumbnail_for_youtube(source_bytes: bytes, source: dict[str, Any])
 
 
 class ThumbnailUpdateMixin:
-    """Multi-source, staged, single-write YouTube custom-thumbnail workflow.\n\n    Production verification marker: staged-source schema v2.\n    """
+    """Multi-source, staged, single-write YouTube custom-thumbnail workflow.\n\n    Production verification marker: ChatGPT native file-param resolver v3.\n    """
 
     def _thumbnail_snapshot(self, video_id: str) -> dict[str, Any]:
         item = self._owned_video_item(video_id, part="snippet,status")
