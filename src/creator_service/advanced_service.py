@@ -37,6 +37,140 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             raise ValueError("category_id deve ser um ID numérico válido do YouTube.")
         return value
 
+    _YOUTUBE_TITLE_LIMIT = 100
+    _YOUTUBE_DESCRIPTION_UTF8_LIMIT = 5000
+    _YOUTUBE_TAGS_EFFECTIVE_LIMIT = 500
+    _LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+
+    @classmethod
+    def _tag_limit_diagnostics(cls, tags: list[str] | None) -> dict[str, Any]:
+        values = [str(tag) for tag in (tags or [])]
+        items: list[dict[str, Any]] = []
+        raw_total = 0
+        effective_without_separators = 0
+        seen_exact: set[str] = set()
+        duplicates: list[str] = []
+        empty_indexes: list[int] = []
+        for index, tag in enumerate(values):
+            raw_length = len(tag)
+            contains_space = " " in tag
+            effective_length = raw_length + (2 if contains_space else 0)
+            raw_total += raw_length
+            effective_without_separators += effective_length
+            if not tag:
+                empty_indexes.append(index)
+            if tag in seen_exact:
+                duplicates.append(tag)
+            seen_exact.add(tag)
+            items.append({
+                "tag": tag,
+                "raw_length": raw_length,
+                "effective_length": effective_length,
+                "contains_space": contains_space,
+            })
+        separators = max(0, len(values) - 1)
+        effective_total = effective_without_separators + separators
+        return {
+            "tags_count": len(values),
+            "tags_raw_characters": raw_total,
+            "tags_separator_characters": separators,
+            "tags_effective_youtube_length": effective_total,
+            "tags_limit": cls._YOUTUBE_TAGS_EFFECTIVE_LIMIT,
+            "tags_within_limit": effective_total <= cls._YOUTUBE_TAGS_EFFECTIVE_LIMIT,
+            "duplicate_tags": duplicates,
+            "empty_tag_indexes": empty_indexes,
+            "items": items,
+        }
+
+    def validate_youtube_metadata_limits(
+        self,
+        metadata: dict[str, Any],
+        *,
+        category_explicit: bool = True,
+        default_language_explicit: bool = True,
+        validate_category_remote: bool = True,
+    ) -> dict[str, Any]:
+        """Defensive validation matching the documented YouTube snippet limits.
+
+        This never truncates or rewrites values. It runs before videos.update;
+        YouTube remains the final authority on accepted metadata.
+        """
+        title = str(metadata.get("title", ""))
+        description = str(metadata.get("description", ""))
+        tags = list(metadata.get("tags", []) or [])
+        category_id = str(metadata.get("categoryId", "")).strip()
+        default_language = metadata.get("defaultLanguage")
+
+        title_length = len(title)
+        description_utf8_bytes = len(description.encode("utf-8"))
+        tag_report = self._tag_limit_diagnostics(tags)
+        language_text = None if default_language is None else str(default_language).strip()
+        language_valid = (
+            language_text is None
+            or language_text == ""
+            or bool(self._LANGUAGE_TAG_RE.fullmatch(language_text))
+        )
+        category_syntax_valid = bool(category_id) and category_id.isdigit() and 1 <= len(category_id) <= 3
+        category_exists = None
+        category_assignable = None
+        if validate_category_remote and category_syntax_valid:
+            response = self._youtube().videoCategories().list(part="snippet", id=category_id).execute()
+            items = list(response.get("items", []) or [])
+            category_exists = any(str(item.get("id", "")) == category_id for item in items)
+            matching = next((item for item in items if str(item.get("id", "")) == category_id), None)
+            category_assignable = (
+                bool((matching or {}).get("snippet", {}).get("assignable", False))
+                if matching is not None
+                else False
+            )
+
+        report = {
+            "title_length": title_length,
+            "title_limit": self._YOUTUBE_TITLE_LIMIT,
+            "title_within_limit": title_length <= self._YOUTUBE_TITLE_LIMIT,
+            "title_forbidden_characters": [char for char in ("<", ">") if char in title],
+            "description_char_length": len(description),
+            "description_utf8_bytes": description_utf8_bytes,
+            "description_limit": self._YOUTUBE_DESCRIPTION_UTF8_LIMIT,
+            "description_within_limit": description_utf8_bytes <= self._YOUTUBE_DESCRIPTION_UTF8_LIMIT,
+            **tag_report,
+            "categoryId": category_id,
+            "category_explicit": category_explicit,
+            "category_syntax_valid": category_syntax_valid,
+            "category_exists": category_exists,
+            "category_assignable": category_assignable,
+            "category_valid": (
+                category_syntax_valid
+                and (not validate_category_remote or (category_exists is True and category_assignable is True))
+            ),
+            "defaultLanguage": language_text,
+            "default_language_explicit": default_language_explicit,
+            "default_language_valid": language_valid,
+        }
+
+        if not report["title_within_limit"]:
+            raise tool_error(
+                "metadata_limit_exceeded",
+                details={"field": "title", "actual": title_length, "limit": self._YOUTUBE_TITLE_LIMIT, "calculation": report},
+            )
+        if not report["description_within_limit"]:
+            raise tool_error(
+                "metadata_limit_exceeded",
+                details={"field": "description", "actual": description_utf8_bytes, "limit": self._YOUTUBE_DESCRIPTION_UTF8_LIMIT, "calculation": report},
+            )
+        if not report["tags_within_limit"]:
+            raise tool_error(
+                "metadata_limit_exceeded",
+                details={"field": "tags", "actual": report["tags_effective_youtube_length"], "limit": self._YOUTUBE_TAGS_EFFECTIVE_LIMIT, "calculation": report},
+            )
+        if report["title_forbidden_characters"]:
+            raise tool_error("invalid_request", "O título contém '<' ou '>', caracteres rejeitados pelo YouTube.", details=report)
+        if not report["category_valid"]:
+            raise tool_error("invalid_request", "categoryId inválido ou não atribuível no YouTube.", details=report)
+        if not report["default_language_valid"]:
+            raise tool_error("invalid_request", "defaultLanguage está fora do formato de tag de idioma esperado.", details=report)
+        return report
+
     def list_video_categories(self, region_code: str = "BR") -> dict[str, Any]:
         self.context.validate_youtube()
         region = (region_code or "BR").strip().upper()
@@ -76,6 +210,11 @@ class AdvancedSafeCreatorService(SafeCreatorService):
         )
         proposed["categoryId"] = self._normalize_category_id(category_id, current)
         proposed["defaultLanguage"] = current.get("defaultLanguage")
+        validation = self.validate_youtube_metadata_limits(
+            proposed,
+            category_explicit=category_id is not None,
+            default_language_explicit=False,
+        )
         envelope = self._approval_envelope(current, proposed)
         approval_token = signer_from_env().issue(
             "update_video_metadata",
@@ -91,6 +230,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             "current": current,
             "proposed": proposed,
             "changed": changed,
+            "metadata_validation": validation,
             "approval_payload": envelope,
             "approval_token": approval_token,
             "expires_in_seconds": 900,
