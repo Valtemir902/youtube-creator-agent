@@ -19,7 +19,7 @@ import requests
 from googleapiclient.http import MediaIoBaseUpload
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .mcp_errors import tool_error
+from .mcp_errors import CreatorToolError, tool_error
 from .security import signer_from_env
 from .thumbnail_staging import ThumbnailAssetStore, ThumbnailStagingStore
 
