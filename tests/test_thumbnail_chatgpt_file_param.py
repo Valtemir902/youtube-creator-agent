@@ -64,6 +64,37 @@ def test_chatgpt_file_param_resolves_real_bytes_once(tmp_path: Path, monkeypatch
     assert source["detected_mime_type"] == "image/png"
 
 
+def test_chatgpt_file_id_is_treated_as_opaque_host_identifier(tmp_path: Path, monkeypatch):
+    data = _png()
+    calls = []
+
+    def fake_download(url, *, source_kind):
+        calls.append((url, source_kind))
+        return data, {
+            "headers": {"Content-Type": "image/png"},
+            "source_url_sha256": hashlib.sha256(url.encode()).hexdigest(),
+            "redirect_count": 0,
+            "final_url": url,
+        }
+
+    monkeypatch.setattr(thumbnail_module, "_download_https_bytes", fake_download)
+    opaque_id = "chatgpt-native:01JQ8Z7A9B2C3D4E5F6G7H8J9K"
+    resolved, source = resolve_thumbnail_source(
+        data_dir=tmp_path,
+        thumbnail_file={
+            "download_url": "https://files.example.test/private/signed-token",
+            "file_id": opaque_id,
+            "mime_type": "image/png",
+            "file_name": "1000677688.png",
+        },
+    )
+
+    assert resolved == data
+    assert calls == [("https://files.example.test/private/signed-token", "chatgpt_file")]
+    assert source["source_id"] == opaque_id
+    assert source["source_type"] == "chatgpt_file"
+
+
 def test_file_id_without_host_authorized_download_url_is_structured_error(tmp_path: Path):
     with pytest.raises(CreatorToolError) as caught:
         resolve_thumbnail_source(
