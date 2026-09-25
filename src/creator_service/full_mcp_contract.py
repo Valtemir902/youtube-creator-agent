@@ -123,6 +123,13 @@ def assert_registered_server_contract(server: Any) -> None:
     for name, expected in EXPECTED_ANNOTATIONS.items():
         assert _annotation_tuple(by_name[name]) == expected, (name, _annotation_tuple(by_name[name]))
 
+    thumbnail_tool = by_name["preview_video_thumbnail_update"]
+    thumbnail_meta = thumbnail_tool.meta or {}
+    assert thumbnail_meta.get("openai/fileParams") == ["thumbnail_file"], thumbnail_meta
+    thumbnail_schema_text = str(thumbnail_tool.parameters)
+    for field in ("download_url", "file_id", "mime_type", "file_name"):
+        assert field in thumbnail_schema_text, (field, thumbnail_tool.parameters)
+
     for tool in tools:
         assert "tenant_id" not in tool.parameters.get("properties", {}), tool.name
         assert tool.annotations is not None, tool.name
