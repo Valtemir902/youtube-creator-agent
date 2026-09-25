@@ -233,7 +233,7 @@ jobs:
               'preview_video_metadata_update', 'apply_video_metadata_update', 'apply_video_metadata_rollback',
               'list_channel_videos', 'get_video_details', 'get_video_transcript', 'list_video_categories',
               'preview_video_metadata_update_advanced', 'apply_video_metadata_update_advanced',
-              'apply_video_metadata_rollback_advanced', 'list_video_captions',
+              'apply_video_metadata_rollback_advanced', 'preview_video_thumbnail_update', 'apply_video_thumbnail_update', 'list_video_captions',
               'preview_caption_upload', 'apply_caption_upload', 'apply_caption_delete_rollback',
               'list_playlists', 'get_playlist_details', 'preview_playlist_metadata_update',
               'apply_playlist_metadata_update', 'apply_playlist_metadata_rollback',
@@ -259,7 +259,7 @@ jobs:
                   resources = await client.list_resources()
                   names = {tool.name for tool in result.tools}
                   assert names == expected, f'missing={sorted(expected-names)} unexpected={sorted(names-expected)}'
-                  assert len(names) == 51, len(names)
+                  assert len(names) == 53, len(names)
                   uris = {str(resource.uri) for resource in resources.resources}
                   assert HANDOFF_UI_URI in uris, sorted(uris)
                   by_name = {tool.name: tool for tool in result.tools}
