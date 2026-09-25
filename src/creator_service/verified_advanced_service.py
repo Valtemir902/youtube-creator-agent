@@ -28,19 +28,14 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
         if tags is None:
             return None
         clean: list[str] = []
-        seen: set[str] = set()
         for raw in tags:
-            tag = " ".join(str(raw).strip().split())
+            tag = str(raw).strip()
             if not tag:
-                continue
-            key = tag.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
+                raise ValueError("Tags vazias não são aceitas no payload de metadata.")
+            # Preserve exact tag content and duplicates. YouTube may reorder or
+            # deduplicate exact duplicates; verification handles only those
+            # documented/observed harmless normalizations.
             clean.append(tag)
-        total = sum(len(tag) + (2 if " " in tag else 0) + 1 for tag in clean)
-        if total > 500:
-            raise ValueError("As tags ultrapassam o limite total seguro de 500 caracteres.")
         return clean
 
     @staticmethod
@@ -52,14 +47,21 @@ class VerifiedAdvancedSafeCreatorService(AdvancedSafeCreatorService):
         tags: list[str] | None,
         current: dict,
     ) -> dict:
-        final_title = current["title"] if title is None else " ".join(title.strip().split())
-        if not final_title:
+        final_title = current["title"] if title is None else str(title)
+        if not final_title.strip():
             raise ValueError("Título não pode ficar vazio.")
         if len(final_title) > 100:
-            raise ValueError("Título excede 100 caracteres.")
-        final_description = current["description"] if description is None else description.strip()
-        if len(final_description) > 5000:
-            raise ValueError("Descrição excede 5.000 caracteres.")
+            raise tool_error(
+                "metadata_limit_exceeded",
+                details={"field": "title", "actual": len(final_title), "limit": 100, "calculation": "Unicode character count"},
+            )
+        final_description = current["description"] if description is None else str(description)
+        description_utf8_bytes = len(final_description.encode("utf-8"))
+        if description_utf8_bytes > 5000:
+            raise tool_error(
+                "metadata_limit_exceeded",
+                details={"field": "description", "actual": description_utf8_bytes, "limit": 5000, "calculation": "UTF-8 byte length"},
+            )
         clean_tags = VerifiedAdvancedSafeCreatorService._clean_write_tags(tags)
         final_tags = current["tags"] if clean_tags is None else clean_tags
         return {
