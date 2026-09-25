@@ -373,6 +373,77 @@ def create_server():
         return base.success_response(result)
 
     @server.tool(
+        name="preview_video_thumbnail_update",
+        title="Validar e preparar nova thumbnail do vídeo",
+        description=(
+            "Read-only thumbnail preview. Downloads one approved HTTPS image through the safe fetcher, "
+            "validates its real JPEG/PNG content, size and dimensions, binds its SHA-256 and the current "
+            "YouTube thumbnail baseline into a short-lived signed approval, and never writes to YouTube."
+        ),
+        annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True, destructive_hint=False, idempotent_hint=True),
+    )
+    def preview_video_thumbnail_update(video_id: str, thumbnail_url: str) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("thumbnail_preview", limit=20)
+            result = _service().preview_video_thumbnail_update(
+                video_id=video_id,
+                thumbnail_url=thumbnail_url,
+            )
+            base._audit(
+                "mcp_video_thumbnail_preview",
+                "success",
+                {
+                    "video_id": video_id,
+                    "mime_type": result.get("proposed", {}).get("mime_type"),
+                    "file_size_bytes": result.get("proposed", {}).get("file_size_bytes"),
+                },
+            )
+            return base.success_response(result)
+        return base._structured("preview_video_thumbnail_update", action)
+
+    @server.tool(
+        name="apply_video_thumbnail_update",
+        title="Aplicar thumbnail aprovada ao vídeo",
+        description=(
+            "Apply exactly one previously approved custom thumbnail with the official YouTube thumbnails.set API. "
+            "Requires explicit user confirmation, rejects replay or changed image bytes, performs no automatic write retry, "
+            "and verifies persistence with bounded readback."
+        ),
+        annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True, destructive_hint=True, idempotent_hint=False),
+    )
+    def apply_video_thumbnail_update(
+        approval_payload: dict[str, Any],
+        approval_token: str,
+        user_confirmed: bool,
+    ) -> dict[str, Any]:
+        def action() -> dict[str, Any]:
+            base._require_scope(base.WRITE_SCOPE)
+            base._limit("thumbnail_apply", limit=10)
+            if user_confirmed is not True:
+                raise base.tool_error("confirmation_required")
+            video_id = base._consume_signed_write(
+                token=approval_token,
+                payload=approval_payload,
+                action="update_video_thumbnail",
+            )
+            result = _service().apply_video_thumbnail_update(
+                approval_payload=approval_payload,
+                approval_token=approval_token,
+            )
+            base._audit(
+                "mcp_video_thumbnail_apply",
+                "success",
+                {
+                    "video_id": video_id,
+                    "persisted_verified": result.get("persisted_verified", False),
+                    "verification_attempts": result.get("verification_attempts"),
+                },
+            )
+            return base.success_response(result)
+        return base._structured("apply_video_thumbnail_update", action)
+
+    @server.tool(
         title="Restaurar metadados completos anteriores do vídeo",
         annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True, destructive_hint=True, idempotent_hint=False),
     )
