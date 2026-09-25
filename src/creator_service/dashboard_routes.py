@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shutil
 import tempfile
@@ -47,6 +48,45 @@ MAX_VIDEO_BYTES = 64 * 1024 * 1024 * 1024
 MAX_THUMB_BYTES = 10 * 1024 * 1024
 UPLOAD_SAFETY = UploadSafetyPolicy()
 UPLOAD_SESSION_TTL_SECONDS = UPLOAD_SAFETY.ttl_seconds
+
+
+_DURATION_RE = re.compile(r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+(?:\.\d+)?)S)?)?$")
+
+
+def _iso8601_duration_seconds(value: str | None) -> int | None:
+    """Parse the YouTube contentDetails.duration subset without adding a dependency."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    match = _DURATION_RE.fullmatch(raw)
+    if not match:
+        return None
+    parts = match.groupdict(default="0")
+    return int(
+        int(parts["days"]) * 86400
+        + int(parts["hours"]) * 3600
+        + int(parts["minutes"]) * 60
+        + float(parts["seconds"])
+    )
+
+
+def _dashboard_content_bucket(item: dict[str, Any]) -> tuple[str, str]:
+    """Best-effort UI bucket from official YouTube fields only.
+
+    The public Data API does not expose an isShort flag. We therefore classify
+    non-live videos up to three minutes as short candidates and surface the
+    confidence explicitly instead of pretending the classification is exact.
+    """
+    snippet = dict(item.get("snippet", {}) or {})
+    content = dict(item.get("contentDetails", {}) or {})
+    live_details = dict(item.get("liveStreamingDetails", {}) or {})
+    live_state = str(snippet.get("liveBroadcastContent", "none") or "none").casefold()
+    if live_state in {"live", "upcoming"} or live_details:
+        return "live", "official_live_state"
+    duration_seconds = _iso8601_duration_seconds(content.get("duration"))
+    if duration_seconds is not None and duration_seconds <= 180:
+        return "shorts", "duration_candidate"
+    return "videos", "duration_or_default"
 
 
 def _youtube_http_error_details(exc: HttpError) -> tuple[int, dict[str, Any]]:
@@ -670,7 +710,7 @@ def install_dashboard_routes(
         if not ordered_ids:
             return {"videos": []}
         details = youtube.videos().list(
-            part="snippet,statistics,status",
+            part="snippet,statistics,status,contentDetails,liveStreamingDetails",
             id=",".join(ordered_ids),
         ).execute()
         by_id = {str(item.get("id")): item for item in details.get("items", [])}
@@ -683,6 +723,9 @@ def install_dashboard_routes(
             stats = item.get("statistics", {})
             thumbs = snippet.get("thumbnails", {})
             thumb = (thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}).get("url")
+            content = dict(item.get("contentDetails", {}) or {})
+            live_details = dict(item.get("liveStreamingDetails", {}) or {})
+            content_bucket, bucket_basis = _dashboard_content_bucket(item)
             output.append({
                 "id": video_id,
                 "title": snippet.get("title", ""),
@@ -694,6 +737,12 @@ def install_dashboard_routes(
                 "views": int(stats.get("viewCount", 0) or 0),
                 "likes": int(stats.get("likeCount", 0) or 0),
                 "comments": int(stats.get("commentCount", 0) or 0),
+                "duration": content.get("duration"),
+                "duration_seconds": _iso8601_duration_seconds(content.get("duration")),
+                "live_broadcast_content": snippet.get("liveBroadcastContent", "none"),
+                "live_streaming_details": live_details,
+                "content_bucket": content_bucket,
+                "content_bucket_basis": bucket_basis,
                 "memory": service.video_memory_state(video_id),
             })
         return {"videos": output}
