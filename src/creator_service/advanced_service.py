@@ -214,6 +214,7 @@ class AdvancedSafeCreatorService(SafeCreatorService):
             proposed,
             category_explicit=category_id is not None,
             default_language_explicit=False,
+            validate_category_remote=False,
         )
         envelope = self._approval_envelope(current, proposed)
         approval_token = signer_from_env().issue(
