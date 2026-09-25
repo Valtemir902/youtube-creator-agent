@@ -9,12 +9,13 @@ from typing import Any
 from .mcp_errors import CreatorToolError, tool_error
 from .security import signer_from_env
 from .verified_advanced_service import VerifiedAdvancedSafeCreatorService
+from .thumbnail_update import ThumbnailUpdateMixin
 
 
 logger = logging.getLogger(__name__)
 
 
-class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
+class ResponsibleCreatorService(ThumbnailUpdateMixin, VerifiedAdvancedSafeCreatorService):
     """Single high-assurance executor for AI-originated YouTube mutations.
 
     The model is never trusted with target identity. This service re-reads the
