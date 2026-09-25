@@ -509,6 +509,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
         before: dict[str, Any],
         expected: dict[str, Any],
         original_error: Exception,
+        write_verify_started: float,
     ) -> dict[str, Any]:
         try:
             observed, mismatches, exact_differences, attempts = self._wait_for_snippet(
@@ -622,6 +623,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 before=before,
                 expected=expected,
                 original_error=exc,
+                write_verify_started=write_verify_started,
             )
 
         try:
