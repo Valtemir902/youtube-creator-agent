@@ -198,7 +198,7 @@ jobs:
               "apply_video_privacy_update": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
               "preview_video_delete": ({"video_id"}, {"video_id"}),
               "apply_video_delete": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
-              "preview_video_thumbnail_update": ({"video_id", "thumbnail_url"}, {"video_id", "thumbnail_url"}),
+              "preview_video_thumbnail_update": ({"video_id", "thumbnail_url", "thumbnail_file", "thumbnail_asset_id", "thumbnail_bytes"}, {"video_id"}),
               "apply_video_thumbnail_update": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
               "preview_playlist_create": ({"title", "description", "privacy_status", "default_language", "video_ids"}, {"title"}),
               "apply_playlist_create": ({"approval_payload", "approval_token", "user_confirmed"}, {"approval_payload", "approval_token", "user_confirmed"}),
