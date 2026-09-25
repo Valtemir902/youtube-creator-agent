@@ -17,6 +17,7 @@ class _Request:
     def __init__(self, fn):
         self.fn = fn
         self.headers: dict[str, str] = {}
+        self.body = None
 
     def execute(self):
         return self.fn()
@@ -151,6 +152,7 @@ class _Videos:
             return {"id": body["id"], "snippet": dict(incoming)}
 
         request = _Request(apply)
+        request.body = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
         holder["request"] = request
         return request
 
@@ -302,7 +304,7 @@ def test_confirmed_partial_tags_write_is_restored_and_structured(tmp_path, monke
         if '"event":"metadata_partial_write_state"' in record.message
     ]
     first = diagnostics[0]
-    assert first["phase"] == "confirmed_response"
+    assert first["phase"] == "confirmed_response_initial_window"
     assert first["field_states"] == {
         "title": "before",
         "description": "before",
@@ -706,3 +708,70 @@ def test_original_write_settlement_exhaustion_still_rolls_back_once(tmp_path, mo
     assert write["verification_attempts"] == (
         len(service._WRITE_VERIFY_DELAYS) + len(service._WRITE_SETTLE_VERIFY_DELAYS)
     )
+
+
+def test_serialized_request_body_preserves_exact_tags(tmp_path, monkeypatch, caplog):
+    service, youtube = _service(tmp_path, monkeypatch, "normal")
+    tags = ["café sem irrigação", "Made in Roça", "roçada no café"]
+    preview = service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Approved title",
+        description="Approved description",
+        tags=tags,
+        category_id="22",
+    )
+
+    with caplog.at_level(logging.INFO, logger="creator_service.responsible_service"):
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    serialized = [
+        json.loads(record.message)
+        for record in caplog.records
+        if '"event":"metadata_update_serialized_request"' in record.message
+    ]
+    assert len(serialized) == 1
+    event = serialized[0]
+    assert event["has_tags"] is True
+    assert event["tags_count"] == len(tags)
+    assert event["snippet_keys"] == ["categoryId", "defaultLanguage", "description", "tags", "title"]
+    request_event = [
+        json.loads(record.message)
+        for record in caplog.records
+        if '"event":"metadata_update_request"' in record.message
+    ][0]
+    assert event["tags_hash"] == request_event["tags_hash"]
+
+
+def test_serialized_request_tag_mutation_is_blocked_before_execute(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "normal")
+    preview = service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Approved title",
+        tags=["new tag", "café"],
+        category_id="22",
+    )
+
+    original_update = youtube._videos.update
+
+    def corrupt_serialization(*, part, body):
+        request = original_update(part=part, body=body)
+        serialized = json.loads(request.body)
+        serialized["snippet"]["tags"] = ["old"]
+        request.body = json.dumps(serialized, ensure_ascii=False, separators=(",", ":"))
+        return request
+
+    monkeypatch.setattr(youtube._videos, "update", corrupt_serialization)
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    assert caught.value.code == "invalid_request"
+    assert youtube.update_calls == 0
+    assert caught.value.details["field"] == "tags"
+    assert caught.value.details["serialized_has_tags"] is True
