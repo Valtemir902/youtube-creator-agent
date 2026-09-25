@@ -72,6 +72,7 @@ def _owned_video_details(service, video_id: str) -> dict[str, Any]:
         "recording_date": recording.get("recordingDate"),
         "recording_location": recording.get("location"),
         "topic_categories": list(topics.get("topicCategories", []) or []),
+        "recent_edit_protection": service.video_memory_state(video_id),
     }
 
 
