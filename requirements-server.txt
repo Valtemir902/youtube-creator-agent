@@ -5,6 +5,7 @@ fastapi>=0.116,<1
 cryptography>=45,<51
 requests>=2.32,<3
 # Thumbnail validation runtime dependency (JPEG/PNG integrity and dimensions).
+# MCP catalog target: 53 tools; deployment verifier lives on the default branch.
 Pillow>=11,<13
 google-api-python-client>=2.140,<3
 google-auth>=2.34,<3
