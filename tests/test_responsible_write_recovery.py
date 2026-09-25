@@ -487,3 +487,45 @@ def test_restore_budget_uses_read_only_settlement_before_declaring_incomplete(tm
     assert settle_calls == [service._ROLLBACK_SETTLE_VERIFY_DELAYS]
     assert youtube.update_calls == 1 + ResponsibleCreatorService._MAX_RESTORE_WRITES
     assert attempts > 0
+
+
+def test_partial_error_preserves_pre_rollback_snapshot(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_confirmed")
+    before = dict(youtube.snippet)
+    preview = _preview_all_fields(service, youtube)
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    assert caught.value.code == "partial_write_detected"
+    details = caught.value.details
+    assert details["state"] == "partial_write_detected_and_restored"
+    write = details["write_verification"]
+    assert write["expected_snapshot"]["tags"] == ["new", "tags"]
+    assert write["observed_snapshot_after_write"]["tags"] == ["new", "tags"]
+    assert write["observed_snapshot_after_write"]["title"] == before["title"]
+    assert write["mismatched_fields"] == ["title", "description", "categoryId"]
+    assert write["tags_match"] is True
+    assert write["verification_attempts"] == len(service._WRITE_VERIFY_DELAYS)
+    assert write["elapsed_ms"] >= 0
+    rollback = details["rollback"]
+    assert rollback["restored_and_verified"] is True
+    assert rollback["observed_snapshot"] == before
+    assert youtube.snippet == before
+
+
+def test_metadata_limit_is_blocked_before_any_video_update(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "normal")
+    with pytest.raises(CreatorToolError) as caught:
+        service.preview_video_metadata_update(
+            video_id=youtube.video_id,
+            title="Approved title",
+            tags=["x" * 501],
+            category_id="22",
+        )
+    assert caught.value.code == "metadata_limit_exceeded"
+    assert caught.value.details["field"] == "tags"
+    assert youtube.update_calls == 0
