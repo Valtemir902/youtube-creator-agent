@@ -307,6 +307,7 @@ def _inspect_source_image(
     claimed_mime_type: str | None = None,
     header_content_type: str | None = None,
     enforce_claimed_mime: bool = True,
+    enforce_header_mime: bool = True,
     enforce_source_extension: bool = True,
 ) -> dict[str, Any]:
     image, info = _decode_image(data)
@@ -328,12 +329,15 @@ def _inspect_source_image(
                 "O Content-Type remoto não é permitido para uma thumbnail.",
                 details={"content_type": header},
             )
-        if header != "application/octet-stream" and header != detected_mime:
+        header_mismatch = bool(header != "application/octet-stream" and header != detected_mime)
+        if header_mismatch and enforce_header_mime:
             raise tool_error(
                 "thumbnail_validation_failed",
                 "O Content-Type remoto não corresponde ao formato real da imagem.",
                 details={"content_type": header, "detected_mime_type": detected_mime},
             )
+    else:
+        header_mismatch = False
     extension = PurePosixPath(str(source_name or "")).suffix.casefold()
     expected = _EXTENSION_TO_MIME.get(extension) if extension else None
     extension_mismatch = bool(extension and (expected is None or expected != detected_mime))
@@ -349,6 +353,8 @@ def _inspect_source_image(
         "sha256": _sha256_bytes(data),
         "claimed_mime_type": claimed or None,
         "claimed_mime_mismatch": claimed_mismatch,
+        "header_content_type": header or None,
+        "header_mime_mismatch": header_mismatch,
         "source_extension": extension or None,
         "source_extension_expected_mime": expected,
         "source_extension_mismatch": extension_mismatch,
@@ -609,10 +615,11 @@ def _resolve_chatgpt_file_param(thumbnail_file: dict[str, Any]) -> tuple[bytes, 
         source_name=file_name,
         claimed_mime_type=claimed_mime,
         header_content_type=dict(remote.get("headers", {})).get("Content-Type"),
-        # ChatGPT may transcode an uploaded image while preserving the original
-        # filename/MIME metadata. The downloaded bytes are the authority here;
-        # HTTP Content-Type and image decoding remain strict.
+        # ChatGPT may transcode an uploaded image while preserving stale
+        # filename/MIME/HTTP metadata. Magic bytes + successful decoding are
+        # authoritative; the header must still be from the allowed image set.
         enforce_claimed_mime=False,
+        enforce_header_mime=False,
         enforce_source_extension=False,
     )
     return data, {
@@ -627,6 +634,8 @@ def _resolve_chatgpt_file_param(thumbnail_file: dict[str, Any]) -> tuple[bytes, 
         "detected_mime_type": info["mime_type"],
         "declared_mime_type": claimed_mime,
         "declared_mime_mismatch": bool(info.get("claimed_mime_mismatch")),
+        "header_content_type": info.get("header_content_type"),
+        "header_mime_mismatch": bool(info.get("header_mime_mismatch")),
         "source_extension": info.get("source_extension"),
         "source_extension_mismatch": bool(info.get("source_extension_mismatch")),
         "width": info["width"],
