@@ -55,6 +55,8 @@ _INPUT_FORMAT_TO_MIME = {
     "PNG": "image/png",
     "WEBP": "image/webp",
     "BMP": "image/bmp",
+    "GIF": "image/gif",
+    "TIFF": "image/tiff",
 }
 _OUTPUT_FORMAT_TO_MIME = {
     "JPEG": "image/jpeg",
@@ -65,6 +67,8 @@ _ALLOWED_REMOTE_HEADER_MIME = {
     "image/png",
     "image/webp",
     "image/bmp",
+    "image/gif",
+    "image/tiff",
     "application/octet-stream",
 }
 _EXTENSION_TO_MIME = {
@@ -73,6 +77,9 @@ _EXTENSION_TO_MIME = {
     ".png": "image/png",
     ".webp": "image/webp",
     ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
 }
 _ALLOWED_FILE_SOURCE_TYPES = {"generated_file", "uploaded_file"}
 _LOGGER = logging.getLogger("youtube_creator_agent.thumbnail")
@@ -252,6 +259,8 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict[str, Any]]:
             image_format = str(probe.format or "").upper()
             claimed_mode = str(probe.mode or "")
             has_alpha = claimed_mode in {"RGBA", "LA"} or "transparency" in probe.info
+            is_animated = bool(getattr(probe, "is_animated", False))
+            frame_count = int(getattr(probe, "n_frames", 1) or 1)
             if width <= 0 or height <= 0 or width * height > THUMBNAIL_MAX_PIXELS:
                 raise tool_error(
                     "thumbnail_validation_failed",
@@ -285,6 +294,8 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict[str, Any]]:
         "height": height,
         "file_size_bytes": len(data),
         "has_alpha": bool(has_alpha),
+        "is_animated": is_animated,
+        "frame_count": frame_count,
         "exif_orientation": exif_orientation,
     }
 
@@ -867,6 +878,10 @@ def normalize_thumbnail_for_youtube(source_bytes: bytes, source: dict[str, Any])
             "file_size_bytes": len(normalized_bytes),
             "sha256": normalized_sha,
             "converted": str(decoded["mime_type"]) != final_mime,
+            "source_format": str(decoded["format"]),
+            "source_mime_type": str(decoded["mime_type"]),
+            "source_animated": bool(decoded.get("is_animated")),
+            "source_frame_count": int(decoded.get("frame_count", 1) or 1),
             "resized": bool(resized),
             "compressed": bool(compressed),
             "orientation_normalized": bool(orientation_changed),
