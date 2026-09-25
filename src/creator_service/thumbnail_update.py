@@ -520,10 +520,10 @@ def resolve_thumbnail_source(
         }
 
     data = _decode_base64_payload(str(thumbnail_bytes), field_name="thumbnail_bytes")
-    info = _inspect_source_image(data, source_name="thumbnail.bin")
+    info = _inspect_source_image(data, source_name="thumbnail")
     return data, {
         "type": "binary",
-        "source_name": "thumbnail.bin",
+        "source_name": "thumbnail",
         "mime_type": info["mime_type"],
         "width": info["width"],
         "height": info["height"],
