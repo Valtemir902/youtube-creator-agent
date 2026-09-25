@@ -73,9 +73,9 @@ def test_valid_png_is_accepted():
 
 
 def test_oversized_file_is_rejected(monkeypatch):
-    monkeypatch.setattr(thumbnail_module, "YOUTUBE_THUMBNAIL_MAX_BYTES", 10)
+    monkeypatch.setattr(thumbnail_module, "THUMBNAIL_MAX_SOURCE_BYTES", 10)
     with pytest.raises(CreatorToolError) as caught:
-        _inspect_image(b"x" * 11, source_url="https://cdn.example.test/thumb.jpg", header_content_type="image/jpeg")
+        _inspect_image(_image_bytes("JPEG"), source_url="https://cdn.example.test/thumb.jpg", header_content_type="image/jpeg")
     _assert_code(caught, "thumbnail_validation_failed")
 
 
@@ -103,7 +103,7 @@ def test_extensionless_https_image_is_allowed_when_bytes_are_valid():
 def test_corrupted_image_is_rejected():
     with pytest.raises(CreatorToolError) as caught:
         _inspect_image(b"not-an-image", source_url="https://cdn.example.test/thumb.jpg", header_content_type="image/jpeg")
-    _assert_code(caught, "thumbnail_validation_failed")
+    _assert_code(caught, "thumbnail_decode_failed")
 
 
 def test_dimensions_below_minimum_are_rejected():
@@ -124,7 +124,7 @@ def test_dimensions_below_minimum_are_rejected():
 def test_non_https_or_credentialed_sources_are_rejected(url):
     with pytest.raises(CreatorToolError) as caught:
         _canonical_https_url(url)
-    _assert_code(caught, "thumbnail_validation_failed")
+    _assert_code(caught, "thumbnail_source_invalid")
 
 
 @pytest.mark.parametrize("url", [
@@ -136,7 +136,7 @@ def test_non_https_or_credentialed_sources_are_rejected(url):
 def test_private_and_metadata_ips_are_rejected(url):
     with pytest.raises(CreatorToolError) as caught:
         _validate_public_host(url)
-    _assert_code(caught, "thumbnail_validation_failed")
+    _assert_code(caught, "thumbnail_source_invalid")
 
 
 class _Response:
@@ -201,11 +201,11 @@ def test_remote_timeout_is_explicit(monkeypatch):
     monkeypatch.setattr(thumbnail_module, "_validate_public_host", lambda _url: None)
     with pytest.raises(CreatorToolError) as caught:
         _download_https_thumbnail("https://cdn.example.test/thumb.jpg")
-    _assert_code(caught, "thumbnail_validation_failed")
+    _assert_code(caught, "thumbnail_source_unavailable")
 
 
 def test_streaming_limit_is_enforced(monkeypatch):
-    monkeypatch.setattr(thumbnail_module, "YOUTUBE_THUMBNAIL_MAX_BYTES", 10)
+    monkeypatch.setattr(thumbnail_module, "THUMBNAIL_MAX_SOURCE_BYTES", 10)
     response = _Response(
         status=200,
         headers={"Content-Type": "image/jpeg"},
