@@ -13,7 +13,7 @@ import time
 import warnings
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import requests
 from googleapiclient.http import MediaIoBaseUpload
@@ -418,6 +418,12 @@ def _download_https_bytes(url: str, *, source_kind: str) -> tuple[bytes, dict[st
                                 "content_type": str(response_headers.get("Content-Type", "") or "") or None,
                                 "server": str(response_headers.get("Server", "") or "") or None,
                                 "www_authenticate_present": bool(response_headers.get("WWW-Authenticate")),
+                                "x_ms_error_code": str(response_headers.get("x-ms-error-code", "") or "") or None,
+                                "authorized_url_has_query": bool(urlsplit(current).query),
+                                "azure_sas_fields_present": {
+                                    key: key in {name.casefold() for name, _ in parse_qsl(urlsplit(current).query, keep_blank_values=True)}
+                                    for key in ("sv", "se", "sp", "sr", "sig", "spr", "st")
+                                },
                             },
                         )
                     if status in {404, 410}:
