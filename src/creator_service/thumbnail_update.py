@@ -168,7 +168,7 @@ def _decode_base64_payload(value: str, *, field_name: str) -> bytes:
     max_encoded = math.ceil(THUMBNAIL_MAX_SOURCE_BYTES / 3) * 4 + 16
     if len(raw) > max_encoded:
         raise tool_error(
-            "thumbnail_source_invalid",
+            "thumbnail_too_large",
             "A fonte binária da thumbnail excede o limite seguro de entrada.",
             details={"max_source_bytes": THUMBNAIL_MAX_SOURCE_BYTES},
         )
@@ -180,7 +180,7 @@ def _decode_base64_payload(value: str, *, field_name: str) -> bytes:
         raise tool_error("thumbnail_source_invalid", "A fonte binária da thumbnail está vazia.")
     if len(data) > THUMBNAIL_MAX_SOURCE_BYTES:
         raise tool_error(
-            "thumbnail_source_invalid",
+            "thumbnail_too_large",
             "A fonte binária da thumbnail excede o limite seguro de entrada.",
             details={"source_size_bytes": len(data), "max_source_bytes": THUMBNAIL_MAX_SOURCE_BYTES},
         )
@@ -215,7 +215,7 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict[str, Any]]:
         raise tool_error("thumbnail_decode_failed", "A imagem da thumbnail está vazia.")
     if len(data) > THUMBNAIL_MAX_SOURCE_BYTES:
         raise tool_error(
-            "thumbnail_validation_failed",
+            "thumbnail_too_large",
             "A imagem de origem excede o limite seguro de entrada.",
             details={"source_size_bytes": len(data), "max_source_bytes": THUMBNAIL_MAX_SOURCE_BYTES},
         )
@@ -832,6 +832,7 @@ class ThumbnailUpdateMixin:
         baseline = self._thumbnail_snapshot(video_id)
         self._assert_thumbnail_editable(baseline)
 
+        source_started = time.monotonic()
         source_bytes, source = resolve_thumbnail_source(
             data_dir=self.context.data_dir,
             thumbnail_url=thumbnail_url,
@@ -840,6 +841,7 @@ class ThumbnailUpdateMixin:
             thumbnail_bytes=thumbnail_bytes,
         )
         normalized_bytes, normalized = normalize_thumbnail_for_youtube(source_bytes, source)
+        source_elapsed_ms = int((time.monotonic() - source_started) * 1000)
         staging = ThumbnailStagingStore(self.context.data_dir, ttl_seconds=THUMBNAIL_APPROVAL_TTL_SECONDS).create(
             video_id=video_id,
             data=normalized_bytes,
@@ -891,6 +893,10 @@ class ThumbnailUpdateMixin:
             resized=normalized["resized"],
             compressed=normalized["compressed"],
             staging_id_fingerprint=_safe_hash_prefix(_sha256_text(str(staging["staging_id"]))),
+            resolver=source.get("resolver"),
+            source_id_fingerprint=source.get("source_id_fingerprint"),
+            detected_mime=source.get("detected_mime_type") or source.get("mime_type"),
+            source_elapsed_ms=source_elapsed_ms,
         )
         return {
             "ok": True,
