@@ -37,6 +37,8 @@ _RECONNECT_JS = r'''
     const dot=document.getElementById('onlineDot');if(dot)dot.classList.remove('ok');
     const text=document.getElementById('onlineText');if(text)text.textContent='YouTube requer reconexão';
   };
+  window.addEventListener('yca:youtube-reconnect-required',event=>markReconnect(event.detail));
+  if(window.__ycaReconnectRequired)markReconnect(window.__ycaReconnectRequired);
   const baseFetch=window.fetch.bind(window);
   window.fetch=async function(input,init){
     const response=await baseFetch(input,init);
