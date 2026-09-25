@@ -18,6 +18,7 @@ from creator_service import cloud_mcp_server_management as management
 from creator_service.mcp_errors import CreatorToolError
 from creator_service.publication_store import PublicationStore
 from creator_service.security import ApprovalTokenSigner
+from creator_service.thumbnail_staging import ThumbnailStagingStore
 from creator_service.thumbnail_update import (
     THUMBNAIL_VERIFY_DELAYS,
     ThumbnailUpdateMixin,
@@ -290,6 +291,8 @@ class _Thumbnails:
     def set(self, *, videoId, media_body):
         assert videoId == self.owner.video_id
         assert media_body.mimetype() in {"image/jpeg", "image/png"}
+        self.owner.last_uploaded_mime = media_body.mimetype()
+        self.owner.last_uploaded_bytes = media_body.getbytes(0, media_body.size())
 
         def apply():
             self.owner.set_calls += 1
@@ -320,6 +323,8 @@ class _YouTube:
         self.etag = "etag-1"
         self.read_calls = 0
         self.set_calls = 0
+        self.last_uploaded_bytes = None
+        self.last_uploaded_mime = None
         self.pending = None
         self.pending_visible_at = 4
         self.thumbnail_map = {
@@ -413,6 +418,13 @@ def test_url_is_not_downloaded_again_after_preview(monkeypatch):
     preview = _preview(service)
     assert data_ref["calls"] == 1
 
+    staging = ThumbnailStagingStore(service.context.data_dir)
+    staged_bytes, _ = staging.load(
+        staging_id=preview["staging_id"],
+        video_id="video-1",
+        expected_sha256=preview["normalized"]["sha256"],
+    )
+
     # Simulate a mutable URL changing after preview. Apply must use staged bytes.
     data_ref["data"] = _image_bytes("JPEG", (1920, 1080))
     result = service.apply_video_thumbnail_update(
@@ -422,6 +434,29 @@ def test_url_is_not_downloaded_again_after_preview(monkeypatch):
     assert result["persisted_verified"] is True
     assert data_ref["calls"] == 1
     assert youtube.set_calls == 1
+    assert youtube.last_uploaded_bytes == staged_bytes
+    assert youtube.last_uploaded_mime == preview["normalized"]["mime_type"]
+
+
+def test_tampered_staged_bytes_are_blocked_before_write(monkeypatch):
+    monkeypatch.setenv("YCA_APPROVAL_SECRET", SECRET)
+    data_ref = {"data": _image_bytes("JPEG")}
+    _install_fetch(monkeypatch, data_ref)
+    youtube = _YouTube()
+    service = _Service(youtube)
+    preview = _preview(service)
+
+    store = ThumbnailStagingStore(service.context.data_dir)
+    blob, _meta = store._paths(preview["staging_id"])
+    blob.write_bytes(_image_bytes("JPEG", (1920, 1080)))
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_thumbnail_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+    _assert_code(caught, "thumbnail_hash_mismatch")
+    assert youtube.set_calls == 0
 
 
 def test_video_id_change_after_preview_is_blocked(monkeypatch):
