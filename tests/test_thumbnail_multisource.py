@@ -11,6 +11,7 @@ from PIL import Image
 
 from creator_service.mcp_errors import CreatorToolError
 from creator_service.thumbnail_staging import ThumbnailAssetStore, ThumbnailStagingStore
+import creator_service.thumbnail_update as thumbnail_module
 from creator_service.thumbnail_update import (
     YOUTUBE_THUMBNAIL_MAX_BYTES,
     normalize_thumbnail_for_youtube,
@@ -286,3 +287,39 @@ def test_consumed_staging_cannot_be_reused(tmp_path: Path):
     with pytest.raises(CreatorToolError) as caught:
         store.load(staging_id=staged["staging_id"], video_id="video-1", expected_sha256=sha)
     _code(caught, "thumbnail_staging_failed")
+
+
+def test_decompression_bomb_is_rejected(tmp_path: Path, monkeypatch):
+    data = _image_bytes("PNG", (1000, 1000))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with pytest.raises(CreatorToolError) as caught:
+        resolve_thumbnail_source(
+            data_dir=tmp_path,
+            thumbnail_file={
+                "name": "bomb.png",
+                "mime_type": "image/png",
+                "source_type": "generated_file",
+                "content_base64": _b64(data),
+            },
+        )
+    _code(caught, "thumbnail_decode_failed")
+
+
+def test_large_input_is_recompressed_below_configured_upload_limit(tmp_path: Path, monkeypatch):
+    data = _image_bytes("BMP", (1280, 720))
+    resolved, source = resolve_thumbnail_source(
+        data_dir=tmp_path,
+        thumbnail_file={
+            "name": "large.bmp",
+            "mime_type": "image/bmp",
+            "source_type": "generated_file",
+            "content_base64": _b64(data),
+        },
+    )
+    monkeypatch.setattr(thumbnail_module, "YOUTUBE_THUMBNAIL_MAX_BYTES", 200_000)
+    normalized_bytes, normalized = normalize_thumbnail_for_youtube(resolved, source)
+    assert len(data) > 200_000
+    assert len(normalized_bytes) <= 200_000
+    assert normalized["mime_type"] == "image/jpeg"
+    assert normalized["converted"] is True
+    assert normalized["compressed"] is True
