@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -26,6 +27,10 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
     # ChatGPT/MCP callers. Long verification sleeps previously allowed a partial
     # provider write to outlive the tool request before compensation executed.
     _WRITE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
+    # Final read-only settlement window for an otherwise provider-owned partial
+    # write. Production evidence already showed tag propagation can lag behind
+    # title/description, so do not compensate until this bounded window expires.
+    _WRITE_SETTLE_VERIFY_DELAYS = (0.0, 1.0, 2.0, 4.0)
     _RESTORE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5, 2.5)
     _AMBIGUOUS_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
     # Final read-only settlement window for YouTube eventual consistency.
@@ -51,6 +56,23 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
         item = self._owned_video_item(video_id, part="snippet")
         return self._snippet_from_item(item), str(item.get("etag", "") or "").strip()
 
+    @classmethod
+    def _snippet_request_diagnostics(cls, snippet: dict[str, Any]) -> dict[str, Any]:
+        tags = list(snippet.get("tags", []) or [])
+        tags_json = json.dumps(tags, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        tag_report = cls._tag_limit_diagnostics(tags)
+        return {
+            "has_title": "title" in snippet,
+            "has_description": "description" in snippet,
+            "has_tags": "tags" in snippet,
+            "tags_count": len(tags),
+            "tags_hash": hashlib.sha256(tags_json).hexdigest(),
+            "tags_effective_length": tag_report["tags_effective_youtube_length"],
+            "categoryId": str(snippet.get("categoryId", "")),
+            "defaultLanguage": snippet.get("defaultLanguage"),
+            "snippet_keys": sorted(str(key) for key in snippet.keys()),
+        }
+
     def _conditional_snippet_update(
         self,
         *,
@@ -58,9 +80,22 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
         snippet: dict[str, Any],
         etag: str,
     ) -> dict[str, Any]:
+        body = {"id": video_id, "snippet": snippet}
+        logger.info(
+            json.dumps(
+                {
+                    "event": "metadata_update_request",
+                    "video_id": video_id,
+                    **self._snippet_request_diagnostics(snippet),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
         request = self._youtube().videos().update(
             part="snippet",
-            body={"id": video_id, "snippet": snippet},
+            body=body,
         )
         # googleapiclient.http.HttpRequest exposes a mutable headers mapping.
         # Use If-Match whenever YouTube supplied an ETag so a concurrent edit
@@ -73,7 +108,22 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                     "A atualização segura por versão não está disponível neste cliente. Nenhuma gravação foi enviada.",
                 )
             headers["If-Match"] = etag
-        return request.execute()
+        response = request.execute()
+        response_snippet = dict((response or {}).get("snippet", {}) or {})
+        if response_snippet:
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "metadata_update_response",
+                        "video_id": video_id,
+                        **self._snippet_request_diagnostics(response_snippet),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        return response
 
     def _expected_from_approval(self, approval_payload: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
         proposed = dict(approval_payload.get("proposed", {}) or {})
@@ -695,17 +745,61 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 before=before,
                 expected=expected,
                 observed=persisted,
-                phase="confirmed_response",
+                phase="confirmed_response_initial_window",
                 verification_attempts=attempts,
             )
-            self._restore_then_raise_partial(
-                video_id=video_id,
-                before=before,
-                expected=expected,
-                observed_after_write=persisted,
-                verification_attempts=attempts,
-                elapsed_ms=int((time.monotonic() - write_verify_started) * 1000),
+            # Do not compensate immediately. We have production evidence that
+            # YouTube can expose title/description before tags. Spend one final
+            # deterministic READBACK-only window before calling it a true partial
+            # write. No retry and no second user mutation occurs here.
+            settled, settle_mismatches, settle_exact, settle_attempts = self._wait_for_snippet(
+                video_id,
+                expected,
+                self._WRITE_SETTLE_VERIFY_DELAYS,
             )
+            total_attempts = attempts + settle_attempts
+            if not settle_mismatches:
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "metadata_write_eventual_consistency_resolved",
+                            "video_id": video_id,
+                            "verification_attempts": total_attempts,
+                            "elapsed_ms": int((time.monotonic() - write_verify_started) * 1000),
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                return self._success_result(
+                    video_id=video_id,
+                    before=before,
+                    persisted=settled,
+                    attempts=total_attempts,
+                    exact_differences=settle_exact,
+                )
+
+            if self._is_provider_partial_state(before=before, expected=expected, observed=settled):
+                self._log_partial_state(
+                    video_id=video_id,
+                    before=before,
+                    expected=expected,
+                    observed=settled,
+                    phase="confirmed_response_settle_exhausted",
+                    verification_attempts=total_attempts,
+                )
+                self._restore_then_raise_partial(
+                    video_id=video_id,
+                    before=before,
+                    expected=expected,
+                    observed_after_write=settled,
+                    verification_attempts=total_attempts,
+                    elapsed_ms=int((time.monotonic() - write_verify_started) * 1000),
+                )
+            persisted = settled
+            mismatches = settle_mismatches
+            exact_differences = settle_exact
+            attempts = total_attempts
 
         if not self._mismatches(persisted, before):
             raise tool_error(
