@@ -82,7 +82,7 @@ def test_full_production_catalog_and_critical_schemas(monkeypatch) -> None:
             {"approval_payload", "approval_token", "user_confirmed"},
         ),
         "preview_video_thumbnail_update": (
-            {"video_id", "thumbnail_url"}, {"video_id", "thumbnail_url"}
+            {"video_id", "thumbnail_url", "thumbnail_file", "thumbnail_asset_id", "thumbnail_bytes"}, {"video_id"}
         ),
         "apply_video_thumbnail_update": (
             {"approval_payload", "approval_token", "user_confirmed"},
