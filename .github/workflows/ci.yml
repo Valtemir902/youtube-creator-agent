@@ -93,6 +93,7 @@ jobs:
             "mcp>=2.0,<3" \
             "cryptography>=45,<51" \
             "requests>=2.32,<3" \
+            "Pillow>=11,<13" \
             "google-api-python-client>=2.140,<3" \
             "google-auth>=2.34,<3" \
             "google-auth-oauthlib>=1.2,<2" \
@@ -160,10 +161,9 @@ jobs:
               "get_channel_profile", "get_strategy_evidence", "list_channel_videos",
               "get_video_details", "get_video_transcript", "list_playlists", "get_playlist_details",
               "preview_video_metadata_update", "render_video_metadata_handoff",
-              "preview_video_thumbnail_update",
               "audit_playlist_organization", "audit_channel_profile",
           }
-          READ_OPEN = {"validate_keyword_candidates", "list_video_categories", "list_video_captions"}
+          READ_OPEN = {"validate_keyword_candidates", "list_video_categories", "list_video_captions", "preview_video_thumbnail_update"}
           PREVIEW = {
               "activate_connected_channel", "create_onboarding_link",
               "preview_video_metadata_update_advanced", "preview_video_privacy_update",
