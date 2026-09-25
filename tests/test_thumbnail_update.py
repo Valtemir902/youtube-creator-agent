@@ -26,6 +26,7 @@ from creator_service.thumbnail_update import (
     _download_https_thumbnail,
     _inspect_image,
     _validate_public_host,
+    normalize_thumbnail_for_youtube,
 )
 import creator_service.thumbnail_update as thumbnail_module
 
@@ -38,6 +39,20 @@ def _image_bytes(fmt: str = "JPEG", size: tuple[int, int] = (1280, 720)) -> byte
     mode = "RGB" if fmt == "JPEG" else "RGBA"
     image = Image.new(mode, size)
     image.save(stream, format=fmt)
+    return stream.getvalue()
+
+
+def _raster_bytes(fmt: str, size: tuple[int, int] = (1280, 720), *, animated: bool = False) -> bytes:
+    stream = io.BytesIO()
+    if fmt == "PNG":
+        image = Image.new("RGBA", size, (10, 20, 30, 180))
+    else:
+        image = Image.new("RGB", size, (10, 20, 30))
+    if fmt == "GIF" and animated:
+        second = Image.new("RGB", size, (30, 20, 10))
+        image.save(stream, format="GIF", save_all=True, append_images=[second], duration=100, loop=0)
+    else:
+        image.save(stream, format=fmt)
     return stream.getvalue()
 
 
@@ -71,6 +86,45 @@ def test_valid_png_is_accepted():
     result = _inspect_image(data, source_url="https://cdn.example.test/thumb.png", header_content_type="image/png")
     assert result["thumbnail_valid"] is True
     assert result["mime_type"] == "image/png"
+
+
+@pytest.mark.parametrize(
+    ("fmt", "source_mime"),
+    [
+        ("JPEG", "image/jpeg"),
+        ("PNG", "image/png"),
+        ("WEBP", "image/webp"),
+        ("BMP", "image/bmp"),
+        ("GIF", "image/gif"),
+        ("TIFF", "image/tiff"),
+    ],
+)
+def test_supported_raster_inputs_normalize_to_youtube_output(fmt, source_mime):
+    data = _raster_bytes(fmt)
+    source = {"mime_type": source_mime}
+    normalized, meta = normalize_thumbnail_for_youtube(data, source)
+
+    assert normalized
+    assert meta["thumbnail_valid"] is True
+    assert meta["source_format"] == fmt
+    assert meta["source_mime_type"] == source_mime
+    assert meta["mime_type"] in {"image/jpeg", "image/png"}
+    assert meta["width"] == 1280
+    assert meta["height"] == 720
+    if fmt in {"WEBP", "BMP", "GIF", "TIFF"}:
+        assert meta["converted"] is True
+
+
+def test_animated_gif_uses_static_first_frame_and_normalizes():
+    data = _raster_bytes("GIF", animated=True)
+    normalized, meta = normalize_thumbnail_for_youtube(data, {"mime_type": "image/gif"})
+
+    assert normalized
+    assert meta["source_format"] == "GIF"
+    assert meta["source_animated"] is True
+    assert meta["source_frame_count"] == 2
+    assert meta["mime_type"] in {"image/jpeg", "image/png"}
+    assert meta["converted"] is True
 
 
 def test_oversized_file_is_rejected(monkeypatch):
