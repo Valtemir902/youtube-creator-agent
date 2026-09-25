@@ -97,6 +97,52 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             part="snippet",
             body=body,
         )
+        serialized_body = getattr(request, "body", None)
+        if serialized_body:
+            try:
+                if isinstance(serialized_body, bytes):
+                    serialized_body = serialized_body.decode("utf-8")
+                serialized_resource = json.loads(str(serialized_body))
+                serialized_snippet = dict(serialized_resource.get("snippet", {}) or {})
+                serialized_diagnostics = self._snippet_request_diagnostics(serialized_snippet)
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "metadata_update_serialized_request",
+                            "video_id": video_id,
+                            **serialized_diagnostics,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
+                if serialized_snippet.get("tags") != snippet.get("tags"):
+                    raise tool_error(
+                        "invalid_request",
+                        "O cliente YouTube serializou snippet.tags de forma diferente do payload aprovado. Nenhuma gravação foi enviada.",
+                        details={
+                            "field": "tags",
+                            "request_tags_hash": self._snippet_request_diagnostics(snippet)["tags_hash"],
+                            "serialized_tags_hash": serialized_diagnostics["tags_hash"],
+                            "serialized_has_tags": serialized_diagnostics["has_tags"],
+                            "serialized_tags_count": serialized_diagnostics["tags_count"],
+                        },
+                    )
+            except CreatorToolError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    json.dumps(
+                        {
+                            "event": "metadata_update_serialized_request_uninspectable",
+                            "video_id": video_id,
+                            "exception_type": type(exc).__name__,
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                )
         # googleapiclient.http.HttpRequest exposes a mutable headers mapping.
         # Use If-Match whenever YouTube supplied an ETag so a concurrent edit
         # fails instead of being overwritten by this request.
