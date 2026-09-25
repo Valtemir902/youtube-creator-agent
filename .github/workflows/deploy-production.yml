@@ -248,6 +248,7 @@ jobs:
           }
 
           expected_schema = {
+              'preview_video_thumbnail_update': ({'video_id','thumbnail_url','thumbnail_file','thumbnail_asset_id','thumbnail_bytes'}, {'video_id'}),
               'preview_playlist_create': ({'title','description','privacy_status','default_language','video_ids'}, {'title'}),
               'apply_playlist_create': ({'approval_payload','approval_token','user_confirmed'}, {'approval_payload','approval_token','user_confirmed'}),
               'apply_playlist_create_rollback': ({'rollback_payload','rollback_token','user_confirmed'}, {'rollback_payload','rollback_token','user_confirmed'}),
