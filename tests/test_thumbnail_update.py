@@ -259,7 +259,7 @@ class _Videos:
         assert id == self.owner.video_id
         self.owner.read_calls += 1
         if self.owner.pending is not None and self.owner.mode == "delayed" and self.owner.read_calls >= self.owner.pending_visible_at:
-            self.owner.thumbnails = self.owner.pending
+            self.owner.thumbnail_map = self.owner.pending
             self.owner.etag = "etag-2"
             self.owner.pending = None
         return _Request(lambda: {"items": [{
@@ -272,7 +272,7 @@ class _Videos:
                 "tags": [],
                 "categoryId": "22",
                 "defaultLanguage": "pt-BR",
-                "thumbnails": dict(self.owner.thumbnails),
+                "thumbnails": dict(self.owner.thumbnail_map),
             },
             "status": {
                 "uploadStatus": self.owner.upload_status,
@@ -298,7 +298,7 @@ class _Thumbnails:
                 "high": {"url": "https://i.ytimg.com/vi/video/hqdefault.jpg?v=2", "width": 480, "height": 360},
             }
             if self.owner.mode == "success":
-                self.owner.thumbnails = new
+                self.owner.thumbnail_map = new
                 self.owner.etag = "etag-2"
             elif self.owner.mode == "delayed":
                 self.owner.pending = new
@@ -320,7 +320,7 @@ class _YouTube:
         self.set_calls = 0
         self.pending = None
         self.pending_visible_at = 4
-        self.thumbnails = {
+        self.thumbnail_map = {
             "default": {"url": "https://i.ytimg.com/vi/video/default.jpg?v=1", "width": 120, "height": 90},
             "high": {"url": "https://i.ytimg.com/vi/video/hqdefault.jpg?v=1", "width": 480, "height": 360},
         }
