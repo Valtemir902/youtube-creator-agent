@@ -197,7 +197,11 @@ def test_authorized_chatgpt_download_url_is_not_rewritten():
 class _Response:
     def __init__(self, status):
         self.status_code = status
-        self.headers = {"Content-Type": "application/xml", "Server": "fixture-edge"}
+        self.headers = {
+            "Content-Type": "application/xml",
+            "Server": "fixture-edge",
+            "x-ms-error-code": "AuthenticationFailed",
+        }
         self.is_redirect = False
         self.is_permanent_redirect = False
 
@@ -228,7 +232,7 @@ def test_chatgpt_download_http_failures_are_structured(monkeypatch, status, code
     monkeypatch.setattr(thumbnail_module, "_validate_public_host", lambda _url: None)
     with pytest.raises(CreatorToolError) as caught:
         thumbnail_module._download_https_bytes(
-            "https://files.example.test/private/signed",
+            "https://files.example.test/private/signed?sv=1&se=soon&sp=r&sr=b&sig=opaque&spr=https",
             source_kind="chatgpt_file",
         )
     exc = _code(caught, code)
@@ -237,6 +241,11 @@ def test_chatgpt_download_http_failures_are_structured(monkeypatch, status, code
         assert exc.details["content_type"] == "application/xml"
         assert exc.details["server"] == "fixture-edge"
         assert exc.details["www_authenticate_present"] is False
+        assert exc.details["x_ms_error_code"] == "AuthenticationFailed"
+        assert exc.details["authorized_url_has_query"] is True
+        assert exc.details["azure_sas_fields_present"]["sig"] is True
+        assert exc.details["azure_sas_fields_present"]["se"] is True
+        assert exc.details["azure_sas_fields_present"]["sp"] is True
 
 
 def test_chatgpt_download_timeout_is_structured(monkeypatch):
