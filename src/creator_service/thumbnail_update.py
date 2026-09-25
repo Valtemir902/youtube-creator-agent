@@ -712,6 +712,7 @@ class ThumbnailUpdateMixin:
             height=int(normalized["height"]),
             source_type=str(source["type"]),
             source_sha256=str(source["sha256"]),
+            source_size_bytes=int(source["file_size_bytes"]),
         )
 
         baseline_digest = signer_from_env().payload_digest(baseline)
@@ -719,6 +720,7 @@ class ThumbnailUpdateMixin:
             "video_id": video_id,
             "source_type": str(source["type"]),
             "source_sha256": str(source["sha256"]),
+            "source_size_bytes": int(source["file_size_bytes"]),
             "normalized_sha256": str(normalized["sha256"]),
             "image_sha256": str(normalized["sha256"]),
             "mime_type": str(normalized["mime_type"]),
@@ -840,6 +842,7 @@ class ThumbnailUpdateMixin:
         comparisons = {
             "source_type": str(staging.get("source_type")) == str(proposed.get("source_type")),
             "source_sha256": str(staging.get("source_sha256")) == str(proposed.get("source_sha256")),
+            "source_size_bytes": int(staging.get("source_size_bytes", -1)) == int(proposed.get("source_size_bytes", -2)),
             "normalized_sha256": _sha256_bytes(image_bytes) == expected_sha,
             "mime_type": str(staging.get("mime_type")) == str(proposed.get("normalized_mime_type") or proposed.get("mime_type")),
             "file_size_bytes": int(staging.get("file_size_bytes", -1)) == int(proposed.get("normalized_size") or proposed.get("file_size_bytes") or -2),
@@ -953,7 +956,7 @@ class ThumbnailUpdateMixin:
             "thumbnail_apply_verified",
             video_id=video_id,
             source_type=proposed.get("source_type"),
-            source_size=proposed.get("source_size"),
+            source_size=proposed.get("source_size_bytes"),
             source_sha256=_safe_hash_prefix(str(proposed.get("source_sha256", ""))),
             normalized_size=staging["file_size_bytes"],
             normalized_sha256=_safe_hash_prefix(expected_sha),
