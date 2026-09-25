@@ -27,7 +27,7 @@ def test_deploy_workflow_changes_force_validation_before_generic_github_skip() -
 def test_deployed_runtime_verifier_targets_full_composed_surface() -> None:
     workflow = _workflow()
     assert 'from creator_service.cloud_mcp_server_v1_compat import HANDOFF_UI_URI, create_server' in workflow
-    assert "assert len(names) == 51" in workflow
+    assert "assert len(names) == 53" in workflow
     assert 'production_full_mcp_discovery=ok count={len(names)} resources={len(uris)}' in workflow
 
 
