@@ -11,6 +11,8 @@ import math
 import socket
 import time
 import warnings
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
@@ -370,6 +372,45 @@ def _inspect_image(data: bytes, *, source_url: str, header_content_type: str | N
     return result
 
 
+def _safe_sas_validity_details(url: str, response_headers: dict[str, Any]) -> dict[str, Any]:
+    """Classify SAS timing/permission without exposing signed query values."""
+    fields = {name.casefold(): value for name, value in parse_qsl(urlsplit(url).query, keep_blank_values=True)}
+    response_time = None
+    raw_date = str(response_headers.get("Date", "") or "").strip()
+    if raw_date:
+        try:
+            response_time = parsedate_to_datetime(raw_date)
+            if response_time.tzinfo is None:
+                response_time = response_time.replace(tzinfo=timezone.utc)
+            response_time = response_time.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            response_time = None
+
+    def parse_sas_time(name: str):
+        value = str(fields.get(name, "") or "").strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    expires_at = parse_sas_time("se")
+    starts_at = parse_sas_time("st")
+    return {
+        "azure_sas_has_read_permission": "r" in str(fields.get("sp", "") or ""),
+        "azure_sas_expired_at_response": (
+            response_time >= expires_at if response_time is not None and expires_at is not None else None
+        ),
+        "azure_sas_not_yet_valid_at_response": (
+            response_time < starts_at if response_time is not None and starts_at is not None else False
+        ),
+    }
+
+
 def _download_https_bytes(url: str, *, source_kind: str) -> tuple[bytes, dict[str, Any]]:
     """Download bounded HTTPS bytes with SSRF/redirect protections shared by all remote sources."""
     authorized_file = source_kind == "chatgpt_file"
@@ -424,6 +465,7 @@ def _download_https_bytes(url: str, *, source_kind: str) -> tuple[bytes, dict[st
                                     key: key in {name.casefold() for name, _ in parse_qsl(urlsplit(current).query, keep_blank_values=True)}
                                     for key in ("sv", "se", "sp", "sr", "sig", "spr", "st")
                                 },
+                                **_safe_sas_validity_details(current, response_headers),
                             },
                         )
                     if status in {404, 410}:
