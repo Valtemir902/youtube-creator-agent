@@ -295,13 +295,16 @@ def _inspect_source_image(
     source_name: str,
     claimed_mime_type: str | None = None,
     header_content_type: str | None = None,
+    enforce_claimed_mime: bool = True,
+    enforce_source_extension: bool = True,
 ) -> dict[str, Any]:
     image, info = _decode_image(data)
     image.close()
     detected_mime = str(info["mime_type"])
     claimed = str(claimed_mime_type or "").split(";", 1)[0].strip().casefold()
     header = str(header_content_type or "").split(";", 1)[0].strip().casefold()
-    if claimed and claimed not in {detected_mime, "application/octet-stream"}:
+    claimed_mismatch = bool(claimed and claimed not in {detected_mime, "application/octet-stream"})
+    if claimed_mismatch and enforce_claimed_mime:
         raise tool_error(
             "thumbnail_validation_failed",
             "O MIME declarado não corresponde ao formato real da imagem.",
@@ -321,18 +324,23 @@ def _inspect_source_image(
                 details={"content_type": header, "detected_mime_type": detected_mime},
             )
     extension = PurePosixPath(str(source_name or "")).suffix.casefold()
-    if extension:
-        expected = _EXTENSION_TO_MIME.get(extension)
-        if expected is None or expected != detected_mime:
-            raise tool_error(
-                "thumbnail_validation_failed",
-                "A extensão explícita da fonte não corresponde ao formato real da imagem.",
-                details={"extension": extension, "detected_mime_type": detected_mime},
-            )
+    expected = _EXTENSION_TO_MIME.get(extension) if extension else None
+    extension_mismatch = bool(extension and (expected is None or expected != detected_mime))
+    if extension_mismatch and enforce_source_extension:
+        raise tool_error(
+            "thumbnail_validation_failed",
+            "A extensão explícita da fonte não corresponde ao formato real da imagem.",
+            details={"extension": extension, "detected_mime_type": detected_mime},
+        )
     return {
         **info,
         "source_name": source_name,
         "sha256": _sha256_bytes(data),
+        "claimed_mime_type": claimed or None,
+        "claimed_mime_mismatch": claimed_mismatch,
+        "source_extension": extension or None,
+        "source_extension_expected_mime": expected,
+        "source_extension_mismatch": extension_mismatch,
     }
 
 
@@ -590,6 +598,11 @@ def _resolve_chatgpt_file_param(thumbnail_file: dict[str, Any]) -> tuple[bytes, 
         source_name=file_name,
         claimed_mime_type=claimed_mime,
         header_content_type=dict(remote.get("headers", {})).get("Content-Type"),
+        # ChatGPT may transcode an uploaded image while preserving the original
+        # filename/MIME metadata. The downloaded bytes are the authority here;
+        # HTTP Content-Type and image decoding remain strict.
+        enforce_claimed_mime=False,
+        enforce_source_extension=False,
     )
     return data, {
         "type": "chatgpt_file",
@@ -601,6 +614,10 @@ def _resolve_chatgpt_file_param(thumbnail_file: dict[str, Any]) -> tuple[bytes, 
         "filename": file_name,
         "mime_type": info["mime_type"],
         "detected_mime_type": info["mime_type"],
+        "declared_mime_type": claimed_mime,
+        "declared_mime_mismatch": bool(info.get("claimed_mime_mismatch")),
+        "source_extension": info.get("source_extension"),
+        "source_extension_mismatch": bool(info.get("source_extension_mismatch")),
         "width": info["width"],
         "height": info["height"],
         "file_size_bytes": len(data),
