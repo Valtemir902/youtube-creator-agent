@@ -56,6 +56,16 @@ class _Videos:
     def update(self, *, part: str, body: dict):
         assert part == "snippet"
         assert body["id"] == self.owner.video_id
+        self.owner.update_bodies.append({
+            "part": part,
+            "body": {
+                "id": body["id"],
+                "snippet": {
+                    key: (list(value) if isinstance(value, list) else value)
+                    for key, value in dict(body["snippet"]).items()
+                },
+            },
+        })
         holder: dict[str, _Request] = {}
 
         def apply():
@@ -166,6 +176,7 @@ class _FakeYouTube:
         self.update_calls = 0
         self.revision = 1
         self.if_match_headers: list[str] = []
+        self.update_bodies: list[dict] = []
         self.snippet = {
             "title": "Original",
             "description": "Description",
@@ -418,6 +429,7 @@ def test_provider_tag_reordering_is_verified_as_success(tmp_path, monkeypatch):
 
 def test_verification_budgets_are_bounded_for_mcp_request_lifetime():
     assert sum(ResponsibleCreatorService._WRITE_VERIFY_DELAYS) <= 3.0
+    assert sum(ResponsibleCreatorService._WRITE_SETTLE_VERIFY_DELAYS) <= 7.0
     assert sum(ResponsibleCreatorService._AMBIGUOUS_VERIFY_DELAYS) <= 3.0
     assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) <= 6.0
     assert sum(ResponsibleCreatorService._ROLLBACK_SETTLE_VERIFY_DELAYS) <= 12.0
@@ -425,9 +437,10 @@ def test_verification_budgets_are_bounded_for_mcp_request_lifetime():
     assert sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) * ResponsibleCreatorService._MAX_RESTORE_WRITES <= 12.0
     assert (
         sum(ResponsibleCreatorService._WRITE_VERIFY_DELAYS)
+        + sum(ResponsibleCreatorService._WRITE_SETTLE_VERIFY_DELAYS)
         + sum(ResponsibleCreatorService._RESTORE_VERIFY_DELAYS) * ResponsibleCreatorService._MAX_RESTORE_WRITES
         + sum(ResponsibleCreatorService._ROLLBACK_SETTLE_VERIFY_DELAYS)
-    ) <= 25.0
+    ) <= 32.0
 
 
 def test_title_and_description_can_persist_while_tags_do_not_and_are_restored(tmp_path, monkeypatch):
@@ -529,3 +542,167 @@ def test_metadata_limit_is_blocked_before_any_video_update(tmp_path, monkeypatch
     assert caught.value.code == "metadata_limit_exceeded"
     assert caught.value.details["field"] == "tags"
     assert youtube.update_calls == 0
+
+
+def test_request_body_contains_exact_approved_tags_with_unicode_and_spaces(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "normal")
+    tags = [
+        "café sem irrigação",
+        "estresse hídrico no café",
+        "Made in Roça",
+        "roçada no café",
+    ]
+    preview = service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Café novo",
+        description="Descrição com acentos • teste",
+        tags=tags,
+        category_id="22",
+    )
+    proposed = preview["approval_payload"]["proposed"]
+
+    result = service.apply_video_metadata_update(
+        approval_payload=preview["approval_payload"],
+        approval_token=preview["approval_token"],
+    )
+
+    assert result["persisted_verified"] is True
+    assert youtube.update_calls == 1
+    assert len(youtube.update_bodies) == 1
+    request = youtube.update_bodies[0]
+    assert request["part"] == "snippet"
+    snippet = request["body"]["snippet"]
+    assert snippet["title"] == proposed["title"]
+    assert snippet["description"] == proposed["description"]
+    assert snippet["tags"] == proposed["tags"]
+    assert snippet["categoryId"] == proposed["categoryId"]
+    assert snippet["defaultLanguage"] == proposed["defaultLanguage"]
+
+
+def test_request_body_tags_are_not_overwritten_by_old_snapshot(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "normal")
+    old_tags = list(youtube.snippet["tags"])
+    new_tags = ["old", "new tag", "café"]
+    preview = service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Approved title",
+        tags=new_tags,
+        category_id="22",
+    )
+
+    service.apply_video_metadata_update(
+        approval_payload=preview["approval_payload"],
+        approval_token=preview["approval_token"],
+    )
+
+    sent_tags = youtube.update_bodies[0]["body"]["snippet"]["tags"]
+    assert sent_tags == new_tags
+    assert sent_tags != old_tags
+
+
+def test_request_diagnostics_prove_tags_presence_without_logging_tag_values(tmp_path, monkeypatch, caplog):
+    service, youtube = _service(tmp_path, monkeypatch, "normal")
+    tags = ["café sem irrigação", "Made in Roça"]
+    preview = service.preview_video_metadata_update(
+        video_id=youtube.video_id,
+        title="Approved title",
+        tags=tags,
+        category_id="22",
+    )
+
+    with caplog.at_level(logging.INFO, logger="creator_service.responsible_service"):
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if '"event":"metadata_update_request"' in record.message
+    ]
+    assert len(events) == 1
+    event = events[0]
+    assert event["has_tags"] is True
+    assert event["tags_count"] == len(tags)
+    assert event["snippet_keys"] == ["categoryId", "defaultLanguage", "description", "tags", "title"]
+    assert event["tags_hash"]
+    serialized = json.dumps(event, ensure_ascii=False)
+    assert "café sem irrigação" not in serialized
+    assert "Made in Roça" not in serialized
+
+
+def test_original_write_waits_read_only_for_late_tags_before_rollback(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_tags_missing")
+    preview = _preview_all_fields(service, youtube)
+    expected = dict(preview["approval_payload"]["proposed"])
+    before = dict(youtube.snippet)
+    initial_partial = {
+        **expected,
+        "tags": list(before["tags"]),
+    }
+    calls = []
+    original_wait = service._wait_for_snippet
+
+    def controlled_wait(video_id, wanted, delays):
+        calls.append(tuple(delays))
+        if delays == service._WRITE_VERIFY_DELAYS:
+            return dict(initial_partial), ["tags"], ["tags"], len(delays)
+        if delays == service._WRITE_SETTLE_VERIFY_DELAYS:
+            youtube.set_snippet(expected)
+            return dict(expected), [], [], 3
+        return original_wait(video_id, wanted, delays)
+
+    monkeypatch.setattr(service, "_wait_for_snippet", controlled_wait)
+
+    result = service.apply_video_metadata_update(
+        approval_payload=preview["approval_payload"],
+        approval_token=preview["approval_token"],
+    )
+
+    assert result["persisted_verified"] is True
+    assert result["state"] == "success_verified"
+    assert result["verification_attempts"] == len(service._WRITE_VERIFY_DELAYS) + 3
+    assert youtube.update_calls == 1
+    assert calls[:2] == [
+        service._WRITE_VERIFY_DELAYS,
+        service._WRITE_SETTLE_VERIFY_DELAYS,
+    ]
+    assert youtube.snippet["tags"] == expected["tags"]
+
+
+def test_original_write_settlement_exhaustion_still_rolls_back_once(tmp_path, monkeypatch):
+    service, youtube = _service(tmp_path, monkeypatch, "partial_tags_missing")
+    preview = _preview_all_fields(service, youtube)
+    before = dict(youtube.snippet)
+    expected = dict(preview["approval_payload"]["proposed"])
+    partial = {**expected, "tags": list(before["tags"])}
+    original_wait = service._wait_for_snippet
+    settle_seen = []
+
+    def controlled_wait(video_id, wanted, delays):
+        if delays == service._WRITE_VERIFY_DELAYS:
+            youtube.set_snippet(partial)
+            return dict(partial), ["tags"], ["tags"], len(delays)
+        if delays == service._WRITE_SETTLE_VERIFY_DELAYS:
+            settle_seen.append(True)
+            return dict(partial), ["tags"], ["tags"], len(delays)
+        return original_wait(video_id, wanted, delays)
+
+    monkeypatch.setattr(service, "_wait_for_snippet", controlled_wait)
+
+    with pytest.raises(CreatorToolError) as caught:
+        service.apply_video_metadata_update(
+            approval_payload=preview["approval_payload"],
+            approval_token=preview["approval_token"],
+        )
+
+    assert caught.value.code == "partial_write_detected"
+    assert settle_seen == [True]
+    assert youtube.update_calls == 2
+    assert youtube.snippet == before
+    write = caught.value.details["write_verification"]
+    assert write["mismatched_fields"] == ["tags"]
+    assert write["verification_attempts"] == (
+        len(service._WRITE_VERIFY_DELAYS) + len(service._WRITE_SETTLE_VERIFY_DELAYS)
+    )
