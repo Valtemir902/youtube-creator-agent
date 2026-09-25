@@ -64,3 +64,8 @@ def test_github_actions_use_node24_capable_major_versions() -> None:
     assert 'actions/checkout@v5' in ci
     assert 'actions/setup-python@v6' in ci
     assert 'actions/setup-node@v5' in ci
+
+
+def test_server_runtime_installs_thumbnail_validation_dependency() -> None:
+    requirements = Path("requirements-server.txt").read_text(encoding="utf-8")
+    assert "Pillow>=11,<13" in requirements
