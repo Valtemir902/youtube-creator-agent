@@ -15,6 +15,7 @@ EXPECTED_TOOL_NAMES = {
     "apply_video_metadata_rollback_advanced",
     "preview_video_privacy_update", "apply_video_privacy_update",
     "preview_video_delete", "apply_video_delete",
+    "preview_video_thumbnail_update", "apply_video_thumbnail_update",
     "list_video_captions",
     "preview_caption_upload", "apply_caption_upload", "apply_caption_delete_rollback",
     "list_playlists", "get_playlist_details", "preview_playlist_metadata_update",
@@ -50,6 +51,13 @@ EXPECTED_SCHEMAS = {
         {"approval_payload", "approval_token", "user_confirmed"},
         {"approval_payload", "approval_token", "user_confirmed"},
     ),
+    "preview_video_thumbnail_update": (
+        {"video_id", "thumbnail_url"}, {"video_id", "thumbnail_url"}
+    ),
+    "apply_video_thumbnail_update": (
+        {"approval_payload", "approval_token", "user_confirmed"},
+        {"approval_payload", "approval_token", "user_confirmed"},
+    ),
     "preview_playlist_create": (
         {"title", "description", "privacy_status", "default_language", "video_ids"}, {"title"}
     ),
@@ -70,6 +78,8 @@ EXPECTED_ANNOTATIONS = {
     "apply_video_privacy_update": (False, True, True, False),
     "preview_video_delete": (False, False, False, False),
     "apply_video_delete": (False, True, True, False),
+    "preview_video_thumbnail_update": (True, True, False, True),
+    "apply_video_thumbnail_update": (False, True, True, False),
     "preview_playlist_create": (False, False, False, False),
     "apply_playlist_create": (False, True, True, False),
     "apply_playlist_create_rollback": (False, True, True, False),
@@ -99,7 +109,7 @@ def assert_registered_server_contract(server: Any) -> None:
         f"missing={sorted(EXPECTED_TOOL_NAMES - names)} "
         f"unexpected={sorted(names - EXPECTED_TOOL_NAMES)}"
     )
-    assert len(names) == 51, len(names)
+    assert len(names) == 53, len(names)
 
     resources = list(server._resource_manager.list_resources())
     uris = {str(resource.uri) for resource in resources}
