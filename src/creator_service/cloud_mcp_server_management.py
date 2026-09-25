@@ -4,12 +4,30 @@ import os
 from typing import Any
 
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, ConfigDict
 
 from . import cloud_mcp_server as base
 from .cloud_mcp_server_video import _owned_video_details
 from .security import signer_from_env
 from .verified_advanced_service import VerifiedAdvancedSafeCreatorService
 from .video_transcript import get_video_transcript_data
+
+
+class ChatGPTThumbnailFileParam(BaseModel):
+    """ChatGPT-native file param. The host injects an authorized temporary download URL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    download_url: str
+    file_id: str
+    mime_type: str | None = None
+    file_name: str | None = None
+    # Extra compatibility fields are accepted only when a native file param is
+    # already present; direct base64 remains supported by thumbnail_bytes.
+    content_base64: str | None = None
+    source_type: str | None = None
+    content_location: str | None = None
+
 
 
 def _service() -> VerifiedAdvancedSafeCreatorService:
@@ -376,27 +394,30 @@ def create_server():
         name="preview_video_thumbnail_update",
         title="Validar e preparar nova thumbnail do vídeo",
         description=(
-            "Read-only thumbnail preview. Accepts exactly one safe source: HTTPS URL, a JSON-safe file envelope "
-            "(content_base64), an authorized tenant asset id, or base64 thumbnail_bytes. It validates the real "
+            "Read-only thumbnail preview. Accepts exactly one safe source: HTTPS URL, a ChatGPT-authorized file param, "
+            "an authorized tenant asset id, or base64 thumbnail_bytes. The ChatGPT host supplies a temporary authorized "
+            "download_url plus file_id; the backend never treats file_id or sediment:// as a filesystem path. It validates the real "
             "image, normalizes to exact staged JPEG/PNG bytes, binds source/final SHA-256 plus the YouTube baseline "
             "into a short-lived approval, and never writes to YouTube."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True, destructive_hint=False, idempotent_hint=True),
+        meta={"openai/fileParams": ["thumbnail_file"]},
     )
     def preview_video_thumbnail_update(
         video_id: str,
         thumbnail_url: str | None = None,
-        thumbnail_file: dict[str, Any] | None = None,
+        thumbnail_file: ChatGPTThumbnailFileParam | None = None,
         thumbnail_asset_id: str | None = None,
         thumbnail_bytes: str | None = None,
     ) -> dict[str, Any]:
         def action() -> dict[str, Any]:
             base._require_scope(base.WRITE_SCOPE)
             base._limit("thumbnail_preview", limit=20)
+            file_payload = thumbnail_file.model_dump(exclude_none=True) if thumbnail_file is not None else None
             result = _service().preview_video_thumbnail_update(
                 video_id=video_id,
                 thumbnail_url=thumbnail_url,
-                thumbnail_file=thumbnail_file,
+                thumbnail_file=file_payload,
                 thumbnail_asset_id=thumbnail_asset_id,
                 thumbnail_bytes=thumbnail_bytes,
             )
