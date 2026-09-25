@@ -46,6 +46,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "external_change_detected": "The protected YouTube resource changed after preview; a new preview is required.",
     "recent_edit_protected": "This video is protected against another recent edit.",
     "partial_write_detected": "YouTube did not persist the complete approved update. The previous state was restored and verified.",
+    "metadata_limit_exceeded": "The proposed YouTube metadata exceeds an official field limit.",
     "rollback_incomplete": "YouTube partially persisted metadata and the compensating rollback did not restore every verified field.",
     "write_state_uncertain": "A YouTube write may have changed remote state and the final state could not be verified safely.",
     "youtube_api_error": "YouTube rejected or could not complete the requested operation.",
