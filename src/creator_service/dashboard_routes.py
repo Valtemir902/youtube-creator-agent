@@ -89,6 +89,79 @@ def _dashboard_content_bucket(item: dict[str, Any]) -> tuple[str, str]:
     return "videos", "duration_or_default"
 
 
+def _collect_upload_video_ids(
+    youtube: Any,
+    uploads_playlist_id: str,
+    *,
+    limit: int | None = None,
+) -> tuple[list[str], int, bool]:
+    """Read the authenticated uploads playlist across all pages, preserving order."""
+    requested_limit = None if limit is None else max(1, int(limit))
+    ordered_ids: list[str] = []
+    seen_ids: set[str] = set()
+    seen_tokens: set[str] = set()
+    page_token: str | None = None
+    pages = 0
+    inventory_complete = False
+
+    while True:
+        remaining = None if requested_limit is None else requested_limit - len(ordered_ids)
+        if remaining is not None and remaining <= 0:
+            break
+        kwargs: dict[str, Any] = {
+            "part": "contentDetails,snippet",
+            "playlistId": uploads_playlist_id,
+            "maxResults": 50 if remaining is None else min(50, remaining),
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+
+        page = youtube.playlistItems().list(**kwargs).execute()
+        pages += 1
+        for item in page.get("items", []) or []:
+            video_id = str((item.get("contentDetails", {}) or {}).get("videoId", "") or "").strip()
+            if not video_id or video_id in seen_ids:
+                continue
+            seen_ids.add(video_id)
+            ordered_ids.append(video_id)
+            if requested_limit is not None and len(ordered_ids) >= requested_limit:
+                break
+
+        next_token = str(page.get("nextPageToken", "") or "").strip()
+        if requested_limit is not None and len(ordered_ids) >= requested_limit:
+            inventory_complete = not bool(next_token)
+            break
+        if not next_token:
+            inventory_complete = True
+            break
+        if next_token in seen_tokens:
+            # Defensive stop: never loop forever on a malformed/repeated provider token.
+            inventory_complete = False
+            break
+        seen_tokens.add(next_token)
+        page_token = next_token
+
+    return ordered_ids, pages, inventory_complete
+
+
+def _load_video_details_batched(youtube: Any, video_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """YouTube videos.list accepts at most 50 ids; hydrate the complete inventory in batches."""
+    by_id: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(video_ids), 50):
+        batch = video_ids[start : start + 50]
+        if not batch:
+            continue
+        response = youtube.videos().list(
+            part="snippet,statistics,status,contentDetails,liveStreamingDetails",
+            id=",".join(batch),
+        ).execute()
+        for item in response.get("items", []) or []:
+            video_id = str(item.get("id", "") or "").strip()
+            if video_id:
+                by_id[video_id] = item
+    return by_id
+
+
 def _youtube_http_error_details(exc: HttpError) -> tuple[int, dict[str, Any]]:
     """Translate Google/YouTube failures into stable, non-secret dashboard errors."""
     upstream_status = int(getattr(getattr(exc, "resp", None), "status", 0) or 0)
@@ -689,31 +762,45 @@ def install_dashboard_routes(
         return {"plan": plan, "requires_review": True}
 
     @app.get("/api/dashboard/videos")
-    async def dashboard_videos(limit: int = 20, tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
+    async def dashboard_videos(limit: int | None = None, tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
         service = service_for(tenant.tenant_id)
         service.context.validate_youtube()
         youtube = service._youtube()
         channel_result = youtube.channels().list(part="contentDetails", mine=True).execute()
         items = channel_result.get("items", [])
         if not items:
-            return {"videos": []}
+            return {
+                "videos": [],
+                "returned_count": 0,
+                "inventory_complete": True,
+                "pagination_pages": 0,
+                "order": "published_at_desc",
+            }
         uploads = items[0].get("contentDetails", {}).get("relatedPlaylists", {}).get("uploads")
         if not uploads:
-            return {"videos": []}
-        playlist = youtube.playlistItems().list(
-            part="contentDetails,snippet",
-            playlistId=uploads,
-            maxResults=max(1, min(50, int(limit))),
-        ).execute()
-        ordered_ids = [str(item.get("contentDetails", {}).get("videoId", "")) for item in playlist.get("items", [])]
-        ordered_ids = [video_id for video_id in ordered_ids if video_id]
+            return {
+                "videos": [],
+                "returned_count": 0,
+                "inventory_complete": True,
+                "pagination_pages": 0,
+                "order": "published_at_desc",
+            }
+
+        ordered_ids, pagination_pages, inventory_complete = _collect_upload_video_ids(
+            youtube,
+            str(uploads),
+            limit=limit,
+        )
         if not ordered_ids:
-            return {"videos": []}
-        details = youtube.videos().list(
-            part="snippet,statistics,status,contentDetails,liveStreamingDetails",
-            id=",".join(ordered_ids),
-        ).execute()
-        by_id = {str(item.get("id")): item for item in details.get("items", [])}
+            return {
+                "videos": [],
+                "returned_count": 0,
+                "inventory_complete": inventory_complete,
+                "pagination_pages": pagination_pages,
+                "order": "published_at_desc",
+            }
+
+        by_id = _load_video_details_batched(youtube, ordered_ids)
         output: list[dict[str, Any]] = []
         for video_id in ordered_ids:
             item = by_id.get(video_id)
@@ -745,7 +832,18 @@ def install_dashboard_routes(
                 "content_bucket_basis": bucket_basis,
                 "memory": service.video_memory_state(video_id),
             })
-        return {"videos": output}
+
+        # Users expect the content library to read from newest to oldest.
+        # ISO-8601 YouTube timestamps sort chronologically as strings.
+        output.sort(key=lambda row: str(row.get("published_at") or ""), reverse=True)
+        return {
+            "videos": output,
+            "returned_count": len(output),
+            "inventory_complete": inventory_complete,
+            "pagination_pages": pagination_pages,
+            "order": "published_at_desc",
+            "requested_limit": limit,
+        }
 
     @app.get("/api/dashboard/video/{video_id}")
     async def dashboard_video(video_id: str, tenant: DashboardTenant = Depends(readable)) -> dict[str, Any]:
