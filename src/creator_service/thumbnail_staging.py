@@ -13,7 +13,7 @@ from .mcp_errors import tool_error
 
 
 _STAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{24,96}$")
-_ASSET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+_ASSET_ID_RE = re.compile(r"^asset_[A-Za-z0-9_-]{10,120}$")
 THUMBNAIL_STAGING_TTL_SECONDS = 900
 
 
@@ -207,17 +207,17 @@ class ThumbnailAssetStore:
         blob = (self.root / f"{value}.bin").resolve()
         meta = (self.root / f"{value}.json").resolve()
         if blob.parent != self.root or meta.parent != self.root:
-            raise tool_error("thumbnail_source_invalid", "Asset fora do sandbox autorizado.")
+            raise tool_error("thumbnail_asset_unauthorized", "Asset fora do sandbox privado autorizado.")
         if not blob.exists() or not meta.exists():
             raise tool_error(
-                "thumbnail_source_unavailable",
+                "thumbnail_asset_not_found",
                 "O asset não está disponível no sandbox privado deste tenant.",
             )
         try:
             metadata = json.loads(meta.read_text(encoding="utf-8"))
             data = blob.read_bytes()
         except Exception as exc:
-            raise tool_error("thumbnail_source_unavailable", "Não foi possível resolver o asset interno.") from exc
+            raise tool_error("thumbnail_asset_not_found", "Não foi possível resolver o asset interno.") from exc
         expected = str(metadata.get("sha256", "") or "")
         actual = _sha256_bytes(data)
         if expected and expected != actual:
