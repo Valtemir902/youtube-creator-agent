@@ -189,10 +189,15 @@ def test_sediment_is_not_a_tenant_asset_id(tmp_path: Path):
     _code(caught, "thumbnail_source_invalid")
 
 
+def test_authorized_chatgpt_download_url_is_not_rewritten():
+    raw = "https://FILES.Example.test:443/private/a%2Fb?X-Signature=AbC%2F123&Case=KeepMe"
+    assert thumbnail_module._validated_authorized_https_url(raw) == raw
+
+
 class _Response:
     def __init__(self, status):
         self.status_code = status
-        self.headers = {}
+        self.headers = {"Content-Type": "application/xml", "Server": "fixture-edge"}
         self.is_redirect = False
         self.is_permanent_redirect = False
 
@@ -226,7 +231,12 @@ def test_chatgpt_download_http_failures_are_structured(monkeypatch, status, code
             "https://files.example.test/private/signed",
             source_kind="chatgpt_file",
         )
-    _code(caught, code)
+    exc = _code(caught, code)
+    if status in {401, 403}:
+        assert exc.details["download_host"] == "files.example.test"
+        assert exc.details["content_type"] == "application/xml"
+        assert exc.details["server"] == "fixture-edge"
+        assert exc.details["www_authenticate_present"] is False
 
 
 def test_chatgpt_download_timeout_is_structured(monkeypatch):
