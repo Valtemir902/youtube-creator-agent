@@ -137,19 +137,21 @@ class ThumbnailStagingStore:
     ) -> tuple[bytes, dict[str, Any]]:
         self.cleanup_expired(now=now)
         blob, meta = self._paths(staging_id)
-        if not blob.exists() or not meta.exists():
+        if not meta.exists():
             raise tool_error("thumbnail_staging_expired", "O staging da thumbnail não existe mais ou expirou.")
         try:
             metadata = json.loads(meta.read_text(encoding="utf-8"))
         except Exception as exc:
             raise tool_error("thumbnail_staging_failed", "Os metadados do staging da thumbnail estão inválidos.") from exc
         current = int(time.time() if now is None else now)
+        if bool(metadata.get("consumed", False)):
+            raise tool_error("thumbnail_staging_failed", "O staging da thumbnail já foi consumido.")
         if int(metadata.get("expires_at", 0) or 0) <= current:
             blob.unlink(missing_ok=True)
             meta.unlink(missing_ok=True)
             raise tool_error("thumbnail_staging_expired", "O staging da thumbnail expirou.")
-        if bool(metadata.get("consumed", False)):
-            raise tool_error("thumbnail_staging_failed", "O staging da thumbnail já foi consumido.")
+        if not blob.exists():
+            raise tool_error("thumbnail_staging_failed", "Os bytes staged da thumbnail não estão disponíveis.")
         if str(metadata.get("video_id", "")) != str(video_id):
             raise tool_error("approval_invalid", "O staging aprovado pertence a outro vídeo.")
         if str(metadata.get("sha256", "")) != str(expected_sha256):
