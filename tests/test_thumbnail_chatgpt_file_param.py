@@ -21,6 +21,13 @@ def _png(size=(1672, 941)) -> bytes:
     return out.getvalue()
 
 
+def _jpeg(size=(1536, 864)) -> bytes:
+    out = io.BytesIO()
+    image = Image.effect_noise(size, 64).convert("RGB")
+    image.save(out, format="JPEG", quality=92)
+    return out.getvalue()
+
+
 def _code(exc, expected):
     assert isinstance(exc.value, CreatorToolError)
     assert exc.value.code == expected
@@ -135,27 +142,34 @@ def test_non_sediment_content_location_schemes_are_rejected(tmp_path: Path, uri:
     _code(caught, "thumbnail_source_invalid")
 
 
-def test_chatgpt_file_declared_mime_mismatch_is_rejected(tmp_path: Path, monkeypatch):
-    data = _png()
+def test_chatgpt_file_host_transcoding_uses_real_bytes_not_stale_metadata(tmp_path: Path, monkeypatch):
+    data = _jpeg()
     monkeypatch.setattr(
         thumbnail_module,
         "_download_https_bytes",
         lambda _url, *, source_kind: (
             data,
-            {"headers": {"Content-Type": "image/png"}, "source_url_sha256": "x", "redirect_count": 0, "final_url": "https://files.example.test/x"},
+            {"headers": {"Content-Type": "image/jpeg"}, "source_url_sha256": "x", "redirect_count": 0, "final_url": "https://files.example.test/x"},
         ),
     )
-    with pytest.raises(CreatorToolError) as caught:
-        resolve_thumbnail_source(
-            data_dir=tmp_path,
-            thumbnail_file={
-                "download_url": "https://files.example.test/private/signed",
-                "file_id": "file_test_generated_thumbnail",
-                "mime_type": "image/jpeg",
-                "file_name": "thumb.png",
-            },
-        )
-    _code(caught, "thumbnail_validation_failed")
+    resolved, source = resolve_thumbnail_source(
+        data_dir=tmp_path,
+        thumbnail_file={
+            "download_url": "https://files.example.test/private/signed",
+            "file_id": "file_test_generated_thumbnail",
+            "mime_type": "image/png",
+            "file_name": "1000677688.png",
+        },
+    )
+
+    assert resolved == data
+    assert source["detected_mime_type"] == "image/jpeg"
+    assert source["declared_mime_type"] == "image/png"
+    assert source["declared_mime_mismatch"] is True
+    assert source["source_extension"] == ".png"
+    assert source["source_extension_mismatch"] is True
+    assert source["width"] == 1536
+    assert source["height"] == 864
 
 
 def test_chatgpt_file_path_traversal_fields_are_rejected(tmp_path: Path):
