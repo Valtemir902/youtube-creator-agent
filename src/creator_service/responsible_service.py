@@ -441,13 +441,15 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             )
         except CreatorToolError as exc:
             if exc.code == "rollback_incomplete":
+                rollback_details = dict(exc.details or {})
                 raise tool_error(
                     "rollback_incomplete",
                     exc.message,
                     details={
+                        **rollback_details,
                         "state": "partial_write_detected_and_rollback_incomplete",
                         "write_verification": write_verification,
-                        "rollback": exc.details or {},
+                        "rollback": rollback_details,
                     },
                 ) from exc
             raise
