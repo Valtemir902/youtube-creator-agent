@@ -487,8 +487,11 @@ def _resolve_chatgpt_file_param(thumbnail_file: dict[str, Any]) -> tuple[bytes, 
 
     if not file_id:
         raise tool_error("thumbnail_source_invalid", "thumbnail_file.file_id é obrigatório para um arquivo do ChatGPT.")
-    if not file_id.startswith("file_") or len(file_id) < 12 or len(file_id) > 160:
-        raise tool_error("thumbnail_source_invalid", "thumbnail_file.file_id não possui formato reconhecido.")
+    # ChatGPT file_id is an opaque host-issued identifier. Do not impose a
+    # product-internal prefix or dereference it locally; authorization is
+    # carried by the temporary download_url supplied by the host.
+    if len(file_id) > 512 or any(ord(ch) < 32 or ord(ch) == 127 for ch in file_id):
+        raise tool_error("thumbnail_source_invalid", "thumbnail_file.file_id contém valor inválido.")
     if not download_url:
         raise tool_error(
             "thumbnail_file_resolution_failed",
