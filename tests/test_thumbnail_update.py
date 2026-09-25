@@ -685,3 +685,48 @@ def test_mcp_requires_explicit_confirmation_and_blocks_replay(monkeypatch, tmp_p
             assert youtube.set_calls == 1
 
     asyncio.run(scenario())
+
+
+def test_chatgpt_file_apply_uses_staged_bytes_without_reresolving(monkeypatch):
+    monkeypatch.setenv("YCA_APPROVAL_SECRET", SECRET)
+    monkeypatch.setattr(thumbnail_module.time, "sleep", lambda _delay: None)
+    original = _image_bytes("PNG", (1672, 941))
+    changed = _image_bytes("PNG", (1280, 720))
+    calls = {"count": 0}
+
+    def fake_download(url, *, source_kind):
+        calls["count"] += 1
+        data = original if calls["count"] == 1 else changed
+        return data, {
+            "headers": {"Content-Type": "image/png"},
+            "source_url_sha256": "signed-url-hash",
+            "redirect_count": 0,
+            "final_url": url,
+        }
+
+    monkeypatch.setattr(thumbnail_module, "_download_https_bytes", fake_download)
+    youtube = _YouTube(mode="success")
+    service = _Service(youtube)
+    preview = service.preview_video_thumbnail_update(
+        video_id="video-1",
+        thumbnail_file={
+            "download_url": "https://files.example.test/private/signed",
+            "file_id": "file_test_generated_thumbnail",
+            "mime_type": "image/png",
+            "file_name": "generated.png",
+        },
+    )
+
+    assert preview["source"]["source_type"] == "chatgpt_file"
+    assert calls["count"] == 1
+    approved_sha = preview["normalized"]["sha256"]
+
+    result = service.apply_video_thumbnail_update(
+        approval_payload=preview["approval_payload"],
+        approval_token=preview["approval_token"],
+    )
+
+    assert result["persisted_verified"] is True
+    assert result["thumbnail"]["normalized_sha256"] == approved_sha
+    assert calls["count"] == 1
+    assert youtube.set_calls == 1
