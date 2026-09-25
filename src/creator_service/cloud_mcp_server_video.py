@@ -17,6 +17,7 @@ def _int_or_zero(value: Any) -> int:
 
 
 def _owned_video_details(service, video_id: str) -> dict[str, Any]:
+    """Owned video readback. Production marker: thumbnail native-file preflight v4."""
     video_id = str(video_id or "").strip()
     if not video_id:
         raise base.tool_error("invalid_request", "video_id is required.")
