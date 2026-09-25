@@ -201,6 +201,7 @@ class _Response:
             "Content-Type": "application/xml",
             "Server": "fixture-edge",
             "x-ms-error-code": "AuthenticationFailed",
+            "Date": "Fri, 25 Sep 2026 21:40:00 GMT",
         }
         self.is_redirect = False
         self.is_permanent_redirect = False
@@ -232,7 +233,7 @@ def test_chatgpt_download_http_failures_are_structured(monkeypatch, status, code
     monkeypatch.setattr(thumbnail_module, "_validate_public_host", lambda _url: None)
     with pytest.raises(CreatorToolError) as caught:
         thumbnail_module._download_https_bytes(
-            "https://files.example.test/private/signed?sv=1&se=soon&sp=r&sr=b&sig=opaque&spr=https",
+            "https://files.example.test/private/signed?sv=1&se=2026-09-25T22%3A00%3A00Z&sp=r&sr=b&sig=opaque&spr=https",
             source_kind="chatgpt_file",
         )
     exc = _code(caught, code)
@@ -246,6 +247,9 @@ def test_chatgpt_download_http_failures_are_structured(monkeypatch, status, code
         assert exc.details["azure_sas_fields_present"]["sig"] is True
         assert exc.details["azure_sas_fields_present"]["se"] is True
         assert exc.details["azure_sas_fields_present"]["sp"] is True
+        assert exc.details["azure_sas_has_read_permission"] is True
+        assert exc.details["azure_sas_expired_at_response"] is False
+        assert exc.details["azure_sas_not_yet_valid_at_response"] is False
 
 
 def test_chatgpt_download_timeout_is_structured(monkeypatch):
