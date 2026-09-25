@@ -120,6 +120,29 @@ def _canonical_https_url(raw: str) -> str:
     return urlunsplit(("https", netloc, parsed.path or "/", parsed.query, ""))
 
 
+def _validated_authorized_https_url(raw: str) -> str:
+    """Validate an authorized host URL without rewriting its signed representation."""
+    value = str(raw or "").strip()
+    try:
+        parsed = urlsplit(value)
+    except ValueError as exc:
+        raise tool_error("thumbnail_source_invalid", "A URL autorizada do arquivo é inválida.") from exc
+    if parsed.scheme.lower() != "https":
+        raise tool_error("thumbnail_source_invalid", "O download autorizado do arquivo deve usar HTTPS.")
+    if parsed.username or parsed.password:
+        raise tool_error("thumbnail_source_invalid", "Credenciais embutidas na URL autorizada não são permitidas.")
+    host = str(parsed.hostname or "").strip().rstrip(".")
+    if not host:
+        raise tool_error("thumbnail_source_invalid", "A URL autorizada não possui host válido.")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise tool_error("thumbnail_source_invalid", "A porta da URL autorizada é inválida.") from exc
+    if port not in (None, 443):
+        raise tool_error("thumbnail_source_invalid", "Somente HTTPS na porta padrão é permitido para arquivos autorizados.")
+    return value
+
+
 def _is_public_ip(value: str) -> bool:
     ip = ipaddress.ip_address(value)
     return not (
@@ -349,7 +372,8 @@ def _inspect_image(data: bytes, *, source_url: str, header_content_type: str | N
 
 def _download_https_bytes(url: str, *, source_kind: str) -> tuple[bytes, dict[str, Any]]:
     """Download bounded HTTPS bytes with SSRF/redirect protections shared by all remote sources."""
-    current = _canonical_https_url(url)
+    authorized_file = source_kind == "chatgpt_file"
+    current = _validated_authorized_https_url(url) if authorized_file else _canonical_https_url(url)
     session = requests.Session()
     try:
         for redirect_count in range(THUMBNAIL_MAX_REDIRECTS + 1):
@@ -375,18 +399,26 @@ def _download_https_bytes(url: str, *, source_kind: str) -> tuple[bytes, dict[st
                 if not location or redirect_count >= THUMBNAIL_MAX_REDIRECTS:
                     code = "thumbnail_file_resolution_failed" if source_kind == "chatgpt_file" else "thumbnail_source_invalid"
                     raise tool_error(code, "A cadeia de redirects da fonte da thumbnail não é permitida.")
-                current = _canonical_https_url(urljoin(current, location))
+                redirected = urljoin(current, location)
+                current = _validated_authorized_https_url(redirected) if authorized_file else _canonical_https_url(redirected)
                 continue
 
             if response.status_code < 200 or response.status_code >= 300:
                 status = int(response.status_code)
+                response_headers = dict(response.headers)
                 response.close()
                 if source_kind == "chatgpt_file":
                     if status in {401, 403}:
                         raise tool_error(
                             "thumbnail_file_unauthorized",
                             "O download temporário do arquivo não está autorizado para este contexto.",
-                            details={"http_status": status},
+                            details={
+                                "http_status": status,
+                                "download_host": str(urlsplit(current).hostname or ""),
+                                "content_type": str(response_headers.get("Content-Type", "") or "") or None,
+                                "server": str(response_headers.get("Server", "") or "") or None,
+                                "www_authenticate_present": bool(response_headers.get("WWW-Authenticate")),
+                            },
                         )
                     if status in {404, 410}:
                         raise tool_error(
