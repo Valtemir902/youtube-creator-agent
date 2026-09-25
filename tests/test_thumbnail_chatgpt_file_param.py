@@ -149,7 +149,7 @@ def test_chatgpt_file_host_transcoding_uses_real_bytes_not_stale_metadata(tmp_pa
         "_download_https_bytes",
         lambda _url, *, source_kind: (
             data,
-            {"headers": {"Content-Type": "image/jpeg"}, "source_url_sha256": "x", "redirect_count": 0, "final_url": "https://files.example.test/x"},
+            {"headers": {"Content-Type": "image/png"}, "source_url_sha256": "x", "redirect_count": 0, "final_url": "https://files.example.test/x"},
         ),
     )
     resolved, source = resolve_thumbnail_source(
@@ -166,6 +166,8 @@ def test_chatgpt_file_host_transcoding_uses_real_bytes_not_stale_metadata(tmp_pa
     assert source["detected_mime_type"] == "image/jpeg"
     assert source["declared_mime_type"] == "image/png"
     assert source["declared_mime_mismatch"] is True
+    assert source["header_content_type"] == "image/png"
+    assert source["header_mime_mismatch"] is True
     assert source["source_extension"] == ".png"
     assert source["source_extension_mismatch"] is True
     assert source["width"] == 1536
