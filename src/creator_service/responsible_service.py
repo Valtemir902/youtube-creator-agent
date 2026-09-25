@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
-from .mcp_errors import tool_error
+from .mcp_errors import CreatorToolError, tool_error
 from .security import signer_from_env
 from .verified_advanced_service import VerifiedAdvancedSafeCreatorService
 
@@ -100,18 +101,20 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
         observed: dict[str, Any],
     ) -> dict[str, Any]:
         mismatched_fields = self._mismatches(observed, expected)
+        field_matches = {
+            "title_matches": "title" not in mismatched_fields,
+            "description_matches": "description" not in mismatched_fields,
+            "tags_match": "tags" not in mismatched_fields,
+            "category_matches": "categoryId" not in mismatched_fields,
+            "default_language_matches": "defaultLanguage" not in mismatched_fields,
+        }
         return {
             "restored_and_verified": not mismatched_fields,
             "expected_snapshot": {field: expected.get(field) for field in self._VERIFY_FIELDS},
             "observed_snapshot": {field: observed.get(field) for field in self._VERIFY_FIELDS},
             "mismatched_fields": list(mismatched_fields),
-            "field_matches": {
-                "title_matches": "title" not in mismatched_fields,
-                "description_matches": "description" not in mismatched_fields,
-                "tags_match": "tags" not in mismatched_fields,
-                "category_matches": "categoryId" not in mismatched_fields,
-                "default_language_matches": "defaultLanguage" not in mismatched_fields,
-            },
+            **field_matches,
+            "field_matches": field_matches,
         }
 
     def _provider_field_states(
@@ -399,11 +402,62 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
 
         return last_observed, last_mismatches, last_exact, total_verification_attempts
 
-    def _partial_write_error(self) -> Exception:
+    def _partial_write_error(
+        self,
+        *,
+        write_verification: dict[str, Any],
+        rollback: dict[str, Any],
+    ) -> Exception:
         return tool_error(
             "partial_write_detected",
             "O YouTube persistiu apenas parte dos metadados aprovados. A ferramenta restaurou e verificou o snapshot anterior; gere uma nova prévia antes de tentar novamente.",
+            details={
+                "state": "partial_write_detected_and_restored",
+                "write_verification": write_verification,
+                "rollback": rollback,
+            },
         )
+
+    def _restore_then_raise_partial(
+        self,
+        *,
+        video_id: str,
+        before: dict[str, Any],
+        expected: dict[str, Any],
+        observed_after_write: dict[str, Any],
+        verification_attempts: int,
+        elapsed_ms: int,
+        original_error: Exception | None = None,
+    ) -> None:
+        write_verification = self._verification_report(expected=expected, observed=observed_after_write)
+        write_verification["observed_snapshot_after_write"] = dict(write_verification["observed_snapshot"])
+        write_verification["verification_attempts"] = verification_attempts
+        write_verification["elapsed_ms"] = elapsed_ms
+        try:
+            restored, _mismatches, _exact, rollback_attempts = self._restore_verified_snapshot(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+            )
+        except CreatorToolError as exc:
+            if exc.code == "rollback_incomplete":
+                raise tool_error(
+                    "rollback_incomplete",
+                    exc.message,
+                    details={
+                        "state": "partial_write_detected_and_rollback_incomplete",
+                        "write_verification": write_verification,
+                        "rollback": exc.details or {},
+                    },
+                ) from exc
+            raise
+        rollback = self._verification_report(expected=before, observed=restored)
+        rollback["verification_attempts"] = rollback_attempts
+        rollback["state"] = "restored_and_verified"
+        raise self._partial_write_error(
+            write_verification=write_verification,
+            rollback=rollback,
+        ) from original_error
 
     def _success_result(
         self,
@@ -435,6 +489,7 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             "title": persisted.get("title", ""),
             "changed_fields": changed_fields,
             "persisted_verified": True,
+            "state": "success_verified",
             "verification_attempts": attempts,
             "normalization_differences": exact_differences,
             "recovered_from_ambiguous_response": recovered_from_ambiguous_response,
@@ -489,8 +544,15 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 phase="ambiguous_response",
                 verification_attempts=attempts,
             )
-            self._restore_verified_snapshot(video_id=video_id, before=before, expected=expected)
-            raise self._partial_write_error() from original_error
+            self._restore_then_raise_partial(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+                observed_after_write=observed,
+                verification_attempts=attempts,
+                elapsed_ms=int((time.monotonic() - write_verify_started) * 1000),
+                original_error=original_error,
+            )
 
         self.memory.record_video_action(
             video_id=video_id,
@@ -538,7 +600,16 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
             payload=normalized_envelope,
         )
 
+        # Defensive pre-validation runs after signature verification and before
+        # any videos.update mutation. YouTube remains the final authority.
+        metadata_validation = self.validate_youtube_metadata_limits(
+            expected,
+            category_explicit="categoryId" in proposed,
+            default_language_explicit="defaultLanguage" in proposed,
+        )
+
         snippet = self._snippet_for_update(expected)
+        write_verify_started = time.monotonic()
         try:
             self._conditional_snippet_update(
                 video_id=video_id,
@@ -580,8 +651,15 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                     observed=observed,
                     phase="verification_exception",
                 )
-                self._restore_verified_snapshot(video_id=video_id, before=before, expected=expected)
-                raise self._partial_write_error() from exc
+                self._restore_then_raise_partial(
+                    video_id=video_id,
+                    before=before,
+                    expected=expected,
+                    observed_after_write=observed,
+                    verification_attempts=1,
+                    elapsed_ms=int((time.monotonic() - write_verify_started) * 1000),
+                    original_error=exc,
+                )
             if not self._mismatches(observed, expected):
                 return self._success_result(
                     video_id=video_id,
@@ -614,8 +692,14 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
                 phase="confirmed_response",
                 verification_attempts=attempts,
             )
-            self._restore_verified_snapshot(video_id=video_id, before=before, expected=expected)
-            raise self._partial_write_error()
+            self._restore_then_raise_partial(
+                video_id=video_id,
+                before=before,
+                expected=expected,
+                observed_after_write=persisted,
+                verification_attempts=attempts,
+                elapsed_ms=int((time.monotonic() - write_verify_started) * 1000),
+            )
 
         if not self._mismatches(persisted, before):
             raise tool_error(
