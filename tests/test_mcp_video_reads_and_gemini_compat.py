@@ -106,6 +106,17 @@ class _Service:
             raise PermissionError("O vídeo não pertence ao canal conectado.")
         return item
 
+    def video_memory_state(self, video_id: str):
+        return {
+            "protected": False,
+            "video_id": video_id,
+            "last_action_at": None,
+            "seconds_remaining": 0,
+            "protection_hours": 24,
+            "last_action_type": None,
+            "last_changed_fields": [],
+        }
+
 
 class _WriteProbeService:
     def preview_video_metadata_update(self, **kwargs):
