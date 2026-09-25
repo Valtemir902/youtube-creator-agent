@@ -376,27 +376,43 @@ def create_server():
         name="preview_video_thumbnail_update",
         title="Validar e preparar nova thumbnail do vídeo",
         description=(
-            "Read-only thumbnail preview. Downloads one approved HTTPS image through the safe fetcher, "
-            "validates its real JPEG/PNG content, size and dimensions, binds its SHA-256 and the current "
-            "YouTube thumbnail baseline into a short-lived signed approval, and never writes to YouTube."
+            "Read-only thumbnail preview. Accepts exactly one safe source: HTTPS URL, a JSON-safe file envelope "
+            "(content_base64), an authorized tenant asset id, or base64 thumbnail_bytes. It validates the real "
+            "image, normalizes to exact staged JPEG/PNG bytes, binds source/final SHA-256 plus the YouTube baseline "
+            "into a short-lived approval, and never writes to YouTube."
         ),
         annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True, destructive_hint=False, idempotent_hint=True),
     )
-    def preview_video_thumbnail_update(video_id: str, thumbnail_url: str) -> dict[str, Any]:
+    def preview_video_thumbnail_update(
+        video_id: str,
+        thumbnail_url: str | None = None,
+        thumbnail_file: dict[str, Any] | None = None,
+        thumbnail_asset_id: str | None = None,
+        thumbnail_bytes: str | None = None,
+    ) -> dict[str, Any]:
         def action() -> dict[str, Any]:
             base._require_scope(base.WRITE_SCOPE)
             base._limit("thumbnail_preview", limit=20)
             result = _service().preview_video_thumbnail_update(
                 video_id=video_id,
                 thumbnail_url=thumbnail_url,
+                thumbnail_file=thumbnail_file,
+                thumbnail_asset_id=thumbnail_asset_id,
+                thumbnail_bytes=thumbnail_bytes,
             )
             base._audit(
                 "mcp_video_thumbnail_preview",
                 "success",
                 {
                     "video_id": video_id,
-                    "mime_type": result.get("proposed", {}).get("mime_type"),
-                    "file_size_bytes": result.get("proposed", {}).get("file_size_bytes"),
+                    "source_type": result.get("source", {}).get("type"),
+                    "source_sha256_prefix": str(result.get("source", {}).get("sha256", ""))[:12],
+                    "normalized_sha256_prefix": str(result.get("normalized", {}).get("sha256", ""))[:12],
+                    "mime_type": result.get("normalized", {}).get("mime_type"),
+                    "file_size_bytes": result.get("normalized", {}).get("file_size_bytes"),
+                    "converted": result.get("normalized", {}).get("converted"),
+                    "resized": result.get("normalized", {}).get("resized"),
+                    "compressed": result.get("normalized", {}).get("compressed"),
                 },
             )
             return base.success_response(result)
