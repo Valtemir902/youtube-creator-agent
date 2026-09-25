@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -337,7 +339,7 @@ class _YouTube:
 class _Service(ThumbnailUpdateMixin):
     def __init__(self, youtube):
         self.youtube = youtube
-        self.context = SimpleNamespace(tenant_id="tenant-1", validate_youtube=lambda: None)
+        self.context = SimpleNamespace(tenant_id="tenant-1", validate_youtube=lambda: None, data_dir=Path(tempfile.mkdtemp(prefix="yca-thumb-test-")))
         self.memory = _Memory()
 
     def _youtube(self):
@@ -395,22 +397,31 @@ def test_thumbnail_preview_is_read_only_and_signed(monkeypatch):
     assert preview["rollback_supported"] is False
 
 
-def test_hash_change_between_preview_and_apply_is_blocked(monkeypatch):
+def test_url_is_not_downloaded_again_after_preview(monkeypatch):
     monkeypatch.setenv("YCA_APPROVAL_SECRET", SECRET)
-    data_ref = {"data": _image_bytes("JPEG")}
-    _install_fetch(monkeypatch, data_ref)
+    monkeypatch.setattr(thumbnail_module.time, "sleep", lambda _delay: None)
+    data_ref = {"data": _image_bytes("JPEG"), "calls": 0}
+
+    def fake_fetch(url):
+        data_ref["calls"] += 1
+        data = data_ref["data"]
+        return data, _validation(data, url=url)
+
+    monkeypatch.setattr(thumbnail_module, "_download_https_thumbnail", fake_fetch)
     youtube = _YouTube()
     service = _Service(youtube)
     preview = _preview(service)
-    data_ref["data"] = _image_bytes("JPEG", (1920, 1080))
+    assert data_ref["calls"] == 1
 
-    with pytest.raises(CreatorToolError) as caught:
-        service.apply_video_thumbnail_update(
-            approval_payload=preview["approval_payload"],
-            approval_token=preview["approval_token"],
-        )
-    _assert_code(caught, "payload_mismatch")
-    assert youtube.set_calls == 0
+    # Simulate a mutable URL changing after preview. Apply must use staged bytes.
+    data_ref["data"] = _image_bytes("JPEG", (1920, 1080))
+    result = service.apply_video_thumbnail_update(
+        approval_payload=preview["approval_payload"],
+        approval_token=preview["approval_token"],
+    )
+    assert result["persisted_verified"] is True
+    assert data_ref["calls"] == 1
+    assert youtube.set_calls == 1
 
 
 def test_video_id_change_after_preview_is_blocked(monkeypatch):
