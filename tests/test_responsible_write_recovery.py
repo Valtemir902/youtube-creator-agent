@@ -524,7 +524,9 @@ def test_partial_error_preserves_pre_rollback_snapshot(tmp_path, monkeypatch):
     assert write["observed_snapshot_after_write"]["title"] == before["title"]
     assert write["mismatched_fields"] == ["title", "description", "categoryId"]
     assert write["tags_match"] is True
-    assert write["verification_attempts"] == len(service._WRITE_VERIFY_DELAYS)
+    assert write["verification_attempts"] == (
+        len(service._WRITE_VERIFY_DELAYS) + len(service._WRITE_SETTLE_VERIFY_DELAYS)
+    )
     assert write["elapsed_ms"] >= 0
     rollback = details["rollback"]
     assert rollback["restored_and_verified"] is True
