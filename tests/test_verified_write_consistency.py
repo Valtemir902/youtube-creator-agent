@@ -31,16 +31,16 @@ def test_metadata_normalizer_preserves_more_than_twelve_tags():
     assert len(normalized["tags"]) == 25
 
 
-def test_metadata_normalizer_rejects_aggregate_tag_budget():
+def test_metadata_normalizer_preserves_aggregate_tags_for_central_limit_validation():
     tags = ["x" * 260, "y" * 260]
-    with pytest.raises(ValueError, match="500 caracteres"):
-        VerifiedAdvancedSafeCreatorService._normalize_metadata_payload(
-            video_id="video-1",
-            title="Title",
-            description="Description",
-            tags=tags,
-            current=_snippet(),
-        )
+    normalized = VerifiedAdvancedSafeCreatorService._normalize_metadata_payload(
+        video_id="video-1",
+        title="Title",
+        description="Description",
+        tags=tags,
+        current=_snippet(),
+    )
+    assert normalized["tags"] == tags
 
 
 def test_semantic_comparison_tolerates_only_harmless_text_normalization():
@@ -263,3 +263,17 @@ def test_semantic_tag_comparison_rejects_real_tag_content_change():
     expected = _snippet(tags=["alpha tag", "Zulu tag"])
     actual = _snippet(tags=["alpha tag", "Different tag"])
     assert VerifiedAdvancedSafeCreatorService._mismatches(actual, expected) == ["tags"]
+
+
+def test_unicode_normalization_is_not_silently_treated_as_equal():
+    expected = _snippet(tags=["café"])
+    actual = _snippet(tags=["cafe\u0301"])
+    assert VerifiedAdvancedSafeCreatorService._mismatches(actual, expected) == ["tags"]
+
+
+def test_category_and_default_language_real_differences_are_detected():
+    expected = _snippet(category_id="22")
+    expected["defaultLanguage"] = "pt-BR"
+    actual = _snippet(category_id="10")
+    actual["defaultLanguage"] = "en"
+    assert VerifiedAdvancedSafeCreatorService._mismatches(actual, expected) == ["categoryId", "defaultLanguage"]
