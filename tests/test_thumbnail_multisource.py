@@ -190,7 +190,7 @@ def test_alpha_png_stays_png_when_normalization_is_needed(tmp_path: Path):
 def test_internal_asset_must_exist_in_authorized_tenant_store(tmp_path: Path):
     with pytest.raises(CreatorToolError) as caught:
         resolve_thumbnail_source(data_dir=tmp_path, thumbnail_asset_id="asset_1234567890123456")
-    _code(caught, "thumbnail_source_unavailable")
+    _code(caught, "thumbnail_asset_not_found")
 
 
 def test_resolvable_internal_asset_is_hash_verified(tmp_path: Path):
