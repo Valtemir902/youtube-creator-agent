@@ -347,7 +347,8 @@ def _inspect_image(data: bytes, *, source_url: str, header_content_type: str | N
     return result
 
 
-def _download_https_thumbnail(url: str) -> tuple[bytes, dict[str, Any]]:
+def _download_https_bytes(url: str, *, source_kind: str) -> tuple[bytes, dict[str, Any]]:
+    """Download bounded HTTPS bytes with SSRF/redirect protections shared by all remote sources."""
     current = _canonical_https_url(url)
     session = requests.Session()
     try:
@@ -362,23 +363,45 @@ def _download_https_thumbnail(url: str) -> tuple[bytes, dict[str, Any]]:
                     headers={"User-Agent": "YouTubeCreatorAgent/thumbnail-fetch"},
                 )
             except requests.Timeout as exc:
-                raise tool_error("thumbnail_source_unavailable", "Timeout ao baixar a thumbnail HTTPS.") from exc
+                code = "thumbnail_file_resolution_failed" if source_kind == "chatgpt_file" else "thumbnail_source_unavailable"
+                raise tool_error(code, "Timeout ao resolver a fonte HTTPS da thumbnail.") from exc
             except requests.RequestException as exc:
-                raise tool_error("thumbnail_source_unavailable", "Falha ao baixar a thumbnail HTTPS.") from exc
+                code = "thumbnail_file_resolution_failed" if source_kind == "chatgpt_file" else "thumbnail_source_unavailable"
+                raise tool_error(code, "Falha ao resolver a fonte HTTPS da thumbnail.") from exc
 
             if response.is_redirect or response.is_permanent_redirect:
                 location = str(response.headers.get("Location", "")).strip()
                 response.close()
                 if not location or redirect_count >= THUMBNAIL_MAX_REDIRECTS:
-                    raise tool_error("thumbnail_source_invalid", "A cadeia de redirects da thumbnail não é permitida.")
+                    code = "thumbnail_file_resolution_failed" if source_kind == "chatgpt_file" else "thumbnail_source_invalid"
+                    raise tool_error(code, "A cadeia de redirects da fonte da thumbnail não é permitida.")
                 current = _canonical_https_url(urljoin(current, location))
                 continue
+
             if response.status_code < 200 or response.status_code >= 300:
-                status = response.status_code
+                status = int(response.status_code)
                 response.close()
+                if source_kind == "chatgpt_file":
+                    if status in {401, 403}:
+                        raise tool_error(
+                            "thumbnail_file_unauthorized",
+                            "O download temporário do arquivo não está autorizado para este contexto.",
+                            details={"http_status": status},
+                        )
+                    if status in {404, 410}:
+                        raise tool_error(
+                            "thumbnail_file_not_found",
+                            "O arquivo autorizado não existe mais ou o download temporário expirou.",
+                            details={"http_status": status},
+                        )
+                    raise tool_error(
+                        "thumbnail_file_resolution_failed",
+                        "O arquivo autorizado não pôde ser resolvido para bytes.",
+                        details={"http_status": status},
+                    )
                 raise tool_error(
                     "thumbnail_source_unavailable",
-                    "A URL da thumbnail não retornou uma imagem com status HTTP de sucesso.",
+                    "A URL da thumbnail não retornou status HTTP de sucesso.",
                     details={"http_status": status},
                 )
 
@@ -391,13 +414,14 @@ def _download_https_thumbnail(url: str) -> tuple[bytes, dict[str, Any]]:
                 if announced > THUMBNAIL_MAX_SOURCE_BYTES:
                     response.close()
                     raise tool_error(
-                        "thumbnail_validation_failed",
-                        "A fonte remota excede o limite seguro antes do download.",
+                        "thumbnail_too_large",
+                        "A fonte da thumbnail excede o limite seguro antes do download.",
                         details={"source_size_bytes": announced, "max_source_bytes": THUMBNAIL_MAX_SOURCE_BYTES},
                     )
 
             chunks: list[bytes] = []
             total = 0
+            headers = dict(response.headers)
             try:
                 for chunk in response.iter_content(chunk_size=64 * 1024):
                     if not chunk:
@@ -405,30 +429,104 @@ def _download_https_thumbnail(url: str) -> tuple[bytes, dict[str, Any]]:
                     total += len(chunk)
                     if total > THUMBNAIL_MAX_SOURCE_BYTES:
                         raise tool_error(
-                            "thumbnail_validation_failed",
-                            "A fonte remota excedeu o limite seguro durante o download.",
+                            "thumbnail_too_large",
+                            "A fonte da thumbnail excedeu o limite seguro durante o download.",
                             details={"source_size_bytes": total, "max_source_bytes": THUMBNAIL_MAX_SOURCE_BYTES},
                         )
                     chunks.append(bytes(chunk))
             finally:
                 response.close()
 
-            data = b"".join(chunks)
-            source_name = PurePosixPath(urlsplit(current).path).name or "thumbnail"
-            info = _inspect_source_image(
-                data,
-                source_name=source_name,
-                header_content_type=response.headers.get("Content-Type"),
-            )
-            return data, {
-                **info,
+            return b"".join(chunks), {
+                "headers": headers,
                 "source_url_sha256": _sha256_text(current),
                 "redirect_count": redirect_count,
                 "final_url": current,
             }
     finally:
         session.close()
-    raise tool_error("thumbnail_source_unavailable", "Não foi possível obter a thumbnail HTTPS.")
+    code = "thumbnail_file_resolution_failed" if source_kind == "chatgpt_file" else "thumbnail_source_unavailable"
+    raise tool_error(code, "Não foi possível resolver a fonte HTTPS da thumbnail.")
+
+
+def _download_https_thumbnail(url: str) -> tuple[bytes, dict[str, Any]]:
+    data, remote = _download_https_bytes(url, source_kind="https_url")
+    final_url = str(remote["final_url"])
+    source_name = PurePosixPath(urlsplit(final_url).path).name or "thumbnail"
+    info = _inspect_source_image(
+        data,
+        source_name=source_name,
+        header_content_type=dict(remote.get("headers", {})).get("Content-Type"),
+    )
+    return data, {**info, **{key: value for key, value in remote.items() if key != "headers"}}
+
+
+def _resolve_chatgpt_file_param(thumbnail_file: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+    """Resolve a ChatGPT-native file param exactly once during preview.
+
+    ChatGPT file params provide both file_id and a short-lived authorized download_url.
+    The server never dereferences file_id, sediment://, or filesystem paths directly.
+    """
+    file_id = str(thumbnail_file.get("file_id", "") or "").strip()
+    download_url = str(thumbnail_file.get("download_url", "") or "").strip()
+    content_location = str(thumbnail_file.get("content_location", "") or "").strip()
+
+    if any(key in thumbnail_file for key in ("path", "file_path", "local_path")):
+        raise tool_error("thumbnail_source_invalid", "Paths locais arbitrários não são aceitos.")
+
+    if content_location:
+        parsed = urlsplit(content_location)
+        if parsed.scheme and parsed.scheme != "sediment":
+            raise tool_error(
+                "thumbnail_source_invalid",
+                "content_location usa um scheme não permitido.",
+                details={"scheme": parsed.scheme},
+            )
+        # sediment:// is an internal ChatGPT locator. It is accepted only as metadata;
+        # the host must still provide the authorized HTTPS download_url file param.
+
+    if not file_id:
+        raise tool_error("thumbnail_source_invalid", "thumbnail_file.file_id é obrigatório para um arquivo do ChatGPT.")
+    if not file_id.startswith("file_") or len(file_id) < 12 or len(file_id) > 160:
+        raise tool_error("thumbnail_source_invalid", "thumbnail_file.file_id não possui formato reconhecido.")
+    if not download_url:
+        raise tool_error(
+            "thumbnail_file_resolution_failed",
+            "O host não forneceu download_url autorizado para este file_id. Use o arquivo como file param do ChatGPT.",
+            details={"file_id_fingerprint": _safe_hash_prefix(_sha256_text(file_id))},
+        )
+
+    data, remote = _download_https_bytes(download_url, source_kind="chatgpt_file")
+    file_name = _safe_source_name(
+        str(thumbnail_file.get("file_name") or thumbnail_file.get("name") or ""),
+        "thumbnail",
+    )
+    claimed_mime = str(thumbnail_file.get("mime_type", "") or "") or None
+    info = _inspect_source_image(
+        data,
+        source_name=file_name,
+        claimed_mime_type=claimed_mime,
+        header_content_type=dict(remote.get("headers", {})).get("Content-Type"),
+    )
+    return data, {
+        "type": "chatgpt_file",
+        "source_type": "chatgpt_file",
+        "source_id": file_id,
+        "source_id_fingerprint": _safe_hash_prefix(_sha256_text(file_id)),
+        "resolver": "openai_file_param_download_url",
+        "source_name": file_name,
+        "filename": file_name,
+        "mime_type": info["mime_type"],
+        "detected_mime_type": info["mime_type"],
+        "width": info["width"],
+        "height": info["height"],
+        "file_size_bytes": len(data),
+        "source_size_bytes": len(data),
+        "sha256": _sha256_bytes(data),
+        "source_sha256": _sha256_bytes(data),
+        "download_url_sha256": remote.get("source_url_sha256"),
+        "redirect_count": remote.get("redirect_count", 0),
+    }
 
 
 def resolve_thumbnail_source(
@@ -454,14 +552,23 @@ def resolve_thumbnail_source(
 
     if sources[0]:
         data, fetch = _download_https_thumbnail(str(thumbnail_url))
+        sha = _sha256_bytes(data)
+        name = str(fetch.get("source_name") or "thumbnail")
         return data, {
             "type": "https_url",
-            "source_name": str(fetch.get("source_name") or "thumbnail"),
+            "source_type": "https_url",
+            "source_id": None,
+            "resolver": "safe_https",
+            "source_name": name,
+            "filename": name,
             "mime_type": fetch["mime_type"],
+            "detected_mime_type": fetch["mime_type"],
             "width": fetch["width"],
             "height": fetch["height"],
             "file_size_bytes": len(data),
-            "sha256": _sha256_bytes(data),
+            "source_size_bytes": len(data),
+            "sha256": sha,
+            "source_sha256": sha,
             "url_sha256": fetch.get("source_url_sha256"),
             "redirect_count": fetch.get("redirect_count", 0),
         }
@@ -472,11 +579,12 @@ def resolve_thumbnail_source(
                 "thumbnail_source_invalid",
                 "thumbnail_file deve ser um envelope de arquivo autorizado, nunca um path arbitrário.",
             )
+        if str(thumbnail_file.get("file_id", "") or "").strip() or str(thumbnail_file.get("download_url", "") or "").strip():
+            return _resolve_chatgpt_file_param(thumbnail_file)
+
+        # Backward-compatible JSON envelope for non-ChatGPT MCP clients.
         if any(key in thumbnail_file for key in ("path", "file_path", "local_path")):
-            raise tool_error(
-                "thumbnail_source_invalid",
-                "Paths locais arbitrários não são aceitos. Envie o conteúdo do arquivo pelo envelope MCP.",
-            )
+            raise tool_error("thumbnail_source_invalid", "Paths locais arbitrários não são aceitos.")
         source_type = str(thumbnail_file.get("source_type", "uploaded_file") or "uploaded_file").strip()
         if source_type not in _ALLOWED_FILE_SOURCE_TYPES:
             raise tool_error(
@@ -488,47 +596,76 @@ def resolve_thumbnail_source(
             str(thumbnail_file.get("content_base64", "") or ""),
             field_name="thumbnail_file.content_base64",
         )
-        name = _safe_source_name(str(thumbnail_file.get("name", "") or ""), "thumbnail")
+        name = _safe_source_name(
+            str(thumbnail_file.get("file_name") or thumbnail_file.get("name") or ""),
+            "thumbnail",
+        )
         info = _inspect_source_image(
             data,
             source_name=name,
             claimed_mime_type=str(thumbnail_file.get("mime_type", "") or "") or None,
         )
+        sha = _sha256_bytes(data)
         return data, {
             "type": source_type,
+            "source_type": source_type,
+            "source_id": None,
+            "resolver": "inline_content_base64",
             "source_name": name,
+            "filename": name,
             "mime_type": info["mime_type"],
+            "detected_mime_type": info["mime_type"],
             "width": info["width"],
             "height": info["height"],
             "file_size_bytes": len(data),
-            "sha256": _sha256_bytes(data),
+            "source_size_bytes": len(data),
+            "sha256": sha,
+            "source_sha256": sha,
         }
 
     if sources[2]:
         data, asset = ThumbnailAssetStore(data_dir).resolve(str(thumbnail_asset_id))
         name = _safe_source_name(asset.get("source_name"), "thumbnail")
         info = _inspect_source_image(data, source_name=name)
+        sha = _sha256_bytes(data)
+        source_type = str(asset.get("source_type", "internal_asset"))
+        asset_id = str(asset.get("asset_id", ""))
         return data, {
-            "type": str(asset.get("source_type", "internal_asset")),
+            "type": source_type,
+            "source_type": source_type,
+            "source_id": asset_id,
+            "resolver": "tenant_asset_store",
             "source_name": name,
-            "asset_id": str(asset.get("asset_id", "")),
+            "filename": name,
+            "asset_id": asset_id,
             "mime_type": info["mime_type"],
+            "detected_mime_type": info["mime_type"],
             "width": info["width"],
             "height": info["height"],
             "file_size_bytes": len(data),
-            "sha256": _sha256_bytes(data),
+            "source_size_bytes": len(data),
+            "sha256": sha,
+            "source_sha256": sha,
         }
 
     data = _decode_base64_payload(str(thumbnail_bytes), field_name="thumbnail_bytes")
     info = _inspect_source_image(data, source_name="thumbnail")
+    sha = _sha256_bytes(data)
     return data, {
         "type": "binary",
+        "source_type": "binary",
+        "source_id": None,
+        "resolver": "inline_thumbnail_bytes",
         "source_name": "thumbnail",
+        "filename": "thumbnail",
         "mime_type": info["mime_type"],
+        "detected_mime_type": info["mime_type"],
         "width": info["width"],
         "height": info["height"],
         "file_size_bytes": len(data),
-        "sha256": _sha256_bytes(data),
+        "source_size_bytes": len(data),
+        "sha256": sha,
+        "source_sha256": sha,
     }
 
 
