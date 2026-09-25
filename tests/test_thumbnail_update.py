@@ -77,7 +77,7 @@ def test_oversized_file_is_rejected(monkeypatch):
     monkeypatch.setattr(thumbnail_module, "THUMBNAIL_MAX_SOURCE_BYTES", 10)
     with pytest.raises(CreatorToolError) as caught:
         _inspect_image(_image_bytes("JPEG"), source_url="https://cdn.example.test/thumb.jpg", header_content_type="image/jpeg")
-    _assert_code(caught, "thumbnail_validation_failed")
+    _assert_code(caught, "thumbnail_too_large")
 
 
 def test_false_mime_header_is_rejected():
