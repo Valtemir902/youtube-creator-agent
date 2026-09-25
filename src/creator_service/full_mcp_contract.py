@@ -126,9 +126,23 @@ def assert_registered_server_contract(server: Any) -> None:
     thumbnail_tool = by_name["preview_video_thumbnail_update"]
     thumbnail_meta = thumbnail_tool.meta or {}
     assert thumbnail_meta.get("openai/fileParams") == ["thumbnail_file"], thumbnail_meta
-    thumbnail_schema_text = str(thumbnail_tool.parameters)
-    for field in ("download_url", "file_id", "mime_type", "file_name"):
-        assert field in thumbnail_schema_text, (field, thumbnail_tool.parameters)
+    thumbnail_schema = thumbnail_tool.parameters
+    file_property = (thumbnail_schema.get("properties", {}) or {}).get("thumbnail_file", {})
+    candidates = list(file_property.get("anyOf", []) or [file_property])
+    file_schema = None
+    for candidate in candidates:
+        ref = str((candidate or {}).get("$ref", ""))
+        if ref.startswith("#/$defs/"):
+            file_schema = (thumbnail_schema.get("$defs", {}) or {}).get(ref.rsplit("/", 1)[-1])
+            break
+        properties = (candidate or {}).get("properties", {})
+        if {"download_url", "file_id"} <= set(properties):
+            file_schema = candidate
+            break
+    assert file_schema is not None, thumbnail_schema
+    assert {"download_url", "file_id", "mime_type", "file_name"} <= set(file_schema.get("properties", {})), file_schema
+    assert set(file_schema.get("required", [])) == {"download_url", "file_id"}, file_schema
+    assert file_schema.get("additionalProperties") is False, file_schema
 
     for tool in tools:
         assert "tenant_id" not in tool.parameters.get("properties", {}), tool.name
