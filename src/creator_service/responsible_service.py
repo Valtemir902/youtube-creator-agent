@@ -31,6 +31,8 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
     # Final read-only settlement window for YouTube eventual consistency.
     # Production evidence showed tag rollback becoming visible only after the
     # bounded compensation phase; no mutation is sent during this phase.
+    # Metadata-limit and pre-rollback observability hardening is deployed with
+    # this runtime path so production verification exercises the exact code.
     _ROLLBACK_SETTLE_VERIFY_DELAYS = (0.0, 2.0, 4.0, 6.0)
     _MAX_RESTORE_WRITES = 2
 
