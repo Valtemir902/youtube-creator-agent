@@ -217,7 +217,7 @@ def test_streaming_limit_is_enforced(monkeypatch):
     monkeypatch.setattr(thumbnail_module, "_validate_public_host", lambda _url: None)
     with pytest.raises(CreatorToolError) as caught:
         _download_https_thumbnail("https://cdn.example.test/thumb.jpg")
-    _assert_code(caught, "thumbnail_validation_failed")
+    _assert_code(caught, "thumbnail_too_large")
 
 
 class _Memory:
