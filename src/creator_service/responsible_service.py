@@ -30,6 +30,8 @@ class ResponsibleCreatorService(VerifiedAdvancedSafeCreatorService):
     # Final read-only settlement window for an otherwise provider-owned partial
     # write. Production evidence already showed tag propagation can lag behind
     # title/description, so do not compensate until this bounded window expires.
+    # Keep this marker in the runtime diff so production deploy classification
+    # includes the already-tested settlement and request-integrity changes.
     _WRITE_SETTLE_VERIFY_DELAYS = (0.0, 1.0, 2.0, 4.0)
     _RESTORE_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5, 2.5)
     _AMBIGUOUS_VERIFY_DELAYS = (0.0, 0.25, 0.75, 1.5)
