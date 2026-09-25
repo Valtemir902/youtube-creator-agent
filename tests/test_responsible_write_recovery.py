@@ -145,6 +145,19 @@ class _Videos:
         return request
 
 
+class _VideoCategories:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def list(self, *, part: str, id: str):
+        assert part == "snippet"
+        item = {
+            "id": str(id),
+            "snippet": {"title": "Test category", "assignable": True},
+        }
+        return _Request(lambda: {"items": [item]})
+
+
 class _FakeYouTube:
     def __init__(self, mode: str):
         self.video_id = "video-1"
@@ -162,6 +175,7 @@ class _FakeYouTube:
         }
         self._channels = _Channels(self)
         self._videos = _Videos(self)
+        self._video_categories = _VideoCategories(self)
 
     @property
     def etag(self) -> str:
@@ -176,6 +190,9 @@ class _FakeYouTube:
 
     def videos(self):
         return self._videos
+
+    def videoCategories(self):
+        return self._video_categories
 
 
 class _Context:
