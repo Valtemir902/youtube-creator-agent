@@ -21,6 +21,11 @@ config/client_secret.json
 config/historico_otimizacao.json
 config/settings.json
 config/ai_key_pool.json
+config/ai_settings.json
+config/ui_settings.json
+config/server.env
+config/keycloak.env
+config/tunnel.env
 
 # OS and editor files
 .DS_Store

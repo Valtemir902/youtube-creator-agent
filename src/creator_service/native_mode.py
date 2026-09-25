@@ -36,8 +36,8 @@ class ChatGPTNativeEvidenceEngine:
     """Evidence-only YouTube intelligence for ChatGPT/App/MCP mode.
 
     This engine intentionally does not call an LLM. The calling ChatGPT model is
-    responsible for ideation, interpretation, titles and strategy. This service
-    only returns measured/derived YouTube evidence and deterministic scores.
+    responsible for ideation, interpretation, SEO drafts and strategy. The
+    backend supplies measured evidence plus authenticated guarded YouTube tools.
     """
 
     def __init__(self, context):
@@ -55,27 +55,50 @@ class ChatGPTNativeEvidenceEngine:
             "intelligence_mode": "chatgpt_native",
             "external_ai_required": False,
             "external_ai_optional": True,
+            "chatgpt_is_primary_intelligence_layer": True,
+            "can_combine_other_authorized_apps": True,
             "llm_responsibility": [
                 "generate_keyword_candidates",
-                "interpret_evidence",
-                "draft_titles",
-                "draft_descriptions",
-                "build_content_strategy",
-                "combine_other_authorized_apps_when_available",
+                "interpret_youtube_and_analytics_evidence",
+                "interpret_video_transcripts",
+                "draft_titles_descriptions_tags_and_categories",
+                "plan_and_optimize_playlists",
+                "draft_caption_files_from_verified_source_content",
+                "identify_trending_topic_candidates",
+                "suggest_next_video_topics_and_formats",
+                "build_channel_and_video_seo_strategy",
+                "combine_other_authorized_seo_apps_when_available",
             ],
-            "backend_responsibility": [
+            "backend_read_capabilities": [
                 "youtube_channel_metrics",
                 "youtube_analytics_evidence",
                 "keyword_result_validation",
                 "deterministic_opportunity_metrics",
                 "channel_fit_signals",
-                "safe_preview_and_write_operations",
+                "channel_video_listing",
+                "individual_video_details",
+                "owner_authorized_caption_and_transcript_reads",
+                "playlist_listing_and_membership_reads",
+                "youtube_video_categories",
+            ],
+            "backend_write_capabilities": [
+                "signed_video_metadata_preview_apply_and_rollback",
+                "signed_caption_upload_and_rollback",
+                "signed_playlist_metadata_preview_apply_and_rollback",
+                "signed_playlist_membership_add_remove_and_rollback",
             ],
             "guardrails": {
                 "exact_search_volume_available": False,
                 "daily_demand_is_estimated_index": True,
+                "writes_require_yca_write": True,
                 "writes_require_signed_preview": True,
                 "writes_require_explicit_confirmation": True,
+                "writes_use_tenant_and_channel_ownership_checks": True,
+                "writes_detect_external_changes": True,
+                "writes_use_replay_protection": True,
+                "writes_are_verified_after_mutation": True,
+                "signed_rollback_supported": True,
+                "video_recent_edit_protection_enabled": True,
             },
         }
 

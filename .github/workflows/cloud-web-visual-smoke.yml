@@ -1,0 +1,41 @@
+name: Cloud Web Elite V2 Visual Smoke
+
+on:
+  push:
+    branches: [feat/web-dashboard-v1]
+    paths:
+      - 'src/creator_service/dashboard_runtime_hotfix.py'
+      - 'src/creator_service/oauth_compat_app.py'
+      - 'src/creator_service/web/dashboard.html'
+      - 'src/elite_v2_ui.py'
+      - 'tests/cloud_elite_v2_visual_smoke.js'
+      - '.github/workflows/cloud-web-visual-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  visual-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Install browser runtime
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install --save-dev playwright@1.63.0
+          npm audit --audit-level=high
+          npx playwright install --with-deps chromium
+      - name: Capture healthy and revoked-token web states
+        run: node tests/cloud_elite_v2_visual_smoke.js
+      - name: Upload web screenshots
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: cloud-elite-v2-web-screenshots
+          path: artifacts/cloud-web-v2/
+          if-no-files-found: error

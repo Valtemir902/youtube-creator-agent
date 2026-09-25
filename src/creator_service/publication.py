@@ -16,6 +16,28 @@ def _is_https_url(value: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
+def _is_safe_introspection_url(value: str) -> bool:
+    """Accept public HTTPS or the private Keycloak Docker backchannel.
+
+    OAuth token introspection is server-to-server traffic. In production it must
+    not hairpin through the public Cloudflare edge, because edge bot filtering can
+    reject the Python resource server. Plain HTTP is acceptable only for the
+    isolated Docker-network hostname `keycloak`; every other host still requires
+    HTTPS.
+    """
+    if not value:
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and bool(parsed.netloc):
+        return True
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname == "keycloak"
+        and parsed.port in (None, 8080)
+        and parsed.path.endswith("/protocol/openid-connect/token/introspect")
+    )
+
+
 @dataclass(frozen=True)
 class PublicationMetadata:
     name: str
@@ -26,7 +48,7 @@ class PublicationMetadata:
     privacy_url: str
     terms_url: str
     support_url: str
-    version: str = "13.0.0"
+    version: str = "14.0.0"
 
     def public_dict(self) -> dict:
         return asdict(self)
@@ -64,6 +86,10 @@ def publication_metadata_from_env() -> PublicationMetadata:
 
 def publication_readiness(metadata: PublicationMetadata | None = None) -> ReadinessReport:
     metadata = metadata or publication_metadata_from_env()
+    web_issuer = _env("YCA_WEB_OIDC_ISSUER_URL") or _env("YCA_AUTH_ISSUER_URL")
+    web_redirect = _env("YCA_WEB_OIDC_REDIRECT_URI")
+    if not web_redirect and _is_https_url(metadata.onboarding_url):
+        web_redirect = metadata.onboarding_url.rstrip("/") + "/auth/callback"
     checks = {
         "app_public_url_https": _is_https_url(metadata.public_url),
         "mcp_public_url_https": _is_https_url(metadata.mcp_url),
@@ -74,11 +100,21 @@ def publication_readiness(metadata: PublicationMetadata | None = None) -> Readin
         "approval_secret_configured": len(_env("YCA_APPROVAL_SECRET")) >= 24,
         "data_encryption_key_configured": bool(_env("YCA_DATA_ENCRYPTION_KEY")),
         "auth_issuer_configured": _is_https_url(_env("YCA_AUTH_ISSUER_URL")),
-        "auth_introspection_configured": _is_https_url(_env("YCA_AUTH_INTROSPECTION_URL")),
+        "auth_introspection_configured": _is_safe_introspection_url(_env("YCA_AUTH_INTROSPECTION_URL")),
         "google_oauth_client_configured": bool(
             _env("GOOGLE_OAUTH_CLIENT_ID")
             and _env("GOOGLE_OAUTH_CLIENT_SECRET")
             and _is_https_url(_env("GOOGLE_OAUTH_REDIRECT_URI"))
+        ),
+        "web_oidc_configured": bool(
+            _is_https_url(web_issuer)
+            and _env("YCA_WEB_OIDC_CLIENT_ID")
+            and _is_https_url(web_redirect)
+        ),
+        "turnstile_configured": bool(
+            _env("YCA_TURNSTILE_SITE_KEY")
+            and _env("YCA_TURNSTILE_SECRET_KEY")
+            and _env("YCA_TURNSTILE_BYPASS", "0") != "1"
         ),
     }
     missing = tuple(name for name, ok in checks.items() if not ok)

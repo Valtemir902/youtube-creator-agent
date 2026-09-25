@@ -47,12 +47,19 @@ async def production_http_middleware(request: Request, call_next) -> Response:
     request_id = request_id_from(request)
     request.state.request_id = request_id
     started = time.perf_counter()
+    error_type = None
+    error_message = None
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
-    except Exception:
+    except Exception as exc:
         status_code = 500
+        error_type = type(exc).__name__
+        # Keep production logs useful without dumping request bodies, tokens, or
+        # arbitrary exception representations. A short message is enough to
+        # correlate the failure with the request id and upstream classifier.
+        error_message = " ".join(str(exc).split())[:600] or None
         raise
     finally:
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -63,16 +70,25 @@ async def production_http_middleware(request: Request, call_next) -> Response:
             path=request.url.path,
             status=status_code,
             elapsed_ms=elapsed_ms,
+            error_type=error_type,
+            error_message=error_message,
         )
         response_obj = locals().get("response")
         if response_obj is not None:
             response_obj.headers["X-Request-ID"] = request_id
             response_obj.headers["X-Content-Type-Options"] = "nosniff"
-            response_obj.headers["Referrer-Policy"] = "no-referrer"
+            # Keep strict-origin-when-cross-origin as the application default,
+            # but never weaken a route that explicitly selected a stricter
+            # policy such as the handoff executor's `no-referrer`.
+            response_obj.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
             response_obj.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
             response_obj.headers["X-Frame-Options"] = "DENY"
             response_obj.headers.setdefault(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-                "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
+                "default-src 'self'; "
+                "img-src 'self' data: https://i.ytimg.com https://yt3.ggpht.com https://*.googleusercontent.com; "
+                "style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; "
+                "connect-src 'self'; frame-src 'none'; object-src 'none'; "
+                "frame-ancestors 'none'; base-uri 'self'",
             )

@@ -1,0 +1,156 @@
+name: Local AI Companion
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - feat/web-dashboard-v1
+    paths:
+      - 'src/local_ai/**'
+      - 'src/creator_service/local_ai_dashboard.py'
+      - 'src/creator_service/dashboard_intelligence_terms.py'
+      - 'src/creator_service/oauth_compat_app.py'
+      - 'scripts/yca_local_ai_setup.py'
+      - 'tests/test_local_ai_*.py'
+      - '.github/workflows/local-ai-companion.yml'
+  push:
+    branches:
+      - feat/web-dashboard-v1
+    tags:
+      - 'local-ai-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install packager and desktop runtime
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller==6.16.0 pytest pywebview==5.4
+
+      - name: Run local AI unit tests
+        shell: pwsh
+        run: |
+          python -m pytest tests/test_local_ai_capability.py tests/test_local_ai_router.py tests/test_local_ai_companion.py tests/test_local_ai_installer.py tests/test_local_ai_desktop.py -q
+
+      - name: Build one-click companion and desktop app
+        shell: pwsh
+        run: |
+          pyinstaller --clean --noconfirm --onefile `
+            --name YCA-Local-AI-Setup `
+            --paths src `
+            --collect-submodules local_ai `
+            --collect-all webview `
+            --hidden-import webview.platforms.edgechromium `
+            --hidden-import webview.platforms.winforms `
+            scripts/yca_local_ai_setup.py
+
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          .\dist\YCA-Local-AI-Setup.exe --self-test | Tee-Object -FilePath local-ai-self-test.json
+          $result = Get-Content local-ai-self-test.json -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Packaged companion self-test failed' }
+          if (-not $result.manifest_version) { throw 'Packaged companion did not report manifest version' }
+          if ($result.app_protocol -ne 'yca-creator-agent') { throw 'Packaged companion did not expose desktop protocol' }
+
+          .\dist\YCA-Local-AI-Setup.exe --desktop-self-test | Tee-Object -FilePath local-ai-desktop-self-test.json
+          $desktop = Get-Content local-ai-desktop-self-test.json -Raw | ConvertFrom-Json
+          if (-not $desktop.ok -or -not $desktop.native_bridge) { throw 'Packaged desktop native bridge self-test failed' }
+
+      - name: Authenticode sign Windows executable when signing identity is configured
+        id: signing
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+        run: |
+          $exe = Resolve-Path '.\dist\YCA-Local-AI-Setup.exe'
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_BASE64) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_PFX_PASSWORD)) {
+            "signed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Warning 'Windows code-signing identity is not configured. CI artifact remains unsigned; stable tag publication will be blocked.'
+            exit 0
+          }
+
+          $pfx = Join-Path $env:RUNNER_TEMP 'yca-windows-codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODESIGN_PFX_BASE64))
+          try {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+              Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $signtool) { throw 'signtool.exe was not found on windows-latest' }
+
+            & $signtool.FullName sign /fd SHA256 /td SHA256 /tr 'http://timestamp.digicert.com' /f $pfx /p $env:WINDOWS_CODESIGN_PFX_PASSWORD $exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
+
+            $signature = Get-AuthenticodeSignature -LiteralPath $exe
+            if ($signature.Status -ne 'Valid') { throw "Authenticode verification failed: $($signature.Status)" }
+            if (-not $signature.SignerCertificate.Subject) { throw 'Authenticode signer subject is missing' }
+            "signed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "publisher=$($signature.SignerCertificate.Subject)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "Authenticode publisher: $($signature.SignerCertificate.Subject)"
+          }
+          finally {
+            Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify release signing policy
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature -LiteralPath '.\dist\YCA-Local-AI-Setup.exe'
+          $isTag = '${{ github.ref_type }}' -eq 'tag'
+          $signed = '${{ steps.signing.outputs.signed }}' -eq 'true'
+          if ($isTag -and -not $signed) {
+            throw 'Stable local-AI tag publication requires a trusted Authenticode signing identity.'
+          }
+          if ($signed -and $signature.Status -ne 'Valid') {
+            throw "Signed artifact verification failed: $($signature.Status)"
+          }
+          if (-not $isTag -and -not $signed) {
+            Write-Host 'Unsigned CI build accepted because this is not a release tag.'
+          }
+
+      - name: Hash final artifact
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash .\dist\YCA-Local-AI-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  YCA-Local-AI-Setup.exe" | Set-Content .\dist\YCA-Local-AI-Setup.exe.sha256
+          Get-Content .\dist\YCA-Local-AI-Setup.exe.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: yca-local-ai-windows
+          path: |
+            dist/YCA-Local-AI-Setup.exe
+            dist/YCA-Local-AI-Setup.exe.sha256
+            local-ai-self-test.json
+            local-ai-desktop-self-test.json
+          if-no-files-found: error
+
+      - name: Publish signed tagged local AI release
+        if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/local-ai-v') && steps.signing.outputs.signed == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag -replace '^local-ai-v', ''
+          gh release view "$tag" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$tag" --target "${{ github.sha }}" --title "YouTube Creator Agent Local AI v$version" --notes "Signed adaptive Windows Local AI desktop companion. It opens the Creator Agent in a native WebView2 shell and bridges the local model in-process, avoiding browser localhost/network permissions while keeping inference on the device."
+          }
+          gh release upload "$tag" .\dist\YCA-Local-AI-Setup.exe .\dist\YCA-Local-AI-Setup.exe.sha256 --clobber

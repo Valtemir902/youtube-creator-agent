@@ -16,7 +16,7 @@ def main() -> None:
     host = os.environ.get("YCA_ONBOARDING_HOST", "127.0.0.1")
     port = int(os.environ.get("YCA_ONBOARDING_PORT", "8080"))
     uvicorn.run(
-        "creator_service.onboarding_api:create_app",
+        "creator_service.oauth_compat_app:create_app",
         factory=True,
         host=host,
         port=port,
