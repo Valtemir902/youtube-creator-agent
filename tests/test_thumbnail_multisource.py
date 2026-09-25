@@ -221,6 +221,7 @@ def test_staging_preserves_exact_bytes_and_hash(tmp_path: Path):
         height=720,
         source_type="generated_file",
         source_sha256=sha,
+        source_size_bytes=len(data),
         now=1000,
     )
     loaded, metadata = store.load(
@@ -240,7 +241,7 @@ def test_staging_expiry_is_enforced(tmp_path: Path):
     store = ThumbnailStagingStore(tmp_path, ttl_seconds=60)
     staged = store.create(
         video_id="video-1", data=data, sha256=sha, mime_type="image/jpeg",
-        width=1672, height=941, source_type="generated_file", source_sha256=sha, now=1000,
+        width=1672, height=941, source_type="generated_file", source_sha256=sha, source_size_bytes=len(data), now=1000,
     )
     with pytest.raises(CreatorToolError) as caught:
         store.load(staging_id=staged["staging_id"], video_id="video-1", expected_sha256=sha, now=1061)
@@ -253,7 +254,7 @@ def test_staging_video_swap_is_blocked(tmp_path: Path):
     store = ThumbnailStagingStore(tmp_path)
     staged = store.create(
         video_id="video-1", data=data, sha256=sha, mime_type="image/jpeg",
-        width=1672, height=941, source_type="generated_file", source_sha256=sha,
+        width=1672, height=941, source_type="generated_file", source_sha256=sha, source_size_bytes=len(data),
     )
     with pytest.raises(CreatorToolError) as caught:
         store.load(staging_id=staged["staging_id"], video_id="video-2", expected_sha256=sha)
@@ -266,7 +267,7 @@ def test_staging_hash_swap_is_blocked(tmp_path: Path):
     store = ThumbnailStagingStore(tmp_path)
     staged = store.create(
         video_id="video-1", data=data, sha256=sha, mime_type="image/jpeg",
-        width=1672, height=941, source_type="generated_file", source_sha256=sha,
+        width=1672, height=941, source_type="generated_file", source_sha256=sha, source_size_bytes=len(data),
     )
     with pytest.raises(CreatorToolError) as caught:
         store.load(staging_id=staged["staging_id"], video_id="video-1", expected_sha256="0" * 64)
@@ -279,7 +280,7 @@ def test_consumed_staging_cannot_be_reused(tmp_path: Path):
     store = ThumbnailStagingStore(tmp_path)
     staged = store.create(
         video_id="video-1", data=data, sha256=sha, mime_type="image/jpeg",
-        width=1672, height=941, source_type="generated_file", source_sha256=sha,
+        width=1672, height=941, source_type="generated_file", source_sha256=sha, source_size_bytes=len(data),
     )
     store.mark_consumed(staged["staging_id"])
     with pytest.raises(CreatorToolError) as caught:
