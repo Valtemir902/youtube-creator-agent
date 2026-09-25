@@ -94,6 +94,7 @@ class ThumbnailStagingStore:
         height: int,
         source_type: str,
         source_sha256: str,
+        source_size_bytes: int,
         now: int | None = None,
     ) -> dict[str, Any]:
         self.cleanup_expired(now=now)
@@ -113,6 +114,7 @@ class ThumbnailStagingStore:
             "file_size_bytes": len(data),
             "source_type": str(source_type),
             "source_sha256": str(source_sha256),
+            "source_size_bytes": int(source_size_bytes),
             "created_at": created_at,
             "expires_at": created_at + self.ttl_seconds,
             "consumed": False,
