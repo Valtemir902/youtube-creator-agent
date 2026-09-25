@@ -241,7 +241,7 @@ def _decode_image(data: bytes) -> tuple[Image.Image, dict[str, Any]]:
             if exif_orientation != 1:
                 image = ImageOps.exif_transpose(image)
                 width, height = image.size
-    except tool_error.__annotations__.get("return", Exception):
+    except CreatorToolError:
         raise
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
         raise tool_error("thumbnail_decode_failed", "A imagem está corrompida, insegura ou não pôde ser decodificada.") from exc
